@@ -4,19 +4,13 @@ A single-file, offline-capable, browser-based tool for mapping how offices, syst
 
 Built for architecture reviews, leadership briefings, operational awareness, onboarding, and discovery work. Open one HTML file in any modern browser. No server. No build. No install.
 
-> **[Try the live demo](https://rjbethune.github.io/enterprise-relationship-graph/)** — runs in your browser, no install needed.
+> **[Try the live demo](https://rjbethune.github.io/enterprise-relationship-graph/enterprise-relationship-graph.html)** — runs in your browser, no install needed.
 
 ---
 
-## Screenshots
+## Screenshot
 
-> Add a screenshot or animated GIF here once you've taken one. Suggested shot: the sample graph in force layout with a node selected and the profile panel visible.
-
-```
-[ docs/screenshot-overview.png ]
-[ docs/screenshot-profile.png  ]
-[ docs/screenshot-find-path.png ]
-```
+![Enterprise Relationship Graph](Screenshot-01.jpg)
 
 ---
 
