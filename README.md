@@ -4,7 +4,7 @@ A single-file, offline-capable, browser-based tool for mapping how offices, syst
 
 Built for architecture reviews, leadership briefings, operational awareness, onboarding, and discovery work. Open one HTML file in any modern browser. No server. No build. No install.
 
-> **[Try the live demo](https://rossbethune.github.io/enterprise-relationship-graph/)** *(set up GitHub Pages on your fork to host it)*
+> **[Try the live demo](https://rjbethune.github.io/enterprise-relationship-graph/)** — runs in your browser, no install needed.
 
 ---
 
@@ -29,7 +29,7 @@ It's a tool for understanding an enterprise's relationships at a glance and cura
 ## Quick start
 
 1. **Download** [`enterprise-relationship-graph.html`](enterprise-relationship-graph.html).
-2. **Double-click** to open in your browser. (Or visit the [live demo](https://rossbethune.github.io/enterprise-relationship-graph/).)
+2. **Double-click** to open in your browser. (Or visit the [live demo](https://rjbethune.github.io/enterprise-relationship-graph/).)
 3. Click **Load sample data** in the sidebar to see ~80 example nodes with ~90 relationships covering an Executive Office, four Directorates, eight Offices, ten people, a stack of Microsoft 365 platforms, eight applications, sites, teams, groups, mailboxes, workflows, APIs, datasets, documents, and decisions.
 4. Click any node. Explore. Press **?** to open the in-app help.
 
