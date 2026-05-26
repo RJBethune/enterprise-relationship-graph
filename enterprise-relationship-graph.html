@@ -808,9 +808,23 @@
           <label>Layout</label>
           <select id="layout-select">
             <option value="force">Force-directed</option>
-            <option value="hierarchical">Hierarchical</option>
-            <option value="concentric">Concentric</option>
+            <option value="hierarchical">Hierarchical (top-down)</option>
+            <option value="hierarchical-lr">Hierarchical (left-right)</option>
+            <option value="radial">Radial tree</option>
+            <option value="cluster">Group by attribute</option>
+            <option value="concentric">Concentric (by type)</option>
             <option value="grid">Grid</option>
+          </select>
+        </div>
+        <div class="field" id="cluster-attr-field" style="display:none">
+          <label>Cluster by</label>
+          <select id="cluster-attr">
+            <option value="type">Type</option>
+            <option value="directorate">Directorate</option>
+            <option value="office">Office</option>
+            <option value="parent">Parent</option>
+            <option value="status">Status</option>
+            <option value="platform">Platform</option>
           </select>
         </div>
         <div class="btn-row">
@@ -1456,6 +1470,7 @@ const state = {
   draggedNode: null, dragMode: null,
   lastMouse: { x:0, y:0 },
   layout: "force",
+  clusterAttr: "type",
   filtersNode: new Set(), filtersEdge: new Set(),
   search: "",
   showNeighborhoodOnly: false,
@@ -1792,51 +1807,89 @@ function ensurePositions(){
   });
 }
 
+/* ----- Hierarchy helpers (shared by hierarchical / hierarchical-lr / radial) ----- */
+const HIER_DOWN_TYPES = ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","OWNS","MANAGES"];
+const HIER_UP_TYPES   = ["REPORTS_TO","PART_OF"];
+
+// Build a forest from the graph: each node gets at most one parent.
+// Returns { roots:[id], childrenOf:Map<id,id[]>, parentOf:Map<id,id> }
+function buildHierarchy(){
+  const childrenOf = new Map();
+  const parentOf = new Map();
+  state.graph.nodes.forEach(n => childrenOf.set(n.id, []));
+  // Walk edges and assign parents.
+  state.graph.edges.forEach(ed => {
+    let parent = null, child = null;
+    if (HIER_DOWN_TYPES.includes(ed.type)){ parent = ed.source; child = ed.target; }
+    else if (HIER_UP_TYPES.includes(ed.type)){ parent = ed.target; child = ed.source; }
+    if (!parent || !child || parent === child) return;
+    if (!childrenOf.has(parent) || !childrenOf.has(child)) return;
+    if (parentOf.has(child)) return; // first parent wins; avoids cycles & ambiguity
+    parentOf.set(child, parent);
+    childrenOf.get(parent).push(child);
+  });
+  // Pick roots: prefer Executive Office / Front Office; otherwise any node without a parent.
+  const allRoots = state.graph.nodes
+    .filter(n => !parentOf.has(n.id))
+    .map(n => n.id);
+  // Sort roots so structural top-of-org nodes come first.
+  const rootRank = id => {
+    const n = state.graph.nodes.find(x => x.id === id);
+    if (!n) return 9;
+    if (n.type === "Executive Office") return 0;
+    if (n.type === "Front Office") return 1;
+    if (n.type === "Directorate") return 2;
+    if (n.type === "Office") return 3;
+    return 4;
+  };
+  allRoots.sort((a,b) => rootRank(a) - rootRank(b));
+  return { roots: allRoots, childrenOf, parentOf };
+}
+
+// Sort each child list so siblings render in a stable, sensible order.
+function sortChildrenStable(childrenOf){
+  const typeOrder = ["Directorate","Front Office","Office","System","Platform","Application","SharePoint Site","Microsoft Team","O365 Group","Mailbox","Person","Role","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset","Document","Requirement","Decision","Vendor","Service","Environment","Other"];
+  childrenOf.forEach(arr => {
+    arr.sort((a,b) => {
+      const na = state.graph.nodes.find(n=>n.id===a);
+      const nb = state.graph.nodes.find(n=>n.id===b);
+      const ra = typeOrder.indexOf(na ? na.type : "Other");
+      const rb = typeOrder.indexOf(nb ? nb.type : "Other");
+      if (ra !== rb) return (ra<0?99:ra) - (rb<0?99:rb);
+      return (na ? na.label : "").localeCompare(nb ? nb.label : "");
+    });
+  });
+}
+
+// Compute subtree "width" in units of leaf slots.
+// Pre-populating memo[id] before recursing breaks any accidental hierarchy cycles.
+function subtreeLeaves(id, childrenOf, memo){
+  if (memo.has(id)) return memo.get(id);
+  memo.set(id, 1);
+  const kids = childrenOf.get(id) || [];
+  let w;
+  if (!kids.length){ w = 1; }
+  else { w = 0; kids.forEach(k => w += subtreeLeaves(k, childrenOf, memo)); }
+  memo.set(id, w);
+  return w;
+}
+
 function applyLayout(name){
   state.layout = name;
   document.getElementById("footer-layout").textContent = "Layout: " + name;
+  // Show/hide the cluster-attr picker.
+  const clusterField = document.getElementById("cluster-attr-field");
+  if (clusterField) clusterField.style.display = (name === "cluster") ? "" : "none";
   const w = canvas.clientWidth, h = canvas.clientHeight;
   const cx = w/2, cy = h/2;
   ensurePositions();
 
-  if (name === "hierarchical"){
-    const levels = new Map(), visited = new Set(), queue = [];
-    state.graph.nodes.filter(n => n.type==="Executive Office" || n.type==="Front Office")
-      .forEach(n => { levels.set(n.id,0); visited.add(n.id); queue.push(n.id); });
-    if (!queue.length && state.graph.nodes[0]){
-      const id = state.graph.nodes[0].id;
-      queue.push(id); levels.set(id,0); visited.add(id);
-    }
-    while (queue.length){
-      const id = queue.shift(), lvl = levels.get(id);
-      state.graph.edges.forEach(ed=>{
-        let child = null;
-        if (ed.source===id && ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","OWNS","MANAGES"].includes(ed.type)) child = ed.target;
-        else if (ed.target===id && (ed.type==="REPORTS_TO" || ed.type==="PART_OF")) child = ed.source;
-        if (child && !visited.has(child)){ visited.add(child); levels.set(child,lvl+1); queue.push(child); }
-      });
-    }
-    let maxLvl=0; levels.forEach(v=>{ if(v>maxLvl)maxLvl=v; });
-    state.graph.nodes.forEach(n=>{ if(!levels.has(n.id)) levels.set(n.id, maxLvl+1); });
-    maxLvl=0; levels.forEach(v=>{ if(v>maxLvl)maxLvl=v; });
-    const byLvl = new Map();
-    state.graph.nodes.forEach(n=>{
-      const lvl = levels.get(n.id);
-      if (!byLvl.has(lvl)) byLvl.set(lvl, []);
-      byLvl.get(lvl).push(n);
-    });
-    const ySp = Math.max(170, (h-120)/Math.max(1,maxLvl));
-    byLvl.forEach((arr, lvl)=>{
-      const count = arr.length;
-      const totalW = Math.max(w*1.3, count*170);
-      const startX = cx - totalW/2;
-      arr.forEach((n,i)=>{
-        const p = state.positions.get(n.id);
-        p.x = startX + (count===1 ? totalW/2 : (totalW/(count-1))*i);
-        p.y = 90 + lvl*ySp;
-        p.vx = p.vy = 0;
-      });
-    });
+  if (name === "hierarchical" || name === "hierarchical-lr"){
+    layoutTree(name === "hierarchical-lr" ? "LR" : "TB", w, h);
+  } else if (name === "radial"){
+    layoutRadial(w, h);
+  } else if (name === "cluster"){
+    layoutCluster(w, h, state.clusterAttr || "type");
   } else if (name === "concentric"){
     const ringOrder = [
       ["Executive Office"],["Front Office"],["Directorate"],["Office"],
@@ -1854,8 +1907,6 @@ function applyLayout(name){
     const maxR = Math.min(w,h)/2 - 40;
     ring.forEach((arr, r)=>{
       const radius = r===0 ? 0 : (maxR * r / (ringOrder.length-1));
-      // pad slightly so rings don't touch
-      ;
       arr.forEach((n,i)=>{
         const p = state.positions.get(n.id);
         const angle = (i/arr.length)*Math.PI*2 + r*0.2;
@@ -1878,6 +1929,332 @@ function applyLayout(name){
     });
   }
   requestRedraw();
+}
+
+/* Top-down (TB) or left-right (LR) tidy tree layout.
+   Roots are split into multi-node trees (rendered properly with children
+   centered under parents) and singleton roots (packed into their own row
+   below the trees for TB, or column to the right for LR). The dominant
+   tree comes first so it owns the visual center. */
+function layoutTree(axis, w, h){
+  const { roots, childrenOf } = buildHierarchy();
+  sortChildrenStable(childrenOf);
+  const leafMemo = new Map();
+  roots.forEach(r => subtreeLeaves(r, childrenOf, leafMemo));
+
+  // Partition: multi-node trees vs. singletons.
+  const treeRoots = [];
+  const singletonRoots = [];
+  roots.forEach(r => {
+    if ((childrenOf.get(r) || []).length > 0) treeRoots.push(r);
+    else singletonRoots.push(r);
+  });
+  // Sort tree roots largest-first so the dominant one anchors the layout.
+  treeRoots.sort((a,b) => (leafMemo.get(b)||1) - (leafMemo.get(a)||1));
+  // If every root is a singleton, fall back to placing them all as bare roots.
+  const effective = treeRoots.length ? treeRoots : singletonRoots.slice();
+  const remainingSingletons = treeRoots.length ? singletonRoots : [];
+
+  // Spacing.
+  const depthSpacing = axis === "TB" ? 150 : 230;  // LR needs more horizontal room for labels
+  const leafSpacing  = axis === "TB" ? 180 : 95;
+  const rootGap = leafSpacing * 0.8;
+
+  let crossCursor = 0;
+  let maxDepthUsed = 0;
+  const placed = new Set();
+  const place = (id, depth) => {
+    if (placed.has(id)) return;
+    placed.add(id);
+    if (depth > maxDepthUsed) maxDepthUsed = depth;
+    const kids = (childrenOf.get(id) || []).filter(k => !placed.has(k));
+    let myCenterCross;
+    if (!kids.length){
+      myCenterCross = crossCursor + leafSpacing/2;
+      crossCursor += leafSpacing;
+    } else {
+      const startCross = crossCursor;
+      kids.forEach(k => place(k, depth + 1));
+      const endCross = crossCursor;
+      myCenterCross = (startCross + endCross) / 2;
+    }
+    const along = depth * depthSpacing;
+    const p = state.positions.get(id);
+    if (p){
+      if (axis === "TB"){ p.x = myCenterCross; p.y = along; }
+      else { p.x = along; p.y = myCenterCross; }
+      p.vx = p.vy = 0;
+    }
+  };
+  effective.forEach((r, i) => {
+    if (i > 0) crossCursor += rootGap;
+    place(r, 0);
+  });
+  const treeCrossEnd = crossCursor;
+
+  // Pack singleton roots into a row past the trees (with a gap of one+ depth-step).
+  if (remainingSingletons.length){
+    const singletonPitch = leafSpacing * 0.65;
+    const targetCrossWidth = Math.max(treeCrossEnd, w * 1.1);
+    const cols = Math.max(1, Math.min(remainingSingletons.length, Math.floor(targetCrossWidth / singletonPitch)));
+    const rowsNeeded = Math.ceil(remainingSingletons.length / cols);
+    const rowPitch = depthSpacing * 0.6;
+    const rowBaseAlong = (maxDepthUsed + 2) * depthSpacing; // 2-step gap below the trees
+    const rowStartCross = (treeCrossEnd - cols * singletonPitch) / 2 + singletonPitch/2;
+    remainingSingletons.forEach((id, i) => {
+      const col = i % cols, row = Math.floor(i / cols);
+      const crossPos = rowStartCross + col * singletonPitch;
+      const alongPos = rowBaseAlong + row * rowPitch;
+      const p = state.positions.get(id);
+      if (!p) return;
+      placed.add(id);
+      if (axis === "TB"){ p.x = crossPos; p.y = alongPos; }
+      else { p.x = alongPos; p.y = crossPos; }
+      p.vx = p.vy = 0;
+    });
+  }
+
+  // Center the whole layout in the viewport.
+  let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+  state.graph.nodes.forEach(n => {
+    const p = state.positions.get(n.id); if (!p) return;
+    if (p.x<minX) minX=p.x; if (p.x>maxX) maxX=p.x;
+    if (p.y<minY) minY=p.y; if (p.y>maxY) maxY=p.y;
+  });
+  if (isFinite(minX)){
+    const cxNow = (minX+maxX)/2, cyNow=(minY+maxY)/2;
+    const dx = w/2 - cxNow, dy = h/2 - cyNow;
+    state.graph.nodes.forEach(n => {
+      const p = state.positions.get(n.id); if (!p) return;
+      p.x += dx; p.y += dy;
+    });
+  }
+}
+
+/* Radial tree:
+   - The dominant root (largest subtree by leaf count) goes at the canvas center
+     and gets the full 2π — each depth is one ring outward, subtrees get angular
+     wedges sized to their leaf count (with a min-floor so singletons aren't
+     squeezed into invisible slivers).
+   - Each ring's radius is chosen based on actual crowding at that depth, not a
+     uniform ringStep. This avoids ring-circumference shortfalls when many nodes
+     live at the same depth.
+   - Other roots become "satellite" trees in an outer band, each owning their own
+     angular slice of the perimeter. */
+function layoutRadial(w, h){
+  const { roots, childrenOf } = buildHierarchy();
+  sortChildrenStable(childrenOf);
+  const leafMemo = new Map();
+  roots.forEach(r => subtreeLeaves(r, childrenOf, leafMemo));
+  if (!roots.length) return;
+
+  // Pick dominant root by leaf count.
+  const sorted   = roots.slice().sort((a,b) => (leafMemo.get(b)||1) - (leafMemo.get(a)||1));
+  const dominant = sorted[0];
+  const others   = sorted.slice(1);
+
+  // ---- 1) Walk the dominant tree, computing each node's wedge in radians ----
+  // Wedge allocation uses the same min-frac rule as `place()` below so the
+  // crowding heuristic matches the actual placement.
+  const wedgeOf = new Map();
+  const depthOf = new Map();
+  if (dominant){
+    wedgeOf.set(dominant, Math.PI * 2);
+    depthOf.set(dominant, 0);
+    const queue = [dominant];
+    const visited = new Set([dominant]);
+    while (queue.length){
+      const id  = queue.shift();
+      const d   = depthOf.get(id);
+      const par = wedgeOf.get(id);
+      const kids = (childrenOf.get(id) || []).filter(k => !visited.has(k));
+      if (!kids.length) continue;
+      const weights = kids.map(k => leafMemo.get(k) || 1);
+      const totalW  = weights.reduce((s,x) => s + x, 0) || 1;
+      const minFrac = 0.6 / kids.length;
+      const fracs   = weights.map(w => Math.max(w / totalW, minFrac));
+      const fracSum = fracs.reduce((s,x) => s + x, 0);
+      kids.forEach((k, i) => {
+        wedgeOf.set(k, par * (fracs[i] / fracSum));
+        depthOf.set(k, d + 1);
+        visited.add(k);
+        queue.push(k);
+      });
+    }
+  }
+  let domDepth = 0;
+  depthOf.forEach(d => { if (d > domDepth) domDepth = d; });
+
+  // ---- 2) Compute required radius per depth ----
+  // For each node at depth d with wedge w, it needs r >= minArc / w so that the
+  // arc spacing within its own wedge is at least minArc. Take max across nodes
+  // at the same depth.
+  const minArc  = 55;  // target arc-length between siblings on the same ring
+  const minStep = 70;  // minimum radial step between consecutive rings
+  const reqR = new Map();
+  reqR.set(0, 0);
+  for (let d = 1; d <= domDepth; d++) reqR.set(d, 0);
+  depthOf.forEach((d, id) => {
+    if (d === 0) return;
+    const w = wedgeOf.get(id);
+    if (!w || w <= 0) return;
+    const need = minArc / w;
+    if (need > reqR.get(d)) reqR.set(d, need);
+  });
+  const radiusAt = new Map();
+  radiusAt.set(0, 0);
+  for (let d = 1; d <= domDepth; d++){
+    radiusAt.set(d, Math.max(radiusAt.get(d-1) + minStep, reqR.get(d)));
+  }
+
+  // ---- 3) Satellite band (other roots) ----
+  let satMaxDepth = 0;
+  others.forEach(o => {
+    const stack = [[o, 0]];
+    const seen = new Set();
+    while (stack.length){
+      const [id, d] = stack.pop();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (d > satMaxDepth) satMaxDepth = d;
+      (childrenOf.get(id) || []).forEach(k => stack.push([k, d+1]));
+    }
+  });
+  const gap = others.length > 0 ? 1 : 0;
+  if (others.length){
+    const satBaseDepth = domDepth + gap + 1;
+    // Required radius for the satellite ring: room for `others.length` items at minArc spacing.
+    const satReqR = others.length * minArc / (Math.PI * 2);
+    radiusAt.set(satBaseDepth, Math.max(radiusAt.get(domDepth) + minStep * 1.5, satReqR));
+    for (let d = 1; d <= satMaxDepth; d++){
+      radiusAt.set(satBaseDepth + d, radiusAt.get(satBaseDepth + d - 1) + minStep);
+    }
+  }
+
+  // ---- 4) Place nodes ----
+  const cx = w/2, cy = h/2;
+  const placed = new Set();
+  const placeAt = (id, depth, angle) => {
+    const r = radiusAt.get(depth) || 0;
+    const p = state.positions.get(id);
+    if (p){
+      p.x = cx + Math.cos(angle - Math.PI/2) * r;
+      p.y = cy + Math.sin(angle - Math.PI/2) * r;
+      p.vx = p.vy = 0;
+    }
+  };
+  const place = (id, depth, angleStart, angleEnd) => {
+    if (placed.has(id)) return;
+    placed.add(id);
+    placeAt(id, depth, (angleStart + angleEnd)/2);
+    const kids = (childrenOf.get(id) || []).filter(k => !placed.has(k));
+    if (!kids.length) return;
+    const weights = kids.map(k => leafMemo.get(k) || 1);
+    const totalW  = weights.reduce((s,x) => s + x, 0) || 1;
+    const minFrac = 0.6 / kids.length;
+    const fracs   = weights.map(w => Math.max(w / totalW, minFrac));
+    const fracSum = fracs.reduce((s,x) => s + x, 0);
+    let cursor = angleStart;
+    kids.forEach((k, i) => {
+      const span = (angleEnd - angleStart) * (fracs[i] / fracSum);
+      place(k, depth + 1, cursor, cursor + span);
+      cursor += span;
+    });
+  };
+
+  if (dominant) place(dominant, 0, 0, Math.PI * 2);
+
+  if (others.length){
+    const baseDepth = domDepth + gap + 1;
+    const minSliceFrac = 0.6 / others.length;
+    const weights = others.map(o => Math.max(leafMemo.get(o) || 1, 0.5));
+    const totalW  = weights.reduce((s,x) => s + x, 0);
+    const slices  = weights.map(w => Math.max(w / totalW, minSliceFrac));
+    const slicesSum = slices.reduce((s,x) => s + x, 0);
+    let cursor = 0;
+    others.forEach((o, i) => {
+      const span = Math.PI * 2 * (slices[i] / slicesSum);
+      place(o, baseDepth, cursor, cursor + span);
+      cursor += span;
+    });
+  }
+}
+
+/* Group by attribute: groups laid out on a coarse grid sized to the canvas
+   aspect. Inside each group's cell:
+     - 1 member  → centered dot
+     - 2–8       → ring around the centroid
+     - >8        → small grid filling the cell (rings get angularly tight) */
+function layoutCluster(w, h, attr){
+  const groups = new Map();
+  const labelOf = n => {
+    if (attr === "type") return n.type || "Other";
+    if (attr === "parent") return n.parent || "(no parent)";
+    return n[attr] || "(none)";
+  };
+  state.graph.nodes.forEach(n => {
+    const key = labelOf(n);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(n);
+  });
+  const keys = Array.from(groups.keys()).sort((a,b)=>{
+    const da = groups.get(b).length - groups.get(a).length;
+    return da !== 0 ? da : String(a).localeCompare(String(b));
+  });
+  const G = keys.length || 1;
+  const cols = Math.max(1, Math.round(Math.sqrt(G * (w/h))));
+  const rows = Math.ceil(G / cols);
+  const cellW = (w - 60) / cols;
+  const cellH = (h - 60) / rows;
+
+  keys.forEach((key, idx) => {
+    const c = idx % cols, r = Math.floor(idx / cols);
+    const gx = 30 + cellW/2 + c*cellW;
+    const gy = 30 + cellH/2 + r*cellH;
+    const arr = groups.get(key);
+    const count = arr.length;
+    const maxInner = Math.min(cellW, cellH) / 2 - 24;
+
+    if (count === 1){
+      const p = state.positions.get(arr[0].id);
+      if (p){ p.x = gx; p.y = gy; p.vx = p.vy = 0; }
+      return;
+    }
+
+    if (count <= 8){
+      // Ring of members around the centroid.
+      const ringR = Math.min(maxInner, 22 + Math.sqrt(count) * 18);
+      arr.forEach((n, i) => {
+        const p = state.positions.get(n.id);
+        if (!p) return;
+        const a = (i / count) * Math.PI * 2 - Math.PI/2;
+        p.x = gx + Math.cos(a) * ringR;
+        p.y = gy + Math.sin(a) * ringR;
+        p.vx = p.vy = 0;
+      });
+      return;
+    }
+
+    // >8: arrange in a mini-grid that fills the cell.
+    const padX = 18, padY = 18;
+    const innerW = Math.max(40, cellW - 2*padX);
+    const innerH = Math.max(40, cellH - 2*padY);
+    // Choose mini-grid columns to match the cell's aspect ratio.
+    const inCols = Math.max(1, Math.round(Math.sqrt(count * (innerW / innerH))));
+    const inRows = Math.ceil(count / inCols);
+    const stepX = inCols > 1 ? innerW / (inCols - 1) : 0;
+    const stepY = inRows > 1 ? innerH / (inRows - 1) : 0;
+    const startX = gx - innerW/2;
+    const startY = gy - innerH/2;
+    arr.forEach((n, i) => {
+      const p = state.positions.get(n.id);
+      if (!p) return;
+      const ic = i % inCols, ir = Math.floor(i / inCols);
+      p.x = inCols > 1 ? startX + ic * stepX : gx;
+      p.y = inRows > 1 ? startY + ir * stepY : gy;
+      p.vx = p.vy = 0;
+    });
+  });
 }
 
 /* ----- Force simulation ----- */
@@ -4211,6 +4588,17 @@ function wireUp(){
     applyLayout(e.target.value);
     setTimeout(fitGraph, 60);
   };
+  const clusterAttrSel = document.getElementById("cluster-attr");
+  if (clusterAttrSel){
+    clusterAttrSel.value = state.clusterAttr || "type";
+    clusterAttrSel.onchange = e=>{
+      state.clusterAttr = e.target.value;
+      if (state.layout === "cluster"){
+        applyLayout("cluster");
+        setTimeout(fitGraph, 60);
+      }
+    };
+  }
   document.getElementById("btn-fit").onclick = fitGraph;
   document.getElementById("btn-reset-view").onclick = resetView;
   document.getElementById("btn-neighborhood").onclick = ()=>{
