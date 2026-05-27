@@ -1437,7 +1437,7 @@
 
 /* ---------- TYPE METADATA ---------- */
 const NODE_TYPES = [
-  "Executive Office","Front Office","Directorate","Office","Person","Role",
+  "Executive Office","Front Office","Directorate","Office","Team","Person","Role",
   "System","Platform","Application","SharePoint Site","Microsoft Team","O365 Group",
   "Mailbox","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset",
   "Document","Requirement","Decision","Vendor","Service","Environment","Other"
@@ -1456,6 +1456,7 @@ const TYPE_STYLE = {
   "Front Office":          { color:"#A78BFA", size:25, shape:"hex",     icon:"" }, // building
   "Directorate":           { color:"#38BDF8", size:23, shape:"hex",     icon:"" }, // sitemap
   "Office":                { color:"#60A5FA", size:20, shape:"round",   icon:"" }, // briefcase
+  "Team":                  { color:"#7DD3FC", size:17, shape:"round",   icon:"" }, // people-group
   "Person":                { color:"#34D399", size:14, shape:"round",   icon:"" }, // user
   "Role":                  { color:"#5EEAD4", size:13, shape:"round",   icon:"" }, // id-badge
   "System":                { color:"#FB923C", size:19, shape:"square",  icon:"" }, // server
@@ -1584,7 +1585,7 @@ function collapseAllParents(){
   if (!state.graph.collapsedNodes) state.graph.collapsedNodes = [];
   // Collapse only the topmost parents in each branch so we get a clean
   // single-level view rather than double-counting nested collapses.
-  const parentCandidates = ["Executive Office","Front Office","Directorate","Office"];
+  const parentCandidates = ["Executive Office","Front Office","Directorate","Office","Team"];
   let added = 0;
   state.graph.nodes.forEach(n => {
     if (!parentCandidates.includes(n.type)) return;
@@ -3853,22 +3854,24 @@ function nodeFormHtml(n){
   const dlDirectorate= opt(filt(x=>x.type==="Directorate"));
   const dlOffice     = opt(filt(x=>x.type==="Office"||x.type==="Front Office"||x.type==="Executive Office"||x.type==="Directorate"));
   const dlPlatform   = opt(filt(x=>x.type==="Platform"||x.type==="System"));
+  const dlTeam       = opt(filt(x=>x.type==="Team"));
   const dlPerson     = opt(filt(x=>x.type==="Person"));
   const dlStatus = ["Active","Inactive","Planned","Pilot","Retired","Deprecated","Proposed"].map(s=>`<option value="${s}"></option>`).join("");
   return `
     <datalist id="dl-all">${dlAll}</datalist>
     <datalist id="dl-directorate">${dlDirectorate}</datalist>
     <datalist id="dl-office">${dlOffice}</datalist>
+    <datalist id="dl-team">${dlTeam}</datalist>
     <datalist id="dl-platform">${dlPlatform}</datalist>
     <datalist id="dl-person">${dlPerson}</datalist>
     <datalist id="dl-status">${dlStatus}</datalist>
     <div class="form-callout">
       <i class="fa-solid fa-circle-info"></i>
-      <span><strong>Tip:</strong> Filling <em>Parent, Reports to, Directorate, Office, Platform, Owner,</em> or <em>Lead</em> with an existing node name auto-creates the matching graph edge (CONTAINS / REPORTS_TO / HOSTED_ON / OWNS / RESPONSIBLE_FOR).</span>
+      <span><strong>Tip:</strong> Filling <em>Parent, Reports to, Directorate, Office, Team, Platform, Owner,</em> or <em>Lead</em> with an existing node name auto-creates the matching graph edge (CONTAINS / REPORTS_TO / HOSTED_ON / OWNS / RESPONSIBLE_FOR).</span>
     </div>
     <div class="form-callout warn">
       <i class="fa-solid fa-triangle-exclamation"></i>
-      <span><strong>Heads-up:</strong> <em>Parent</em>, <em>Directorate</em>, and <em>Office</em> all create <strong>CONTAINS</strong> edges. Fill only the most specific one per node &mdash; <em>Directorate</em> for Offices, <em>Office</em> for People, <em>Parent</em> for everything else. Filling two creates duplicate edges.</span>
+      <span><strong>Heads-up:</strong> <em>Parent</em>, <em>Directorate</em>, <em>Office</em>, and <em>Team</em> all create <strong>CONTAINS</strong> edges. Fill only the most specific one per node &mdash; <em>Directorate</em> for Offices, <em>Office</em> for Teams (or for People without a team), <em>Team</em> for People who belong to a team, <em>Parent</em> for everything else. Filling two creates duplicate edges.</span>
     </div>
     <div class="field"><label for="f-id">ID (unique)</label><input id="f-id" type="text" value="${escapeHtml(n.id||"")}" ${n.id?'readonly':''} placeholder="auto-generated if blank"/></div>
     <div class="field"><label for="f-label">Label (display name)</label><input id="f-label" type="text" value="${escapeHtml(n.label||"")}" placeholder="e.g. Customer Engagement Office"/></div>
@@ -3882,6 +3885,7 @@ function nodeFormHtml(n){
     <div class="field"><label for="f-reportsTo">Reports to <span class="field-hint">creates a REPORTS_TO edge if matches a node</span></label><input id="f-reportsTo" type="text" list="dl-all" value="${escapeHtml(n.reportsTo||"")}" placeholder="Pick or type…"/></div>
     <div class="field"><label for="f-directorate">Directorate <span class="field-hint">creates a CONTAINS edge if matches a node</span></label><input id="f-directorate" type="text" list="dl-directorate" value="${escapeHtml(n.directorate||"")}" placeholder="Pick a directorate…"/></div>
     <div class="field"><label for="f-office">Office <span class="field-hint">creates a CONTAINS edge if matches a node</span></label><input id="f-office" type="text" list="dl-office" value="${escapeHtml(n.office||"")}" placeholder="Pick an office…"/></div>
+    <div class="field"><label for="f-team">Team <span class="field-hint">creates a CONTAINS edge if matches a node</span></label><input id="f-team" type="text" list="dl-team" value="${escapeHtml(n.team||"")}" placeholder="Pick a team…"/></div>
     <div class="field"><label for="f-platform">Platform <span class="field-hint">creates a HOSTED_ON edge if matches a node</span></label><input id="f-platform" type="text" list="dl-platform" value="${escapeHtml(n.platform||"")}" placeholder="Pick a platform…"/></div>
     <div class="field"><label for="f-url">URL</label><input id="f-url" type="url" value="${escapeHtml(n.url||"")}" placeholder="https://..."/></div>
     <div class="field"><label for="f-tags">Tags (comma separated)</label><input id="f-tags" type="text" value="${escapeHtml((n.tags||[]).join(", "))}"/></div>
@@ -3902,6 +3906,7 @@ function readNodeForm(){
     parent: document.getElementById("f-parent").value,
     directorate: document.getElementById("f-directorate").value,
     office: document.getElementById("f-office").value,
+    team: document.getElementById("f-team").value,
     platform: document.getElementById("f-platform").value,
     url: document.getElementById("f-url").value,
     tags: document.getElementById("f-tags").value.split(",").map(s=>s.trim()).filter(Boolean),
@@ -4018,6 +4023,9 @@ function guessEdgeType(s, t){
   if (s.type === "Office" && t.type === "O365 Group") return "HAS_O365_GROUP";
   if (s.type === "Office" && t.type === "Mailbox") return "HAS_MAILBOX";
   if (s.type === "Office" && t.type === "Person") return "CONTAINS";
+  if (s.type === "Office" && t.type === "Team") return "CONTAINS";
+  if (s.type === "Team" && t.type === "Person") return "CONTAINS";
+  if (s.type === "Team" && t.type === "Role") return "CONTAINS";
   if (t.type === "Platform" && s.type === "Application") return "HOSTED_ON";
   if (t.type === "System" && s.type === "Application") return "HOSTED_ON";
   if (s.type === "Directorate" && t.type === "Office") return "CONTAINS";
@@ -4079,6 +4087,7 @@ const SYNC_RULES = [
   { field:"parent",       otherIsSource:true,  edgeType:"CONTAINS"        },
   { field:"directorate",  otherIsSource:true,  edgeType:"CONTAINS"        },
   { field:"office",       otherIsSource:true,  edgeType:"CONTAINS"        },
+  { field:"team",         otherIsSource:true,  edgeType:"CONTAINS"        },
   { field:"platform",     otherIsSource:false, edgeType:"HOSTED_ON"       },
   { field:"owner",        otherIsSource:true,  edgeType:"OWNS"            },
   { field:"lead",         otherIsSource:true,  edgeType:"RESPONSIBLE_FOR", personOnly:true },
@@ -5164,7 +5173,7 @@ function openHelp(){
    no persistence, no edits.
    ============================================================================ */
 const METRICS_DEPENDENCY_EDGES = ["DEPENDS_ON","USES","HOSTED_ON","INTEGRATES_WITH","CONNECTED_TO"];
-const METRICS_ORG_TYPES    = ["Executive Office","Front Office","Directorate","Office"];
+const METRICS_ORG_TYPES    = ["Executive Office","Front Office","Directorate","Office","Team"];
 const METRICS_PEOPLE_TYPES = ["Person","Role"];
 const METRICS_TECH_TYPES   = ["System","Platform","Application","API","Service"];
 const METRICS_COLLAB_TYPES = ["SharePoint Site","Microsoft Team","O365 Group","Mailbox"];
