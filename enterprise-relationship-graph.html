@@ -1713,26 +1713,67 @@ const ICON_REGISTRY = {
   "docker":     { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Docker" },
   "apple":      { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Apple" },
   "linux":      { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Linux" },
-  // Solid stand-ins for products without dedicated brand icons
-  "sharepoint":  { font:FA_SOLID_FONT, weight:900, unicode:"", label:"SharePoint (share)" },
-  "teams":       { font:FA_SOLID_FONT, weight:900, unicode:"", label:"Teams (users)" },
-  "power-bi":    { font:FA_SOLID_FONT, weight:900, unicode:"", label:"Power BI (chart)" },
-  "power-automate":{ font:FA_SOLID_FONT, weight:900, unicode:"", label:"Power Automate (bolt)" },
-  "servicenow":  { font:FA_SOLID_FONT, weight:900, unicode:"", label:"ServiceNow (gears)" },
-  "arcgis":      { font:FA_SOLID_FONT, weight:900, unicode:"", label:"ArcGIS (map)" }
+  // SVG brand icons for the M365 stack (single-color, render in iconFgFor color)
+  "sharepoint":     { kind:"svg", viewBox:"0 0 24 24", svg:"M12 3a3 3 0 100 6 3 3 0 000-6zM5 14a3 3 0 100 6 3 3 0 000-6zM19 14a3 3 0 100 6 3 3 0 000-6zM11.4 8.6l-4.5 5.5 1.5 1.2 4.5-5.5zM12.6 8.6l4.5 5.5-1.5 1.2-4.5-5.5z", label:"SharePoint" },
+  "teams":          { kind:"svg", viewBox:"0 0 24 24", svg:"M8.5 4a2.8 2.8 0 100 5.6 2.8 2.8 0 000-5.6zM15.5 5.5a2.3 2.3 0 100 4.6 2.3 2.3 0 000-4.6zM4 15c0-2.5 2-4.5 4.5-4.5S13 12.5 13 15v3H4v-3zM14 13c0-1.7 1.3-3 3-3s3 1.3 3 3v5h-6v-5z", label:"Microsoft Teams" },
+  "onedrive":       { kind:"svg", viewBox:"0 0 24 24", svg:"M7 18a4 4 0 010-8c.2 0 .4 0 .6.1A5.5 5.5 0 0118 9a3.5 3.5 0 011 6.9c-.2.1-.4.1-.7.1H7z", label:"OneDrive" },
+  "outlook":        { kind:"svg", viewBox:"0 0 24 24", svg:"M3 6h18v12H3V6zm1.5 1.5l7.5 5.5 7.5-5.5h-15z", label:"Outlook" },
+  "word":           { kind:"svg", viewBox:"0 0 24 24", svg:"M5 3h11l4 4v14H5V3zm2 7v2h10v-2H7zm0 4v2h10v-2H7zm0 4v2h7v-2H7z", label:"Word" },
+  "excel":          { kind:"svg", viewBox:"0 0 24 24", svg:"M3 5h18v14H3V5zm0 3.5h18v1H3v-1zm0 4h18v1H3v-1zm0 4h18v1H3v-1zM7.5 5h1v14h-1V5zm5 0h1v14h-1V5zm5 0h1v14h-1V5z", label:"Excel" },
+  "powerpoint":     { kind:"svg", viewBox:"0 0 24 24", svg:"M4 3h16v18H4V3zm3 14v-5h2v5H7zm4 0V8h2v9h-2zm4 0v-3h2v3h-2z", label:"PowerPoint" },
+  "onenote":        { kind:"svg", viewBox:"0 0 24 24", svg:"M5 3h13v18H5V3zM2 5.5h2v2H2v-2zm0 4.5h2v2H2v-2zm0 4.5h2v2H2v-2zm0 4.5h2v2H2v-2z", label:"OneNote" },
+  "power-bi":       { kind:"svg", viewBox:"0 0 24 24", svg:"M5 19V9h3v10H5zm6 0V4h3v15h-3zm6 0v-7h3v7h-3z", label:"Power BI" },
+  "power-automate": { kind:"svg", viewBox:"0 0 24 24", svg:"M13 2L4 13h6l-1 9 9-12h-6l1-8z", label:"Power Automate" },
+  // Other product stand-ins (still using FA solid icons)
+  "servicenow":     { font:FA_SOLID_FONT, weight:900, unicode:"", label:"ServiceNow (gears)" },
+  "arcgis":         { font:FA_SOLID_FONT, weight:900, unicode:"", label:"ArcGIS (map)" }
 };
-// Resolve a node's icon: returns { font, weight, unicode }
+// Resolve a node's icon. Returns either:
+//   { kind:"fa",  font, weight, unicode }   - Font Awesome glyph
+//   { kind:"svg", svg, viewBox }             - inline SVG path data
 function iconSpec(node){
+  const normalize = entry => {
+    if (entry && entry.kind === "svg"){
+      return { kind:"svg", svg:entry.svg, viewBox:entry.viewBox || "0 0 24 24" };
+    }
+    return { kind:"fa", font:entry.font, weight:entry.weight, unicode:entry.unicode };
+  };
   if (node && node.icon){
     const key = String(node.icon).trim().toLowerCase();
-    // accept either the registry key directly ("microsoft"), or an FA class string ("fa-brands fa-microsoft")
-    if (ICON_REGISTRY[key]) return ICON_REGISTRY[key];
+    if (ICON_REGISTRY[key]) return normalize(ICON_REGISTRY[key]);
     const m = key.match(/fa-(?:brands|solid|regular)\s+fa-([\w-]+)/);
-    if (m && ICON_REGISTRY[m[1]]) return ICON_REGISTRY[m[1]];
+    if (m && ICON_REGISTRY[m[1]]) return normalize(ICON_REGISTRY[m[1]]);
   }
   // fall back to type default (always FA solid)
   const ts = typeStyle(node ? node.type : "Other");
-  return { font: FA_SOLID_FONT, weight: 900, unicode: ts.icon };
+  return { kind:"fa", font: FA_SOLID_FONT, weight: 900, unicode: ts.icon };
+}
+
+// Path2D cache so we don't re-parse SVG strings on every frame
+const _iconPathCache = new Map();
+function getIconPath(svgString){
+  if (!_iconPathCache.has(svgString)){
+    try { _iconPathCache.set(svgString, new Path2D(svgString)); }
+    catch (e){ console.warn("Bad SVG path:", e); _iconPathCache.set(svgString, null); }
+  }
+  return _iconPathCache.get(svgString);
+}
+
+// Draw an SVG-kind icon spec on a canvas context, centered at (x, y) and
+// scaled so its viewBox fits within iconSize. fillStyle is set to color.
+function drawIconSvg(ctx, spec, x, y, iconSize, color){
+  const path = getIconPath(spec.svg);
+  if (!path) return;
+  const vb = (spec.viewBox || "0 0 24 24").split(/\s+/).map(Number);
+  const vbX = vb[0], vbY = vb[1], vbW = vb[2], vbH = vb[3];
+  const scale = iconSize / Math.max(vbW, vbH);
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  ctx.translate(-(vbX + vbW/2), -(vbY + vbH/2));
+  ctx.fill(path);
+  ctx.restore();
 }
 
 /* ---------- SAMPLE DATA ---------- */
@@ -2932,13 +2973,17 @@ function render(){
     // icon overlay (uses per-node override or type default)
     if (state.fontsReady && t.scale > 0.35 && !dim){
       const spec = iconSpec(n);
-      if (spec.unicode){
+      const iconSize = Math.max(8, size*0.85);
+      const fg = iconFgFor(ts.color);
+      const yOff = (ts.shape==="tri" ? size*0.15 : 0);
+      if (spec.kind === "svg"){
+        drawIconSvg(ctx, spec, p.x, p.y + yOff, iconSize, fg);
+      } else if (spec.unicode){
         ctx.save();
-        const iconSize = Math.max(8, size*0.85);
         ctx.font = `${spec.weight} ${iconSize}px ${spec.font}`;
         ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        ctx.fillStyle = iconFgFor(ts.color);
-        ctx.fillText(spec.unicode, p.x, p.y + (ts.shape==="tri" ? size*0.15 : 0));
+        ctx.fillStyle = fg;
+        ctx.fillText(spec.unicode, p.x, p.y + yOff);
         ctx.restore();
       }
     }
@@ -4608,12 +4653,16 @@ function exportPng(){
     octx.fill(); octx.stroke();
     if (state.fontsReady){
       const spec = iconSpec(n);
-      if (spec.unicode){
-        const isz = Math.max(8, ts.size*0.85);
+      const isz = Math.max(8, ts.size*0.85);
+      const fg = iconFgFor(ts.color);
+      const yOff = (ts.shape==="tri" ? ts.size*0.15 : 0);
+      if (spec.kind === "svg"){
+        drawIconSvg(octx, spec, p.x, p.y + yOff, isz, fg);
+      } else if (spec.unicode){
         octx.font = `${spec.weight} ${isz}px ${spec.font}`;
         octx.textAlign = "center"; octx.textBaseline = "middle";
-        octx.fillStyle = iconFgFor(ts.color);
-        octx.fillText(spec.unicode, p.x, p.y + (ts.shape==="tri"?ts.size*0.15:0));
+        octx.fillStyle = fg;
+        octx.fillText(spec.unicode, p.x, p.y + yOff);
       }
     }
     octx.font = '500 12px "Inter", system-ui, sans-serif';
