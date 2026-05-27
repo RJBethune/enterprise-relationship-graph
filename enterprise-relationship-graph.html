@@ -122,6 +122,17 @@
   }
   .file-chip.dirty .fc-dirty{display:inline-block}
   .file-chip.dirty .fc-name{color:var(--warn)}
+  .modified-chip{
+    display:inline-flex; align-items:center; gap:6px;
+    background:transparent; border:1px solid var(--border);
+    border-radius:8px; padding:5px 10px;
+    color:var(--text-2); font-size:11.5px;
+    cursor:pointer; transition:background 0.15s, border-color 0.15s;
+    max-width:260px;
+  }
+  .modified-chip:hover{background:var(--card); border-color:var(--border-strong); color:var(--text)}
+  .modified-chip .mc-icon{color:var(--muted); font-size:11px}
+  .modified-chip .mc-text{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   /* drag-and-drop overlay */
   .drop-overlay{
     position:fixed; inset:0; z-index:300;
@@ -775,6 +786,10 @@
         <i class="fa-solid fa-file-code fc-icon" aria-hidden="true"></i>
         <span class="fc-name no-file" id="fc-name">no file open</span>
         <span class="fc-dirty" title="Unsaved changes"></span>
+      </button>
+      <button class="modified-chip" id="modified-chip" title="Click to update your name" aria-label="Last save info" style="display:none">
+        <i class="fa-solid fa-user-clock mc-icon" aria-hidden="true"></i>
+        <span class="mc-text"></span>
       </button>
       <div class="stats" id="stats" aria-label="Graph statistics">
         <div class="stat"><span class="val" id="stat-nodes">0</span><span class="lbl">nodes</span></div>
@@ -1484,6 +1499,9 @@ const state = {
   fileHandle: null,   // FileSystemFileHandle when FSA available and a file is open
   fileName: null,     // display name of the currently open file
   dirty: false,       // true when changes exist that aren't saved to file
+  // ----- Last-save stamp (for multi-user "who edited last" awareness) -----
+  lastModifiedBy: null,   // string, surfaced in the header chip
+  lastModifiedAt: null,   // ISO timestamp, surfaced in the header chip
   pathFinding: {
     active: false,        // listening for source/target clicks?
     source: null,         // source node id (once picked)
@@ -3731,10 +3749,64 @@ const FILE_PICKER_OPTIONS = {
   multiple: false
 };
 
+/* ----- Editor identity + last-save stamp -----
+   The app has no auth, so we ask each user once for a display name and
+   remember it in localStorage. The name is written into the JSON on save
+   so teammates opening the file can see who edited last and when. */
+const EDITOR_NAME_KEY = "erg.editorName";
+function getEditorName(forcePrompt){
+  let name = localStorage.getItem(EDITOR_NAME_KEY) || "";
+  if (!name || forcePrompt){
+    const v = prompt("Your name (stamped on saves so teammates can see who edited last):", name);
+    if (v === null) return name; // cancelled — keep whatever we had
+    name = v.trim();
+    if (name) localStorage.setItem(EDITOR_NAME_KEY, name);
+    else localStorage.removeItem(EDITOR_NAME_KEY);
+  }
+  return name;
+}
+function formatRelativeTime(iso){
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (!isFinite(t)) return "";
+  const diff = Date.now() - t;
+  if (diff < 45*1000) return "just now";
+  const m = Math.floor(diff/60000);
+  if (m < 60) return m + "m ago";
+  const h = Math.floor(m/60);
+  if (h < 24) return h + "h ago";
+  const d = Math.floor(h/24);
+  if (d < 7) return d + "d ago";
+  return new Date(iso).toLocaleDateString();
+}
+function updateModifiedChip(){
+  const chip = document.getElementById("modified-chip");
+  if (!chip) return;
+  const by = state.lastModifiedBy, at = state.lastModifiedAt;
+  if (!by && !at){ chip.style.display = "none"; return; }
+  chip.style.display = "";
+  const who = by || "unknown";
+  const when = at ? formatRelativeTime(at) : "";
+  chip.querySelector(".mc-text").textContent =
+    "Saved by " + who + (when ? " · " + when : "");
+  const abs = at ? new Date(at).toLocaleString() : "";
+  chip.title = "Last saved by " + who + (abs ? " at " + abs : "") +
+               "\nClick to update your name";
+}
+function applyStampFromBundle(bundle){
+  state.lastModifiedBy = bundle.lastModifiedBy || null;
+  state.lastModifiedAt = bundle.lastModifiedAt || null;
+  updateModifiedChip();
+}
+
 function currentBundle(){
+  const now = new Date().toISOString();
+  const editor = getEditorName() || "unknown";
   return {
     version: 2,
-    exportedAt: new Date().toISOString(),
+    exportedAt: now,
+    lastModifiedBy: editor,
+    lastModifiedAt: now,
     graph: state.graph,
     snapshots: loadSnapshots()
   };
@@ -3743,11 +3815,16 @@ function currentBundle(){
 function parseBundle(text){
   const obj = JSON.parse(text);
   if (obj && obj.graph && Array.isArray(obj.graph.nodes) && Array.isArray(obj.graph.edges)){
-    return { graph: obj.graph, snapshots: Array.isArray(obj.snapshots) ? obj.snapshots : null };
+    return {
+      graph: obj.graph,
+      snapshots: Array.isArray(obj.snapshots) ? obj.snapshots : null,
+      lastModifiedBy: obj.lastModifiedBy || null,
+      lastModifiedAt: obj.lastModifiedAt || null
+    };
   }
   if (obj && Array.isArray(obj.nodes) && Array.isArray(obj.edges)){
     // legacy graph-only file
-    return { graph: obj, snapshots: null };
+    return { graph: obj, snapshots: null, lastModifiedBy: null, lastModifiedAt: null };
   }
   throw new Error("Not a recognized graph JSON file");
 }
@@ -3781,6 +3858,9 @@ function applyLoadedBundle(bundle, fileName){
     renderSnapList();
   }
   state.fileName = fileName || null;
+  state.lastModifiedBy = bundle.lastModifiedBy || null;
+  state.lastModifiedAt = bundle.lastModifiedAt || null;
+  updateModifiedChip();
   markClean();
   afterMutate(true); // skip dirty mark; we just synced from file
   fitGraph();
@@ -3834,6 +3914,7 @@ async function saveFile(){
       const writable = await state.fileHandle.createWritable();
       await writable.write(text);
       await writable.close();
+      applyStampFromBundle(bundle);
       markClean();
       showToast("Saved " + (state.fileName || "to file"), "ok");
       return;
@@ -3849,12 +3930,14 @@ async function saveFile(){
       await writable.close();
       state.fileHandle = handle;
       state.fileName = handle.name;
+      applyStampFromBundle(bundle);
       markClean();
       showToast("Saved as " + handle.name, "ok");
       return;
     }
     // No FSA at all: fall back to download. User manually replaces the file.
     downloadBlob(text, state.fileName || "enterprise-relationship-graph.json", "application/json");
+    applyStampFromBundle(bundle);
     markClean();
     showToast("Downloaded. Move it over your working file to sync.", "ok");
   } catch(err){
@@ -3880,10 +3963,12 @@ async function saveFileAs(){
       await writable.close();
       state.fileHandle = handle;
       state.fileName = handle.name;
+      applyStampFromBundle(bundle);
       markClean();
       showToast("Saved as " + handle.name, "ok");
     } else {
       downloadBlob(text, "enterprise-relationship-graph.json", "application/json");
+      applyStampFromBundle(bundle);
       showToast("Downloaded a copy", "ok");
     }
   } catch(err){
@@ -4636,6 +4721,13 @@ function wireUp(){
   document.getElementById("btn-file-save-as").onclick = saveFileAs;
   // File chip in header doubles as a Save shortcut
   document.getElementById("file-chip").onclick = saveFile;
+  // Modified chip lets the user update their stamped name
+  document.getElementById("modified-chip").onclick = ()=>{
+    getEditorName(true); // force prompt
+    updateModifiedChip();
+  };
+  // Keep the "Saved by · 2m ago" label fresh while the page sits open
+  setInterval(updateModifiedChip, 60*1000);
   // Hidden file input for non-FSA browsers
   document.getElementById("file-input").addEventListener("change", e=>{
     if (e.target.files && e.target.files[0]) loadFileBlob(e.target.files[0]);
