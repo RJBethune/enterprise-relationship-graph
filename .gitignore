@@ -20,3 +20,6 @@ desktop.ini
 my-*.json
 private-*.json
 local-*.json
+
+# Graph data exports — keep local-only by default to avoid committing real org data
+enterprise-relationship-graph*.json

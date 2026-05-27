@@ -16,15 +16,24 @@
 <!-- Inline SVG favicon: three-node graph on the brand cyan→violet gradient. -->
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='32' y2='32' gradientUnits='userSpaceOnUse'%3E%3Cstop offset='0' stop-color='%2338BDF8'/%3E%3Cstop offset='1' stop-color='%23A78BFA'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='7' fill='url(%23g)'/%3E%3Cline x1='10' y1='10' x2='22' y2='10' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3Cline x1='10' y1='10' x2='16' y2='22' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3Cline x1='22' y1='10' x2='16' y2='22' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3Ccircle cx='10' cy='10' r='3.5' fill='white'/%3E%3Ccircle cx='22' cy='10' r='3.5' fill='white'/%3E%3Ccircle cx='16' cy='22' r='3.5' fill='white'/%3E%3C/svg%3E" />
 <!--
-  Enterprise Relationship Graph (v2)
+  Enterprise Relationship Graph (v3)
   ----------------------------------
   Self-contained, single-file enterprise relationship graph viewer.
   CDN-allowed build: pulls Font Awesome 6 and Inter from CORS-friendly CDNs.
   All HTML, CSS, JavaScript, sample data, and the graph rendering engine live
   in this single file. State persists in localStorage. JSON import/export and
   named snapshots let you back up, share, and version your graphs.
+
+  v3 adds a Leadership Metrics dashboard (chart-line button in the header):
+  seven tabs covering scale, lifecycle pipeline, EX service delivery, risk,
+  data coverage, organizational footprint, and operational complexity. All
+  charts are inline SVG (no extra dependencies); every entity in a chart or
+  table is clickable to jump to the node on the graph. Includes Markdown
+  clipboard export and a print-friendly view that stacks all tabs.
+
   Features: help system, quick-connect mode, right-click menus, undo/redo,
-  hover tooltips, PNG export, named snapshots, edge styling by type.
+  hover tooltips, PNG export, named snapshots, edge styling by type,
+  leadership metrics dashboard with drill-down, charts, and exports.
 -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" crossorigin="anonymous" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -709,8 +718,65 @@
     aside.sidebar, aside.details, footer.status-bar,
     .canvas-toolbar, .canvas-banner, .legend-toggle,
     .header-right, .file-chip,
-    .toast, .ctx-menu, .tooltip, .drop-overlay, .modal-backdrop{
+    .toast, .ctx-menu, .tooltip, .drop-overlay, .modal-backdrop:not(.metrics-print){
       display:none !important;
+    }
+    /* When the metrics modal is open for printing, show its contents and
+       hide the graph behind. Triggered by .metrics-print class on the
+       backdrop (set in openMetricsModal). */
+    .modal-backdrop.metrics-print{
+      display:block !important; position:static !important;
+      background:#FFFFFF !important; backdrop-filter:none !important;
+    }
+    .modal-backdrop.metrics-print .modal{
+      width:100% !important; max-width:none !important;
+      max-height:none !important; border:none !important;
+      box-shadow:none !important; background:#FFFFFF !important;
+      color:#000 !important; display:block !important;
+    }
+    .modal-backdrop.metrics-print .modal-head,
+    .modal-backdrop.metrics-print .modal-foot{
+      border-color:#CCC !important;
+    }
+    .modal-backdrop.metrics-print .modal-close,
+    .modal-backdrop.metrics-print #btn-metrics-copy,
+    .modal-backdrop.metrics-print #btn-metrics-print,
+    .modal-backdrop.metrics-print #modal-cancel,
+    .modal-backdrop.metrics-print .m-tabs{
+      display:none !important;
+    }
+    /* Show every pane stacked when printing, with section titles */
+    .modal-backdrop.metrics-print .m-pane{
+      display:block !important;
+      page-break-inside:avoid;
+      border-top:1px solid #DDD; margin-top:14px; padding-top:10px;
+    }
+    .modal-backdrop.metrics-print .m-pane:first-of-type{
+      border-top:none; margin-top:0; padding-top:0;
+    }
+    .modal-backdrop.metrics-print .m-pane::before{
+      content:attr(data-pane-title);
+      display:block; font-weight:700; font-size:14px;
+      color:#000; margin-bottom:8px; text-transform:capitalize;
+    }
+    .modal-backdrop.metrics-print .kpi,
+    .modal-backdrop.metrics-print .m-table{
+      background:#FFF !important; color:#000 !important;
+      border:1px solid #CCC !important;
+    }
+    .modal-backdrop.metrics-print .kpi .lbl,
+    .modal-backdrop.metrics-print .m-table th{
+      color:#666 !important;
+    }
+    .modal-backdrop.metrics-print .kpi .val,
+    .modal-backdrop.metrics-print .m-table td,
+    .modal-backdrop.metrics-print .m-table td:first-child,
+    .modal-backdrop.metrics-print .m-bar-row .bar-label,
+    .modal-backdrop.metrics-print .m-bar-row .bar-val,
+    .modal-backdrop.metrics-print .m-section h4,
+    .modal-backdrop.metrics-print .m-section p,
+    .modal-backdrop.metrics-print .m-lede{
+      color:#000 !important;
     }
     .app{
       grid-template-columns:1fr !important;
@@ -769,6 +835,358 @@
     .stats .stat .lbl{display:none}
     .brand-text p{display:none}
   }
+
+  /* ---------- Leadership Metrics modal ---------- */
+  .m-tabs{
+    display:flex; gap:2px; border-bottom:1px solid var(--border);
+    margin:-14px -16px 14px -16px; padding:0 12px; overflow-x:auto;
+  }
+  .m-tab{
+    background:transparent; border:none; color:var(--muted);
+    padding:10px 12px; cursor:pointer; font-size:12px;
+    border-bottom:2px solid transparent; font-family:inherit; white-space:nowrap;
+  }
+  .m-tab:hover{color:var(--text-2)}
+  .m-tab.active{color:var(--accent); border-bottom-color:var(--accent)}
+  .m-pane{display:none}
+  .m-pane.active{display:block}
+
+  .kpi-grid{
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr));
+    gap:10px; margin-bottom:14px;
+  }
+  .kpi{
+    background:var(--card); border:1px solid var(--border);
+    border-radius:10px; padding:12px 14px;
+  }
+  .kpi .lbl{
+    font-size:10.5px; color:var(--muted); text-transform:uppercase;
+    letter-spacing:0.5px;
+  }
+  .kpi .val{
+    font-size:22px; font-weight:700; color:var(--text);
+    font-variant-numeric:tabular-nums; margin-top:2px; line-height:1.1;
+  }
+  .kpi .sub{font-size:11.5px; color:var(--text-2); margin-top:3px;}
+  .kpi.accent .val{color:var(--accent)}
+  .kpi.warn .val{color:var(--warn)}
+  .kpi.crit .val{color:var(--crit)}
+  .kpi.ok .val{color:var(--ok)}
+
+  .m-section{margin-bottom:14px;}
+  .m-section h4{
+    margin:14px 0 8px; color:var(--accent-2);
+    font-size:11.5px; text-transform:uppercase; letter-spacing:0.6px;
+  }
+  .m-section h4:first-child{margin-top:0}
+  .m-section p.m-lede{
+    color:var(--text-2); font-size:12.5px; margin:0 0 10px; line-height:1.5;
+  }
+
+  .m-table{width:100%; border-collapse:collapse; font-size:12.5px;}
+  .m-table th{
+    text-align:left; color:var(--muted); font-weight:500; font-size:10.5px;
+    text-transform:uppercase; letter-spacing:0.5px;
+    padding:6px 8px; border-bottom:1px solid var(--border);
+  }
+  .m-table td{
+    padding:7px 8px; border-bottom:1px solid var(--border);
+    color:var(--text-2); vertical-align:top;
+  }
+  .m-table td:first-child{color:var(--text)}
+  .m-table tr:last-child td{border-bottom:none}
+  .m-table .num{text-align:right; font-variant-numeric:tabular-nums; color:var(--text)}
+  .m-table .type-cell{color:var(--muted); font-size:11px;}
+
+  .m-bar-row{
+    display:grid; grid-template-columns:140px 1fr 120px;
+    gap:10px; align-items:center; margin-bottom:8px; font-size:12.5px;
+  }
+  .m-bar-row .bar-label{color:var(--text)}
+  .m-bar-row .bar-val{
+    color:var(--text); font-variant-numeric:tabular-nums;
+    text-align:right; font-weight:600;
+  }
+  .m-bar{
+    height:7px; background:var(--card-2); border-radius:4px; overflow:hidden;
+  }
+  .m-bar-fill{
+    height:100%; border-radius:4px;
+    background:linear-gradient(90deg, var(--accent), var(--violet));
+  }
+  .m-bar-fill.low{background:var(--crit)}
+  .m-bar-fill.mid{background:var(--warn)}
+  .m-bar-fill.high{background:var(--ok)}
+
+  .m-empty{
+    color:var(--muted); font-size:12.5px; padding:8px 0; font-style:italic;
+  }
+  .m-pill{
+    display:inline-block; background:var(--card-2); border:1px solid var(--border);
+    border-radius:10px; padding:1px 7px; font-size:10.5px;
+    color:var(--text-2); margin-left:6px;
+  }
+  .m-pill.ok{color:var(--ok); border-color:rgba(52,211,153,0.35)}
+  .m-pill.warn{color:var(--warn); border-color:rgba(251,191,36,0.35)}
+  .m-pill.crit{color:var(--crit); border-color:rgba(248,113,113,0.35)}
+
+  /* Drill-down: clickable entity name in a metric row jumps to the node */
+  .m-table .m-entity-link, .m-entity-link{
+    color:var(--accent-2); cursor:pointer;
+    border-bottom:1px dotted transparent;
+    transition:border-color 0.15s, color 0.15s;
+  }
+  .m-table .m-entity-link:hover, .m-entity-link:hover{
+    color:var(--accent); border-bottom-color:var(--accent);
+  }
+  .m-table .m-entity-link:focus-visible, .m-entity-link:focus-visible{
+    outline:2px solid var(--accent); outline-offset:1px; border-radius:2px;
+  }
+
+  /* ---------- Extra-large modal (used by metrics) ---------- */
+  .modal.xl{
+    width:1100px; max-width:94vw; max-height:90vh;
+  }
+  .modal.xl .modal-body{
+    padding:20px 24px;
+  }
+  .modal.xl .m-tabs{
+    margin:-20px -24px 18px -24px; padding:0 16px;
+  }
+  .modal.xl .m-tab{
+    padding:12px 14px; font-size:12.5px;
+  }
+
+  /* ---------- Tailwind-ish polish on existing primitives ---------- */
+  .modal.xl .kpi{
+    background:var(--card);
+    border:1px solid rgba(148,163,184,0.14);
+    border-radius:12px;
+    padding:14px 16px;
+    transition:border-color 0.15s, background 0.15s;
+  }
+  .modal.xl .kpi:hover{
+    border-color:rgba(148,163,184,0.28);
+    background:var(--card-2);
+  }
+  .modal.xl .kpi .lbl{
+    font-size:10.5px; letter-spacing:0.6px;
+  }
+  .modal.xl .kpi .val{
+    font-size:26px; font-weight:700;
+    margin-top:4px; line-height:1.05;
+  }
+  .modal.xl .kpi .sub{
+    font-size:11.5px; margin-top:4px; color:var(--muted);
+  }
+  .modal.xl .kpi-grid{
+    gap:12px; margin-bottom:18px;
+    grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));
+  }
+  .modal.xl .m-section{margin-bottom:22px;}
+  .modal.xl .m-section h4{
+    margin:18px 0 10px;
+    font-size:11px; letter-spacing:0.7px;
+    color:var(--text-2);
+    font-weight:600;
+  }
+  .modal.xl .m-section h4:first-child{margin-top:0}
+  .modal.xl .m-section p.m-lede{
+    font-size:13px; color:var(--text-2); margin:0 0 14px;
+  }
+  .modal.xl .m-table{
+    background:var(--card);
+    border:1px solid rgba(148,163,184,0.14);
+    border-radius:10px;
+    overflow:hidden;
+  }
+  .modal.xl .m-table th{
+    background:rgba(255,255,255,0.02);
+    padding:9px 12px;
+    font-size:10.5px;
+  }
+  .modal.xl .m-table td{
+    padding:10px 12px;
+    border-bottom-color:rgba(148,163,184,0.10);
+  }
+  .modal.xl .m-table tr:hover td{
+    background:rgba(56,189,248,0.04);
+  }
+
+  /* ---------- Donut (radial gauge) ---------- */
+  .m-donut-grid{
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));
+    gap:14px; margin-bottom:18px;
+  }
+  .m-donut{
+    background:var(--card);
+    border:1px solid rgba(148,163,184,0.14);
+    border-radius:12px;
+    padding:18px 16px 16px;
+    text-align:center;
+    transition:border-color 0.15s, background 0.15s;
+  }
+  .m-donut:hover{
+    border-color:rgba(148,163,184,0.28);
+    background:var(--card-2);
+  }
+  .m-donut-svg-wrap{
+    position:relative; width:120px; height:120px; margin:0 auto;
+  }
+  .m-donut-svg{width:100%; height:100%; display:block}
+  .m-donut-center{
+    position:absolute; inset:0;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    pointer-events:none;
+  }
+  .m-donut-val{
+    font-size:24px; font-weight:700; color:var(--text);
+    font-variant-numeric:tabular-nums; line-height:1;
+  }
+  .m-donut-pct{
+    font-size:13px; color:var(--muted); margin-left:1px; font-weight:500;
+  }
+  .m-donut-center-lbl{
+    font-size:10px; color:var(--muted); text-transform:uppercase;
+    letter-spacing:0.5px; margin-top:3px;
+  }
+  .m-donut-lbl{
+    margin-top:12px; font-size:13px; color:var(--text); font-weight:500;
+  }
+  .m-donut-sub{
+    margin-top:3px; font-size:11.5px; color:var(--muted);
+  }
+
+  /* ---------- Segmented donut (distributions) ---------- */
+  .m-seg-donut-wrap{
+    display:grid; grid-template-columns:200px 1fr;
+    gap:24px; align-items:center;
+    background:var(--card);
+    border:1px solid rgba(148,163,184,0.14);
+    border-radius:12px;
+    padding:18px 20px;
+  }
+  .m-seg-donut-svg-wrap{
+    position:relative; width:180px; height:180px;
+  }
+  .m-seg-donut-svg{width:100%; height:100%; display:block}
+  .m-seg-donut .m-donut-center .m-donut-val{font-size:30px}
+  .m-seg-legend{
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));
+    gap:8px 16px;
+  }
+  .m-seg-legend-row{
+    display:flex; align-items:center; gap:8px;
+    font-size:12.5px; color:var(--text-2);
+  }
+  .m-seg-dot{
+    width:10px; height:10px; border-radius:3px; flex-shrink:0;
+  }
+  .m-seg-lbl{flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .m-seg-val{
+    color:var(--text); font-variant-numeric:tabular-nums; font-weight:600;
+  }
+  .m-seg-pct{
+    color:var(--muted); margin-left:4px; font-weight:400; font-size:11.5px;
+  }
+
+  /* ---------- Horizontal bar charts ---------- */
+  .m-hbars{
+    background:var(--card);
+    border:1px solid rgba(148,163,184,0.14);
+    border-radius:12px;
+    padding:14px 16px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .m-hbar-row{
+    display:grid; grid-template-columns:minmax(140px, 230px) 1fr 50px;
+    gap:12px; align-items:center;
+    font-size:12.5px;
+  }
+  .m-hbar-label{
+    color:var(--text); min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .m-hbar-sub{
+    color:var(--muted); margin-left:6px; font-size:11px;
+  }
+  .m-hbar-track{
+    height:10px; background:var(--card-2);
+    border-radius:5px; overflow:hidden;
+  }
+  .m-hbar-fill{
+    height:100%; border-radius:5px;
+    transition:width 0.4s ease;
+  }
+  .m-hbar-val{
+    text-align:right; color:var(--text); font-weight:600;
+    font-variant-numeric:tabular-nums;
+  }
+
+  /* ---------- Stacked horizontal bars ---------- */
+  .m-stacked-hbars{
+    background:var(--card);
+    border:1px solid rgba(148,163,184,0.14);
+    border-radius:12px;
+    padding:14px 16px;
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .m-stacked-row{
+    display:grid; grid-template-columns:minmax(160px, 240px) 1fr 50px;
+    gap:12px; align-items:center;
+    font-size:12.5px;
+  }
+  .m-stacked-label{color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .m-stacked-track-wrap{position:relative; height:12px;}
+  .m-stacked-track{
+    height:100%; display:flex;
+    border-radius:6px; overflow:hidden;
+    background:var(--card-2);
+    transition:width 0.4s ease;
+  }
+  .m-stack-seg{
+    height:100%;
+    transition:width 0.4s ease;
+  }
+  .m-stack-seg:first-child{border-radius:6px 0 0 6px}
+  .m-stack-seg:last-child{border-radius:0 6px 6px 0}
+  .m-stack-seg:only-child{border-radius:6px}
+  .m-stacked-total{
+    text-align:right; color:var(--text); font-weight:600;
+    font-variant-numeric:tabular-nums;
+  }
+  .m-chart-legend{
+    display:flex; flex-wrap:wrap; gap:14px;
+    margin-top:10px; padding-top:10px;
+    border-top:1px solid rgba(148,163,184,0.10);
+    font-size:11.5px; color:var(--text-2);
+  }
+  .m-chart-legend-item{display:flex; align-items:center; gap:6px}
+
+  /* ---------- Print rules for charts ---------- */
+  @media print {
+    .modal-backdrop.metrics-print .m-donut,
+    .modal-backdrop.metrics-print .m-seg-donut-wrap,
+    .modal-backdrop.metrics-print .m-hbars,
+    .modal-backdrop.metrics-print .m-stacked-hbars{
+      background:#FFF !important;
+      border:1px solid #CCC !important;
+    }
+    .modal-backdrop.metrics-print .m-donut-val,
+    .modal-backdrop.metrics-print .m-donut-lbl,
+    .modal-backdrop.metrics-print .m-seg-lbl,
+    .modal-backdrop.metrics-print .m-seg-val,
+    .modal-backdrop.metrics-print .m-hbar-label,
+    .modal-backdrop.metrics-print .m-hbar-val,
+    .modal-backdrop.metrics-print .m-stacked-label,
+    .modal-backdrop.metrics-print .m-stacked-total{
+      color:#000 !important;
+    }
+    .modal-backdrop.metrics-print .m-hbar-track,
+    .modal-backdrop.metrics-print .m-stacked-track{
+      background:#EEE !important;
+    }
+  }
 </style>
 </head>
 <body>
@@ -797,6 +1215,7 @@
         <div class="stat"><span class="val" id="stat-vnodes">0</span><span class="lbl">visible</span></div>
         <div class="stat accent"><span class="val" id="stat-sel">·</span><span class="lbl">selected</span></div>
       </div>
+      <button class="header-btn" id="btn-metrics" title="Leadership metrics"><i class="fa-solid fa-chart-line"></i></button>
       <button class="header-btn" id="btn-help" title="Help (?)"><i class="fa-solid fa-circle-question"></i></button>
     </div>
   </header>
@@ -3332,6 +3751,7 @@ function openModal(title, html, onSave, wide){
   modalBody.innerHTML = html;
   modalSaveHandler = onSave;
   document.getElementById("modal").classList.toggle("wide", !!wide);
+  document.getElementById("modal").classList.remove("xl");
   modal.classList.add("open");
   document.addEventListener("keydown", trapModalFocus, true);
   // focus first focusable so keyboard users can start interacting immediately
@@ -4497,6 +4917,7 @@ function openHelp(){
       <button class="help-tab active" data-pane="quick">Quick Start</button>
       <button class="help-tab" data-pane="edit">Editing</button>
       <button class="help-tab" data-pane="views">Views</button>
+      <button class="help-tab" data-pane="metrics">Metrics</button>
       <button class="help-tab" data-pane="data">Data</button>
       <button class="help-tab" data-pane="kbd">Shortcuts</button>
       <button class="help-tab" data-pane="ref">Reference</button>
@@ -4554,6 +4975,35 @@ function openHelp(){
         <li><strong>Layout mode:</strong> click the move-arrows icon in the canvas toolbar (or press <kbd>M</kbd>). Every click-and-drag on a node only repositions and pins it; selection never changes. Press <kbd>M</kbd> again to exit. Best for rearranging many nodes in a row before exporting a PNG.</li>
       </ul>
       <p>Pinned nodes show a small gold pin glyph in their upper-right corner. To let the force simulation pull them back, click the <i class="fa-solid fa-thumbtack" aria-hidden="true" style="transform:rotate(45deg)"></i> button in the canvas toolbar to release all pins.</p>
+    </div>
+    <div class="help-pane" data-pane="metrics">
+      <h4>What it is</h4>
+      <p>Click the <i class="fa-solid fa-chart-line"></i> chart icon in the header (next to the help button) to open the <strong>Leadership Metrics</strong> dashboard. It computes a snapshot of metrics directly from the current graph state &mdash; no extra data is stored anywhere &mdash; so the numbers always reflect what's in the file right now.</p>
+      <h4>The seven tabs</h4>
+      <ul>
+        <li><strong>Executive Summary</strong> &mdash; ten headline KPIs and an entity-composition donut showing scale at a glance.</li>
+        <li><strong>Pipeline</strong> &mdash; lifecycle distribution (Active / Pilot / Planned / Proposed / Retired), active delivery surfaces (workflows, automations, dashboards, sites, Teams), per-type lifecycle breakdown, and the governance pipeline.</li>
+        <li><strong>Service</strong> &mdash; EX scope (everything reachable from the Executive Office node), client bureaus (Office / Directorate / Front Office nodes <em>outside</em> EX scope), and cross-boundary service flows.</li>
+        <li><strong>Risk &amp; SPOFs</strong> &mdash; critical hubs (most-depended-upon entities), vendor exposure, bus-factor (people carrying 3+ leadership assignments), orphans, deprecated-but-still-in-use.</li>
+        <li><strong>Coverage</strong> &mdash; four radial gauges for ownership, lead, description, and tag completeness, plus a per-directorate ownership table.</li>
+        <li><strong>Org Footprint</strong> &mdash; stacked horizontal bars per directorate showing the offices / people / tech proportions.</li>
+        <li><strong>Complexity</strong> &mdash; top hubs by degree, integration count, automation count, longest dependency chain.</li>
+      </ul>
+      <h4>Sharing the numbers</h4>
+      <p>The modal footer has two action buttons:</p>
+      <ul>
+        <li><kbd>Copy summary</kbd> &mdash; copies a Markdown report (file name, freshness timestamp, all headline metrics, top critical hubs, per-directorate table, etc.) to your clipboard. Paste into email, Slack, Teams, Confluence, or any doc tool.</li>
+        <li><kbd>Print</kbd> &mdash; opens the system print dialog with a stylesheet that hides the dark theme and stacks all seven tabs as labeled sections. Use the browser's "Save as PDF" option to produce a printable report.</li>
+      </ul>
+      <h4>Drill-down</h4>
+      <p>Entity names in any chart bar or detail table are clickable. Clicking jumps to that node on the graph and closes the modal &mdash; useful when reviewing the metrics with someone and they ask "show me that one."</p>
+      <h4>Data assumptions</h4>
+      <ul>
+        <li><strong>EX scope</strong> is determined by walking <kbd>CONTAINS</kbd>, <kbd>HAS_*</kbd>, <kbd>OWNS</kbd>, and <kbd>MANAGES</kbd> edges down from every <strong>Executive Office</strong> node. If you don't have an Executive Office node, the Service tab will tell you what to add.</li>
+        <li><strong>Lifecycle stage</strong> is bucketed from the node's <kbd>status</kbd> field via regex: "live"/"in production" &rarr; Active, "pilot"/"beta"/"POC" &rarr; Pilot, "planned"/"backlog"/"approved" &rarr; Planned, "proposed"/"concept"/"requested" &rarr; Proposed, "retired"/"deprecated"/"sunset" &rarr; Retired. Blank status defaults to Active.</li>
+        <li><strong>Critical hubs</strong> are nodes with 2+ inbound DEPENDS_ON / USES / HOSTED_ON / INTEGRATES_WITH / CONNECTED_TO edges. The Risk tab flags hubs without a BACKUP_FOR edge in red.</li>
+        <li><strong>Client bureaus</strong> are Office / Directorate / Front Office nodes <em>outside</em> EX scope, ranked by edge count connecting to EX. The Service tab tells you how to model them if you don't yet have any.</li>
+      </ul>
     </div>
     <div class="help-pane" data-pane="data">
       <h4>Working file (source of truth)</h4>
@@ -4650,6 +5100,1191 @@ function openHelp(){
 // (Footer reset is now built into closeModal directly, no override needed.)
 
 /* ============================================================================
+   LEADERSHIP METRICS MODAL
+   ----------------------------------------------------------------------------
+   Computes a snapshot of metrics leadership cares about from the current
+   graph state and renders them in a tabbed modal. Pure read of state.graph;
+   no persistence, no edits.
+   ============================================================================ */
+const METRICS_DEPENDENCY_EDGES = ["DEPENDS_ON","USES","HOSTED_ON","INTEGRATES_WITH","CONNECTED_TO"];
+const METRICS_ORG_TYPES    = ["Executive Office","Front Office","Directorate","Office"];
+const METRICS_PEOPLE_TYPES = ["Person","Role"];
+const METRICS_TECH_TYPES   = ["System","Platform","Application","API","Service"];
+const METRICS_COLLAB_TYPES = ["SharePoint Site","Microsoft Team","O365 Group","Mailbox"];
+const METRICS_PROCESS_TYPES= ["Workflow","Power Automate Flow","Power BI Dashboard","Dataset","Document","Requirement","Decision"];
+
+function computeLeadershipMetrics(){
+  const nodes = state.graph.nodes;
+  const edges = state.graph.edges;
+  const N = nodes.length, E = edges.length;
+
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const byLabel = new Map();
+  for (const n of nodes){
+    if (!byLabel.has(n.label)) byLabel.set(n.label, n);
+  }
+  const outE = new Map(), inE = new Map();
+  for (const n of nodes){ outE.set(n.id, []); inE.set(n.id, []); }
+  for (const e of edges){
+    if (outE.has(e.source)) outE.get(e.source).push(e);
+    if (inE.has(e.target))  inE.get(e.target).push(e);
+  }
+  const deg = id => (outE.get(id)||[]).length + (inE.get(id)||[]).length;
+  const inAny = (n, types) => n && types.includes(n.type);
+  const countIn = types => nodes.filter(n => inAny(n, types)).length;
+  const typeCount = t => nodes.filter(n => n.type === t).length;
+  const has = v => !!(v && String(v).trim());
+  const pct = (a,b) => b === 0 ? 0 : Math.round(a/b*100);
+
+  // Coverage
+  const withOwner = nodes.filter(n => has(n.owner)).length;
+  const withLead  = nodes.filter(n => has(n.lead)).length;
+  const withDesc  = nodes.filter(n => has(n.description)).length;
+  const withTags  = nodes.filter(n => Array.isArray(n.tags) && n.tags.length > 0).length;
+  const lowQuality= nodes.filter(n => !has(n.owner) && !has(n.lead) && !has(n.description)).length;
+
+  // Risk
+  const depInCount = id => (inE.get(id)||[]).filter(e => METRICS_DEPENDENCY_EDGES.includes(e.type)).length;
+  const backupTargets = new Set(edges.filter(e => e.type === "BACKUP_FOR").map(e => e.target));
+  const criticalHubs = nodes
+    .map(n => ({ n, dep: depInCount(n.id), hasBackup: backupTargets.has(n.id) }))
+    .filter(x => x.dep >= 2)
+    .sort((a,b) => b.dep - a.dep);
+
+  const orphans = nodes.filter(n => deg(n.id) === 0);
+  const unownedTech = nodes.filter(n => inAny(n, METRICS_TECH_TYPES) && !has(n.owner));
+  const isDeprecated = n => /inactive|deprecated|retired/i.test(n.status || "");
+  const deprecatedInUse = nodes.filter(n => isDeprecated(n) && deg(n.id) > 0);
+
+  const vendors = nodes.filter(n => n.type === "Vendor");
+  const vendorExposure = vendors.map(v => ({ n: v, dependents: deg(v.id) }))
+    .filter(x => x.dependents > 0)
+    .sort((a,b) => b.dependents - a.dependents);
+
+  // Per-directorate footprint — walk descendants via the same edge set the
+  // collapse feature uses (CONTAINS / HAS_* / OWNS / MANAGES), then count by
+  // type. This catches People living under Offices and tech assets owned by
+  // Offices, which the directorate field alone misses.
+  const directorates = nodes.filter(n => n.type === "Directorate");
+  const nodeDir = new Map();  // node id -> directorate label (first match wins)
+  const dirDescendants = new Map();  // dir id -> Set of descendant node ids
+  for (const d of directorates){
+    const desc = (typeof getCollapseDescendants === "function")
+      ? getCollapseDescendants(d.id)
+      : new Set();
+    dirDescendants.set(d.id, desc);
+    for (const childId of desc){
+      if (!nodeDir.has(childId)) nodeDir.set(childId, d.label);
+    }
+    // The directorate itself belongs to its own bucket
+    if (!nodeDir.has(d.id)) nodeDir.set(d.id, d.label);
+  }
+  // Fallback: nodes with an explicit directorate field but not reached via edges
+  for (const n of nodes){
+    if (!nodeDir.has(n.id) && has(n.directorate)){
+      nodeDir.set(n.id, n.directorate);
+    }
+  }
+  const dirStats = directorates.map(d => {
+    const dname = d.label;
+    const descSet = dirDescendants.get(d.id) || new Set();
+    // Population = directorate itself plus descendants
+    const pop = [d.id, ...descSet].map(id => byId.get(id)).filter(Boolean);
+    let offices = 0, people = 0, systemsOwned = 0, ownedInDir = 0;
+    for (const n of pop){
+      if (n.id !== d.id && has(n.owner)) ownedInDir++;
+      if (n.type === "Office") offices++;
+      if (n.type === "Person" || n.type === "Role") people++;
+      if (inAny(n, METRICS_TECH_TYPES)) systemsOwned++;
+    }
+    const totalInDir = pop.length - 1;  // exclude the directorate node itself
+    return {
+      name: dname, offices, people, systemsOwned,
+      totalInDir, ownedInDir,
+      ownPct: pct(ownedInDir, totalInDir)
+    };
+  }).sort((a,b) => b.totalInDir - a.totalInDir);
+
+  // Cross-directorate dependencies — use the reverse map built above
+  let crossDirDeps = 0;
+  for (const e of edges){
+    if (!METRICS_DEPENDENCY_EDGES.includes(e.type)) continue;
+    const sd = nodeDir.get(e.source);
+    const td = nodeDir.get(e.target);
+    if (sd && td && sd !== td) crossDirDeps++;
+  }
+
+  // Complexity
+  const byDeg = nodes.map(n => ({ n, d: deg(n.id) })).filter(x => x.d > 0).sort((a,b) => b.d - a.d);
+  const integrationCount = edges.filter(e => e.type === "INTEGRATES_WITH" || e.type === "CONNECTED_TO").length;
+  const automationCount  = nodes.filter(n => n.type === "Workflow" || n.type === "Power Automate Flow").length;
+
+  function longestDepChain(){
+    const adj = new Map();
+    for (const n of nodes) adj.set(n.id, []);
+    for (const e of edges){
+      if (METRICS_DEPENDENCY_EDGES.includes(e.type) && adj.has(e.source)){
+        adj.get(e.source).push(e.target);
+      }
+    }
+    const memo = new Map();
+    function dfs(id, visiting){
+      if (memo.has(id)) return memo.get(id);
+      if (visiting.has(id)) return 0;
+      visiting.add(id);
+      let best = 0;
+      for (const nb of adj.get(id) || []){
+        const d = dfs(nb, visiting) + 1;
+        if (d > best) best = d;
+      }
+      visiting.delete(id);
+      memo.set(id, best);
+      return best;
+    }
+    let best = 0;
+    for (const n of nodes){
+      const d = dfs(n.id, new Set());
+      if (d > best) best = d;
+    }
+    return best;
+  }
+  const longest = longestDepChain();
+
+  const integDeg = id => (outE.get(id)||[]).filter(e => e.type==="INTEGRATES_WITH" || e.type==="CONNECTED_TO").length
+                       + (inE.get(id)||[]).filter(e => e.type==="INTEGRATES_WITH" || e.type==="CONNECTED_TO").length;
+  const mostIntegrated = nodes.filter(n => inAny(n, METRICS_TECH_TYPES))
+    .map(n => ({ n, c: integDeg(n.id) }))
+    .filter(x => x.c > 0)
+    .sort((a,b) => b.c - a.c);
+
+  /* ---------- Pipeline & Service metrics ---------- */
+  // Lifecycle bucket: maps any status string into one of five normalized stages.
+  // Blank/unset defaults to "active" to match the rest of the app's convention.
+  const lifecycleBucket = (statusRaw) => {
+    const s = (statusRaw || "").toLowerCase().trim();
+    if (!s) return "active";
+    if (/inactive|deprecated|retired|sunset|eol|end[- ]of[- ]life|decommission/.test(s)) return "retired";
+    if (/pilot|beta|preview|poc|trial/.test(s)) return "pilot";
+    if (/plan|future|roadmap|backlog|approved/.test(s)) return "planned";
+    if (/proposed|concept|idea|requested|considering/.test(s)) return "proposed";
+    return "active";  // active, in production, live, running, current, etc.
+  };
+  const lifecycle = { proposed:0, planned:0, pilot:0, active:0, retired:0 };
+  nodes.forEach(n => lifecycle[lifecycleBucket(n.status)]++);
+  const inFlightCount = lifecycle.proposed + lifecycle.planned + lifecycle.pilot;
+
+  // Per-type lifecycle breakdown for the major delivery types
+  const PIPELINE_TYPES = ["System","Platform","Application","API","Service",
+                          "Workflow","Power Automate Flow","Power BI Dashboard",
+                          "SharePoint Site","Microsoft Team","Requirement","Decision"];
+  const perTypeLifecycle = PIPELINE_TYPES.map(t => {
+    const ns = nodes.filter(n => n.type === t);
+    const b = { proposed:0, planned:0, pilot:0, active:0, retired:0 };
+    ns.forEach(n => b[lifecycleBucket(n.status)]++);
+    return { type:t, total:ns.length, proposed:b.proposed, planned:b.planned,
+             pilot:b.pilot, active:b.active, retired:b.retired };
+  }).filter(x => x.total > 0)
+    .sort((a,b) => b.total - a.total);
+
+  // Active delivery surfaces — what's currently in production
+  const activeWorkflows   = nodes.filter(n => n.type === "Workflow"            && lifecycleBucket(n.status) === "active").length;
+  const activeAutomations = nodes.filter(n => n.type === "Power Automate Flow" && lifecycleBucket(n.status) === "active").length;
+  const activeDashboards  = nodes.filter(n => n.type === "Power BI Dashboard"  && lifecycleBucket(n.status) === "active").length;
+  const activeSites       = nodes.filter(n => n.type === "SharePoint Site"     && lifecycleBucket(n.status) === "active").length;
+  const activeTeams       = nodes.filter(n => n.type === "Microsoft Team"      && lifecycleBucket(n.status) === "active").length;
+
+  // Requirements & decisions pipeline
+  const reqsByStage = { proposed:0, planned:0, pilot:0, active:0, retired:0 };
+  nodes.filter(n => n.type === "Requirement").forEach(n => reqsByStage[lifecycleBucket(n.status)]++);
+  const decisionsCount = nodes.filter(n => n.type === "Decision").length;
+
+  // EX scope — every node in an Executive Office node's containment tree
+  const exRoots = nodes.filter(n => n.type === "Executive Office");
+  const exScope = new Set();
+  for (const r of exRoots){
+    exScope.add(r.id);
+    if (typeof getCollapseDescendants === "function"){
+      const desc = getCollapseDescendants(r.id);
+      for (const id of desc) exScope.add(id);
+    }
+  }
+  const exNodes = nodes.filter(n => exScope.has(n.id));
+  const exTechCount      = exNodes.filter(n => inAny(n, METRICS_TECH_TYPES)).length;
+  const exWorkflowsCount = exNodes.filter(n => n.type === "Workflow" || n.type === "Power Automate Flow").length;
+  const exServices       = exNodes.filter(n => n.type === "Service");
+  const exPeopleCount    = exNodes.filter(n => inAny(n, METRICS_PEOPLE_TYPES)).length;
+
+  // Client bureaus — Office / Directorate / Front Office nodes outside EX scope
+  const BUREAU_CANDIDATE_TYPES = ["Office","Directorate","Front Office"];
+  const clientBureaus = nodes
+    .filter(n => BUREAU_CANDIDATE_TYPES.includes(n.type) && !exScope.has(n.id))
+    .map(b => {
+      const touching = edges.filter(e =>
+        (e.source === b.id && exScope.has(e.target)) ||
+        (e.target === b.id && exScope.has(e.source))
+      );
+      return {
+        n: b,
+        interactions: touching.length,
+        requests: touching.filter(e => e.type === "REQUESTED_BY").length,
+        servicesReceived: touching.filter(e => e.type === "SUPPORTS" || e.type === "RESPONSIBLE_FOR").length
+      };
+    })
+    .sort((a,b) => b.interactions - a.interactions);
+
+  // Cross-boundary service flows
+  const OUTBOUND_EDGE_TYPES = ["SUPPORTS","RESPONSIBLE_FOR","SENDS_TO","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX"];
+  const INBOUND_EDGE_TYPES  = ["REQUESTED_BY","RECEIVES_FROM","APPROVED_BY"];
+  let outboundServices = 0, inboundRequests = 0, crossBoundaryTotal = 0;
+  for (const e of edges){
+    const sIn = exScope.has(e.source);
+    const tIn = exScope.has(e.target);
+    if (sIn === tIn) continue;
+    crossBoundaryTotal++;
+    if (sIn && !tIn && OUTBOUND_EDGE_TYPES.includes(e.type)) outboundServices++;
+    if (!sIn && tIn && INBOUND_EDGE_TYPES.includes(e.type)) inboundRequests++;
+  }
+
+  // Bus-factor — surface People/Roles carrying the most leadership load
+  // (named as Owner or Lead on other nodes). Concentration is a structural
+  // risk leadership cares about: who would we miss most if they left?
+  const personLoad = new Map();  // person/role label -> { lead: count, owner: count }
+  for (const n of nodes){
+    if (has(n.lead)){
+      const key = n.lead.trim();
+      if (!personLoad.has(key)) personLoad.set(key, { lead: 0, owner: 0 });
+      personLoad.get(key).lead++;
+    }
+    if (has(n.owner)){
+      const key = n.owner.trim();
+      // Only count owner load when it matches a Person/Role (not an Office)
+      const ownerNode = byLabel.get(key);
+      if (ownerNode && (ownerNode.type === "Person" || ownerNode.type === "Role")){
+        if (!personLoad.has(key)) personLoad.set(key, { lead: 0, owner: 0 });
+        personLoad.get(key).owner++;
+      }
+    }
+  }
+  const busFactor = Array.from(personLoad.entries())
+    .map(([name, c]) => {
+      const node = byLabel.get(name);
+      return {
+        name,
+        nodeId: node ? node.id : null,
+        isKnownPerson: !!node,
+        lead: c.lead, owner: c.owner, total: c.lead + c.owner
+      };
+    })
+    .filter(x => x.total >= 3)  // 3+ assignments is the leadership-relevant threshold
+    .sort((a,b) => b.total - a.total);
+
+  return {
+    N, E,
+    counts: {
+      org: countIn(METRICS_ORG_TYPES),
+      people: countIn(METRICS_PEOPLE_TYPES),
+      tech: countIn(METRICS_TECH_TYPES),
+      collab: countIn(METRICS_COLLAB_TYPES),
+      process: countIn(METRICS_PROCESS_TYPES),
+      vendors: typeCount("Vendor"),
+      directorates: typeCount("Directorate"),
+      offices: typeCount("Office"),
+    },
+    coverage: {
+      ownerPct: pct(withOwner, N), withOwner,
+      leadPct:  pct(withLead, N),  withLead,
+      descPct:  pct(withDesc, N),  withDesc,
+      tagPct:   pct(withTags, N),  withTags,
+      lowQuality
+    },
+    risk: { criticalHubs, orphans, unownedTech, deprecatedInUse, vendorExposure, busFactor },
+    org:  { dirStats, crossDirDeps },
+    complexity: { byDeg, integrationCount, automationCount, longest, mostIntegrated },
+    pipeline: {
+      lifecycle, inFlightCount,
+      perTypeLifecycle,
+      activeWorkflows, activeAutomations, activeDashboards, activeSites, activeTeams,
+      reqsByStage, decisionsCount
+    },
+    service: {
+      exScope, exNodes, exTechCount, exWorkflowsCount, exServices, exPeopleCount,
+      exRoots,
+      clientBureaus,
+      outboundServices, inboundRequests, crossBoundaryTotal
+    }
+  };
+}
+
+function mKpi(lbl, val, sub, kind){
+  const cls = kind ? " " + kind : "";
+  const subHtml = sub ? `<div class="sub">${sub}</div>` : "";
+  return `<div class="kpi${cls}"><div class="lbl">${lbl}</div><div class="val">${val}</div>${subHtml}</div>`;
+}
+function mEntityLink(node, opts){
+  // Render a clickable entity name. opts.includeType adds a small type-cell below.
+  // The click is wired via delegation inside openMetricsModal.
+  if (!node) return "";
+  const typeHtml = (opts && opts.includeType)
+    ? `<div class="type-cell">${escapeHtml(node.type)}</div>`
+    : "";
+  return `<span class="m-entity-link" role="link" tabindex="0" data-node-id="${escapeHtml(node.id)}" title="Click to jump to this entity on the graph">${escapeHtml(node.label)}</span>${typeHtml}`;
+}
+function mEntityLinkByName(name, nodeId){
+  // For lists where we only have a name string (e.g. bus-factor)
+  if (!nodeId) return escapeHtml(name);
+  return `<span class="m-entity-link" role="link" tabindex="0" data-node-id="${escapeHtml(nodeId)}" title="Click to jump to this entity on the graph">${escapeHtml(name)}</span>`;
+}
+function mBarRow(label, count, total){
+  const p = total === 0 ? 0 : Math.round(count/total*100);
+  const cls = p >= 80 ? "high" : (p >= 50 ? "mid" : "low");
+  return `<div class="m-bar-row">
+    <div class="bar-label">${escapeHtml(label)}</div>
+    <div class="m-bar"><div class="m-bar-fill ${cls}" style="width:${p}%"></div></div>
+    <div class="bar-val">${p}% <span style="color:var(--muted); font-weight:400">(${count}/${total})</span></div>
+  </div>`;
+}
+
+/* ---------- SVG chart helpers (Tailwind-ish, no external deps) ---------- */
+// Color palette for distribution charts — restrained, harmonious with theme
+const M_PALETTE = [
+  "#38BDF8", "#A78BFA", "#34D399", "#FBBF24", "#F472B6",
+  "#FB923C", "#22D3EE", "#A3E635", "#818CF8", "#FB7185",
+  "#60A5FA", "#C084FC", "#5EEAD4", "#FACC15", "#94A3B8"
+];
+
+function mDonut(pct, lbl, sublbl){
+  // Single-value radial gauge. pct in 0..100.
+  const r = 38, c = 2 * Math.PI * r;
+  const dash = c * Math.max(0, Math.min(100, pct)) / 100;
+  const gap  = c - dash;
+  const color = pct >= 80 ? "var(--ok)" : pct >= 50 ? "var(--warn)" : "var(--crit)";
+  return `<div class="m-donut">
+    <div class="m-donut-svg-wrap">
+      <svg viewBox="0 0 100 100" class="m-donut-svg" aria-hidden="true">
+        <circle cx="50" cy="50" r="${r}" fill="none" stroke="var(--card-2)" stroke-width="9"/>
+        <circle cx="50" cy="50" r="${r}" fill="none" stroke="${color}" stroke-width="9"
+                stroke-dasharray="${dash} ${gap}" stroke-linecap="round"
+                transform="rotate(-90 50 50)"/>
+      </svg>
+      <div class="m-donut-center"><div class="m-donut-val">${pct}<span class="m-donut-pct">%</span></div></div>
+    </div>
+    <div class="m-donut-lbl">${escapeHtml(lbl)}</div>
+    ${sublbl ? `<div class="m-donut-sub">${escapeHtml(sublbl)}</div>` : ""}
+  </div>`;
+}
+
+function mSegmentedDonut(segments, centerVal, centerLbl){
+  // Multi-segment donut. segments: [{label, value, color}]
+  const total = segments.reduce((s, x) => s + (x.value || 0), 0);
+  if (total === 0){
+    return `<div class="m-seg-donut">
+      <div class="m-seg-donut-svg-wrap">
+        <svg viewBox="0 0 100 100" class="m-seg-donut-svg" aria-hidden="true">
+          <circle cx="50" cy="50" r="38" fill="none" stroke="var(--card-2)" stroke-width="14"/>
+        </svg>
+        <div class="m-donut-center"><div class="m-donut-val">0</div></div>
+      </div>
+    </div>`;
+  }
+  const r = 38, c = 2 * Math.PI * r;
+  let acc = 0;
+  const arcs = segments.map((s, i) => {
+    const pct = (s.value || 0) / total;
+    const dash = c * pct;
+    const gap  = c - dash;
+    const offset = -c * acc;
+    acc += pct;
+    return `<circle cx="50" cy="50" r="${r}" fill="none"
+                    stroke="${s.color || M_PALETTE[i % M_PALETTE.length]}"
+                    stroke-width="14" stroke-dasharray="${dash} ${gap}"
+                    stroke-dashoffset="${offset}"
+                    transform="rotate(-90 50 50)"/>`;
+  }).join("");
+  return `<div class="m-seg-donut">
+    <div class="m-seg-donut-svg-wrap">
+      <svg viewBox="0 0 100 100" class="m-seg-donut-svg" aria-hidden="true">${arcs}</svg>
+      <div class="m-donut-center">
+        <div class="m-donut-val">${centerVal != null ? centerVal : total}</div>
+        ${centerLbl ? `<div class="m-donut-center-lbl">${escapeHtml(centerLbl)}</div>` : ""}
+      </div>
+    </div>
+  </div>`;
+}
+
+function mSegLegend(segments){
+  const total = segments.reduce((s, x) => s + (x.value || 0), 0);
+  return `<div class="m-seg-legend">${
+    segments.map((s, i) => {
+      const pct = total > 0 ? Math.round(s.value / total * 100) : 0;
+      const color = s.color || M_PALETTE[i % M_PALETTE.length];
+      return `<div class="m-seg-legend-row">
+        <span class="m-seg-dot" style="background:${color}"></span>
+        <span class="m-seg-lbl">${escapeHtml(s.label)}</span>
+        <span class="m-seg-val">${s.value} <span class="m-seg-pct">${pct}%</span></span>
+      </div>`;
+    }).join("")
+  }</div>`;
+}
+
+function mHBars(data, opts){
+  // Horizontal bar chart. data: [{label, value, nodeId?, sub?, color?}]
+  if (!data || data.length === 0) return '<div class="m-empty">No data.</div>';
+  const max = (opts && opts.max) || Math.max(...data.map(d => d.value || 0), 1);
+  const fmt = (opts && opts.valueFormat) || (v => v);
+  return `<div class="m-hbars">${
+    data.map(d => {
+      const pct = max > 0 ? (d.value / max * 100) : 0;
+      const color = d.color || 'var(--accent)';
+      const labelHtml = d.nodeId
+        ? `<span class="m-entity-link" role="link" tabindex="0" data-node-id="${escapeHtml(d.nodeId)}" title="Click to jump to this entity on the graph">${escapeHtml(d.label)}</span>`
+        : escapeHtml(d.label);
+      const subHtml = d.sub ? `<span class="m-hbar-sub">${escapeHtml(d.sub)}</span>` : '';
+      return `<div class="m-hbar-row">
+        <div class="m-hbar-label">${labelHtml}${subHtml}</div>
+        <div class="m-hbar-track" title="${escapeHtml(String(d.value))} of ${max}">
+          <div class="m-hbar-fill" style="width:${pct}%; background:${color}"></div>
+        </div>
+        <div class="m-hbar-val">${escapeHtml(String(fmt(d.value)))}</div>
+      </div>`;
+    }).join("")
+  }</div>`;
+}
+
+function mStackedHBar(stacks, opts){
+  // Multi-series horizontal stacked bars. stacks: [{label, segments:[{name, value, color}]}]
+  // All bars share a common scale derived from the largest total.
+  if (!stacks || stacks.length === 0) return '<div class="m-empty">No data.</div>';
+  const max = Math.max(...stacks.map(s => s.segments.reduce((a,b) => a + (b.value||0), 0)), 1);
+  return `<div class="m-stacked-hbars">${
+    stacks.map(stack => {
+      const total = stack.segments.reduce((a,b) => a + (b.value||0), 0);
+      const trackWidthPct = (total / max) * 100;
+      const segHtml = stack.segments.map((s, i) => {
+        const segPct = total > 0 ? (s.value / total) * 100 : 0;
+        const color = s.color || M_PALETTE[i % M_PALETTE.length];
+        return `<div class="m-stack-seg" style="width:${segPct}%; background:${color}" title="${escapeHtml(s.name)}: ${s.value}"></div>`;
+      }).join("");
+      return `<div class="m-stacked-row">
+        <div class="m-stacked-label">${escapeHtml(stack.label)}</div>
+        <div class="m-stacked-track-wrap">
+          <div class="m-stacked-track" style="width:${trackWidthPct}%">${segHtml}</div>
+        </div>
+        <div class="m-stacked-total">${total}</div>
+      </div>`;
+    }).join("")
+  }</div>`;
+}
+
+function openMetricsModal(){
+  const m = computeLeadershipMetrics();
+  const c = m.counts;
+  const cov = m.coverage;
+  const risk = m.risk;
+  const org = m.org;
+  const cx = m.complexity;
+
+  // Data-freshness header
+  function formatFreshness(){
+    const parts = [];
+    if (state.fileName){
+      parts.push(`Source: <strong>${escapeHtml(state.fileName)}</strong>`);
+    } else {
+      parts.push(`Source: <em>no file loaded</em>`);
+    }
+    if (state.lastModifiedAt){
+      const dt = new Date(state.lastModifiedAt);
+      if (!isNaN(dt.getTime())){
+        const ago = Math.round((Date.now() - dt.getTime()) / 86400000);
+        const agoTxt = ago === 0 ? "today" : ago === 1 ? "1 day ago" : ago + " days ago";
+        let line = `Last edited ${escapeHtml(agoTxt)} (${escapeHtml(dt.toLocaleString())})`;
+        if (state.lastModifiedBy) line += ` by <strong>${escapeHtml(state.lastModifiedBy)}</strong>`;
+        parts.push(line);
+      }
+    }
+    parts.push(`Snapshot generated ${new Date().toLocaleString()}`);
+    return parts.join(" &middot; ");
+  }
+  const summaryHtml = `
+    <div style="background:var(--card); border:1px solid var(--border); border-radius:8px; padding:8px 12px; font-size:11.5px; color:var(--text-2); margin-bottom:12px;">
+      <i class="fa-solid fa-clock-rotate-left" style="color:var(--muted); margin-right:4px;"></i> ${formatFreshness()}
+    </div>
+    <p class="m-lede">A live read of the graph from a leadership lens: scale, ownership coverage, structural risk, and operational complexity.</p>
+    <div class="kpi-grid">
+      ${mKpi("Total entities", m.N, "nodes in the graph", "accent")}
+      ${mKpi("Relationships", m.E, "edges between entities")}
+      ${mKpi("Org units", c.org, "Executive / Front / Directorate / Office")}
+      ${mKpi("People &amp; roles", c.people)}
+      ${mKpi("Tech (systems + platforms + apps)", c.tech)}
+      ${mKpi("Collaboration spaces", c.collab, "SharePoint / Teams / O365 / Mailbox")}
+      ${mKpi("Vendors", c.vendors, c.vendors > 0 ? "external dependencies" : "")}
+      ${mKpi("Ownership coverage", cov.ownerPct + "%", `${cov.withOwner} of ${m.N} have an owner`, cov.ownerPct >= 80 ? "ok" : (cov.ownerPct >= 50 ? "warn" : "crit"))}
+      ${mKpi("Critical hubs", risk.criticalHubs.length, "&ge;2 dependents", risk.criticalHubs.length === 0 ? "ok" : (risk.criticalHubs.length <= 3 ? "warn" : "crit"))}
+      ${mKpi("Cross-directorate deps", org.crossDirDeps, "spans org boundaries")}
+    </div>
+    <p style="font-size:11px; color:var(--muted); margin-top:6px;">Switch tabs above for the underlying detail behind each headline.</p>
+    <h4 style="margin:22px 0 10px; font-size:11px; letter-spacing:0.7px; color:var(--text-2); font-weight:600; text-transform:uppercase;">Entity composition</h4>
+    <div class="m-seg-donut-wrap">
+      ${mSegmentedDonut([
+        { label:"Org units (Exec / Front / Directorate / Office)", value: c.org,     color:M_PALETTE[0] },
+        { label:"People & roles",                                   value: c.people,  color:M_PALETTE[2] },
+        { label:"Tech (systems / platforms / apps / APIs)",         value: c.tech,    color:M_PALETTE[5] },
+        { label:"Collaboration spaces",                             value: c.collab,  color:M_PALETTE[6] },
+        { label:"Process & artifacts",                              value: c.process, color:M_PALETTE[3] },
+        { label:"Vendors",                                          value: c.vendors, color:M_PALETTE[9] },
+        { label:"Other",                                            value: Math.max(0, m.N - c.org - c.people - c.tech - c.collab - c.process - c.vendors), color:"#64748B" }
+      ].filter(s => s.value > 0), m.N, "entities")}
+      ${mSegLegend([
+        { label:"Org units",      value: c.org,     color:M_PALETTE[0] },
+        { label:"People & roles", value: c.people,  color:M_PALETTE[2] },
+        { label:"Tech",           value: c.tech,    color:M_PALETTE[5] },
+        { label:"Collab spaces",  value: c.collab,  color:M_PALETTE[6] },
+        { label:"Process",        value: c.process, color:M_PALETTE[3] },
+        { label:"Vendors",        value: c.vendors, color:M_PALETTE[9] },
+        { label:"Other",          value: Math.max(0, m.N - c.org - c.people - c.tech - c.collab - c.process - c.vendors), color:"#64748B" }
+      ].filter(s => s.value > 0))}
+    </div>
+  `;
+
+  // Risk pane
+  const criticalRows = risk.criticalHubs.slice(0,8).map(x => `
+    <tr>
+      <td>${mEntityLink(x.n, {includeType:true})}</td>
+      <td class="num">${x.dep}</td>
+      <td>${x.hasBackup
+        ? '<span class="m-pill ok">backup defined</span>'
+        : '<span class="m-pill crit">no backup</span>'}</td>
+    </tr>`).join("");
+  const vendorRows = risk.vendorExposure.slice(0,5).map(v => `
+    <tr><td>${mEntityLink(v.n, {includeType:false})}</td><td class="num">${v.dependents}</td></tr>
+  `).join("");
+  const orphanList = risk.orphans.slice(0,8).map(n =>
+    `<tr><td>${mEntityLink(n, {includeType:true})}</td></tr>`
+  ).join("");
+  const riskHtml = `
+    <p class="m-lede">Where the graph reveals fragility: dependency concentrations, vendor exposure, ownership gaps, and entries that look obsolete but are still connected.</p>
+    <div class="kpi-grid">
+      ${mKpi("Critical hubs", risk.criticalHubs.length, "&ge;2 dependents", risk.criticalHubs.length === 0 ? "ok" : (risk.criticalHubs.length <= 3 ? "warn" : "crit"))}
+      ${mKpi("Orphaned entities", risk.orphans.length, "0 connections", risk.orphans.length === 0 ? "ok" : "warn")}
+      ${mKpi("Unowned tech assets", risk.unownedTech.length, "no Owner set", risk.unownedTech.length === 0 ? "ok" : "warn")}
+      ${mKpi("Deprecated, still in use", risk.deprecatedInUse.length, "status retired/inactive + &ge;1 edge", risk.deprecatedInUse.length === 0 ? "ok" : "crit")}
+    </div>
+    <div class="m-section">
+      <h4>Most depended-upon entities</h4>
+      ${risk.criticalHubs.length === 0
+        ? '<div class="m-empty">No entity has 2+ inbound dependency relationships yet.</div>'
+        : `${mHBars(risk.criticalHubs.slice(0,8).map(x => ({
+              label: x.n.label, value: x.dep, nodeId: x.n.id,
+              sub: x.hasBackup ? "" : "no backup",
+              color: x.hasBackup ? "var(--accent)" : "var(--crit)"
+            })))}
+           <details style="margin-top:10px">
+             <summary style="cursor:pointer; font-size:11.5px; color:var(--muted);">Show as detail table</summary>
+             <table class="m-table" style="margin-top:8px">
+              <thead><tr><th>Entity</th><th class="num">Dependents</th><th>Backup</th></tr></thead>
+              <tbody>${criticalRows}</tbody>
+             </table>
+           </details>`}
+    </div>
+    <div class="m-section">
+      <h4>Top vendor exposure</h4>
+      ${vendorRows
+        ? `<table class="m-table">
+            <thead><tr><th>Vendor</th><th class="num">Connected entities</th></tr></thead>
+            <tbody>${vendorRows}</tbody>
+           </table>`
+        : '<div class="m-empty">No vendors with connections recorded.</div>'}
+    </div>
+    <div class="m-section">
+      <h4>People carrying the most leadership load <span class="m-pill">${risk.busFactor.length}</span></h4>
+      ${risk.busFactor.length === 0
+        ? '<div class="m-empty">No individual is named as Lead or Owner on 3+ entities.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Person / role</th><th class="num">As Lead</th><th class="num">As Owner</th><th class="num">Total</th></tr></thead>
+            <tbody>${risk.busFactor.slice(0,8).map(b => `
+              <tr>
+                <td>${mEntityLinkByName(b.name, b.nodeId)}${b.isKnownPerson ? '' : ' <span class="m-pill warn" title="Name appears as Lead/Owner but is not a Person node in the graph">unmapped</span>'}</td>
+                <td class="num">${b.lead}</td>
+                <td class="num">${b.owner}</td>
+                <td class="num">${b.total}</td>
+              </tr>`).join("")}
+            </tbody>
+           </table>`}
+    </div>
+    <div class="m-section">
+      <h4>Orphaned entities <span class="m-pill">${risk.orphans.length}</span></h4>
+      ${orphanList
+        ? `<table class="m-table"><tbody>${orphanList}</tbody></table>`
+        : '<div class="m-empty">Every entity has at least one connection.</div>'}
+      ${risk.orphans.length > 8 ? `<div style="font-size:11px; color:var(--muted); margin-top:4px;">Showing 8 of ${risk.orphans.length}.</div>` : ""}
+    </div>
+  `;
+
+  // Coverage pane
+  const covHtml = `
+    <p class="m-lede">How complete the data behind the graph is. Low coverage means the diagram tells a thinner story than reality.</p>
+    <div class="m-section">
+      <h4>Field completeness across all ${m.N} entities</h4>
+      <div class="m-donut-grid">
+        ${mDonut(cov.ownerPct, "Has owner",       `${cov.withOwner} of ${m.N}`)}
+        ${mDonut(cov.leadPct,  "Has lead",        `${cov.withLead} of ${m.N}`)}
+        ${mDonut(cov.descPct,  "Has description", `${cov.withDesc} of ${m.N}`)}
+        ${mDonut(cov.tagPct,   "Has tags",        `${cov.withTags} of ${m.N}`)}
+      </div>
+    </div>
+    <div class="m-section">
+      <h4>Ownership coverage by directorate</h4>
+      ${org.dirStats.length === 0
+        ? '<div class="m-empty">No directorates defined yet.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Directorate</th><th class="num">Entities in scope</th><th class="num">% with owner</th></tr></thead>
+            <tbody>${org.dirStats.map(d => `
+              <tr>
+                <td>${escapeHtml(d.name)}</td>
+                <td class="num">${d.totalInDir}</td>
+                <td class="num">${d.totalInDir === 0 ? '<span style="color:var(--muted)">&mdash;</span>' : (d.ownPct + "%")}</td>
+              </tr>`).join("")}
+            </tbody>
+           </table>`}
+    </div>
+    <div class="m-section">
+      <h4>Stub records</h4>
+      <p style="font-size:12.5px; color:var(--text-2); margin:0;">
+        <strong>${cov.lowQuality}</strong> entities have no owner, lead, or description set &mdash;
+        ${cov.lowQuality === 0 ? "the catalog is well populated." : "these are placeholders that need filling out."}
+      </p>
+    </div>
+  `;
+
+  // Org footprint pane
+  const dirRows = org.dirStats.map(d => `
+    <tr>
+      <td>${escapeHtml(d.name)}</td>
+      <td class="num">${d.offices}</td>
+      <td class="num">${d.people}</td>
+      <td class="num">${d.systemsOwned}</td>
+      <td class="num">${d.totalInDir}</td>
+    </tr>`).join("");
+  const orgHtml = `
+    <p class="m-lede">The org as the graph sees it: where headcount, offices, and technology live.</p>
+    <div class="kpi-grid">
+      ${mKpi("Directorates",  c.directorates)}
+      ${mKpi("Offices",       c.offices)}
+      ${mKpi("People",        c.people)}
+      ${mKpi("Tech assets",   c.tech)}
+      ${mKpi("Collab spaces", c.collab)}
+      ${mKpi("Vendors",       c.vendors)}
+    </div>
+    <div class="m-section">
+      <h4>Per-directorate composition</h4>
+      ${dirRows
+        ? `${mStackedHBar(org.dirStats.map(d => ({
+              label: d.name,
+              segments: [
+                { name: "Offices", value: d.offices,      color: M_PALETTE[0] },
+                { name: "People",  value: d.people,       color: M_PALETTE[2] },
+                { name: "Tech",    value: d.systemsOwned, color: M_PALETTE[5] },
+                { name: "Other",   value: Math.max(0, d.totalInDir - d.offices - d.people - d.systemsOwned), color: "#64748B" }
+              ]
+            })))}
+           <div class="m-chart-legend">
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:${M_PALETTE[0]}"></span> Offices</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:${M_PALETTE[2]}"></span> People</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:${M_PALETTE[5]}"></span> Tech assets</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#64748B"></span> Other</span>
+           </div>
+           <details style="margin-top:12px">
+             <summary style="cursor:pointer; font-size:11.5px; color:var(--muted);">Show as detail table</summary>
+             <table class="m-table" style="margin-top:8px">
+              <thead><tr>
+                <th>Directorate</th>
+                <th class="num">Offices</th>
+                <th class="num">People</th>
+                <th class="num">Tech assets</th>
+                <th class="num">Total entities</th>
+              </tr></thead>
+              <tbody>${dirRows}</tbody>
+             </table>
+           </details>`
+        : '<div class="m-empty">No directorates defined yet.</div>'}
+    </div>
+    <div class="m-section">
+      <h4>Cross-directorate dependencies</h4>
+      <p style="font-size:12.5px; color:var(--text-2); margin:0;">
+        <strong>${org.crossDirDeps}</strong> dependency relationships (DEPENDS_ON, USES, HOSTED_ON, INTEGRATES_WITH, CONNECTED_TO) cross directorate boundaries.
+        ${org.crossDirDeps === 0
+          ? "Every dependency lives inside one directorate."
+          : "These are the integration seams worth monitoring."}
+      </p>
+    </div>
+  `;
+
+  // Complexity pane
+  const hubRows = cx.byDeg.slice(0,8).map(x => `
+    <tr>
+      <td>${mEntityLink(x.n, {includeType:true})}</td>
+      <td class="num">${x.d}</td>
+    </tr>`).join("");
+  const integRows = cx.mostIntegrated.slice(0,5).map(x => `
+    <tr>
+      <td>${mEntityLink(x.n, {includeType:true})}</td>
+      <td class="num">${x.c}</td>
+    </tr>`).join("");
+  const cxHtml = `
+    <p class="m-lede">How tangled the operational topology is. Hubs concentrate risk; long dependency chains concentrate change blast-radius.</p>
+    <div class="kpi-grid">
+      ${mKpi("Max connections (top hub)", cx.byDeg[0] ? cx.byDeg[0].d : 0, cx.byDeg[0] ? cx.byDeg[0].n.label : "&mdash;")}
+      ${mKpi("System integrations", cx.integrationCount, "INTEGRATES_WITH + CONNECTED_TO edges")}
+      ${mKpi("Automations cataloged", cx.automationCount, "Workflows + Power Automate flows")}
+      ${mKpi("Longest dependency chain", cx.longest, "hops along DEPENDS_ON / USES / HOSTED_ON")}
+    </div>
+    <div class="m-section">
+      <h4>Most-connected entities (hubs)</h4>
+      ${cx.byDeg.length === 0
+        ? '<div class="m-empty">No connections recorded.</div>'
+        : mHBars(cx.byDeg.slice(0,10).map(x => ({
+            label: x.n.label, value: x.d, nodeId: x.n.id,
+            sub: x.n.type, color: "var(--accent)"
+          })))}
+    </div>
+    <div class="m-section">
+      <h4>Most-integrated tech assets</h4>
+      ${integRows
+        ? `<table class="m-table">
+            <thead><tr><th>Entity</th><th class="num">Integrations</th></tr></thead>
+            <tbody>${integRows}</tbody>
+           </table>`
+        : '<div class="m-empty">No INTEGRATES_WITH or CONNECTED_TO edges yet.</div>'}
+    </div>
+  `;
+
+  // Pipeline + Service destructuring (computed below)
+  const pipeline = m.pipeline;
+  const service = m.service;
+  const lifecycle = pipeline.lifecycle;
+  const inFlightCount = pipeline.inFlightCount;
+  const perTypeLifecycle = pipeline.perTypeLifecycle;
+  const activeWorkflows = pipeline.activeWorkflows;
+  const activeAutomations = pipeline.activeAutomations;
+  const activeDashboards = pipeline.activeDashboards;
+  const activeSites = pipeline.activeSites;
+  const activeTeams = pipeline.activeTeams;
+  const reqsByStage = pipeline.reqsByStage;
+  const decisionsCount = pipeline.decisionsCount;
+  const exScope = service.exScope;
+  const exNodes = service.exNodes;
+  const exTechCount = service.exTechCount;
+  const exWorkflowsCount = service.exWorkflowsCount;
+  const exServices = service.exServices;
+  const exPeopleCount = service.exPeopleCount;
+  const exRoots = service.exRoots;
+  const clientBureaus = service.clientBureaus;
+  const outboundServices = service.outboundServices;
+  const inboundRequests = service.inboundRequests;
+  const crossBoundaryTotal = service.crossBoundaryTotal;
+  const pct = (a,b) => b === 0 ? 0 : Math.round(a/b*100);
+
+  // ---------- Pipeline pane ----------
+  const lifecycleSegments = [
+    { label:"Active",   value: lifecycle.active,   color:"#34D399" },
+    { label:"Pilot",    value: lifecycle.pilot,    color:"#38BDF8" },
+    { label:"Planned",  value: lifecycle.planned,  color:"#A78BFA" },
+    { label:"Proposed", value: lifecycle.proposed, color:"#FBBF24" },
+    { label:"Retired",  value: lifecycle.retired,  color:"#94A3B8" }
+  ].filter(s => s.value > 0);
+  const pipelineHtml = `
+    <p class="m-lede">What the team is actually working on, where things are in their lifecycle, and what's flowing through the delivery pipeline.</p>
+    <div class="kpi-grid">
+      ${mKpi("Active in production", lifecycle.active, `${pct(lifecycle.active, m.N)}% of all entities`, lifecycle.active === 0 ? "warn" : "ok")}
+      ${mKpi("In flight", inFlightCount, "pilot + planned + proposed", inFlightCount === 0 ? "warn" : "accent")}
+      ${mKpi("Retired / deprecated", lifecycle.retired, "should be reviewed or removed", lifecycle.retired > 0 ? "warn" : "ok")}
+      ${mKpi("Active workflows", activeWorkflows, "manual + Power Automate", null)}
+      ${mKpi("Active automations", activeAutomations, "Power Automate flows in production")}
+      ${mKpi("Power BI dashboards", activeDashboards, "active analytics surfaces")}
+    </div>
+    <div class="m-section">
+      <h4>Lifecycle distribution</h4>
+      ${lifecycleSegments.reduce((a,s) => a + s.value, 0) === 0
+        ? '<div class="m-empty">No nodes have a recognizable lifecycle status yet.</div>'
+        : `<div class="m-seg-donut-wrap">
+            ${mSegmentedDonut(lifecycleSegments, m.N, "entities")}
+            ${mSegLegend(lifecycleSegments)}
+           </div>`}
+    </div>
+    <div class="m-section">
+      <h4>Per-type lifecycle</h4>
+      ${perTypeLifecycle.length === 0
+        ? '<div class="m-empty">No delivery-type entities catalogued yet.</div>'
+        : `${mStackedHBar(perTypeLifecycle.map(t => ({
+              label: t.type,
+              segments: [
+                { name:"Active",   value: t.active,   color:"#34D399" },
+                { name:"Pilot",    value: t.pilot,    color:"#38BDF8" },
+                { name:"Planned",  value: t.planned,  color:"#A78BFA" },
+                { name:"Proposed", value: t.proposed, color:"#FBBF24" },
+                { name:"Retired",  value: t.retired,  color:"#94A3B8" }
+              ]
+            })))}
+           <div class="m-chart-legend">
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#34D399"></span> Active</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#38BDF8"></span> Pilot</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#A78BFA"></span> Planned</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#FBBF24"></span> Proposed</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#94A3B8"></span> Retired</span>
+           </div>`}
+    </div>
+    <div class="m-section">
+      <h4>Governance pipeline</h4>
+      <div class="kpi-grid">
+        ${mKpi("Active requirements", reqsByStage.active, "delivered/in use")}
+        ${mKpi("In-flight requirements", reqsByStage.pilot + reqsByStage.planned, "pilot + planned")}
+        ${mKpi("Proposed requirements", reqsByStage.proposed, "awaiting approval", reqsByStage.proposed > 0 ? "accent" : null)}
+        ${mKpi("Decisions recorded", decisionsCount, "in the graph")}
+      </div>
+    </div>
+    <div class="m-section">
+      <h4>Active collaboration surfaces</h4>
+      <div class="kpi-grid">
+        ${mKpi("SharePoint sites", activeSites, "active")}
+        ${mKpi("Microsoft Teams", activeTeams, "active")}
+        ${mKpi("Total automations", activeWorkflows + activeAutomations, "workflows + flows in production")}
+      </div>
+    </div>
+  `;
+
+  // ---------- Service pane ----------
+  const nonExCount = m.N - exNodes.length;
+  const exDonutSegments = [
+    { label:"EX scope",        value: exNodes.length, color:"#38BDF8" },
+    { label:"Client bureaus",  value: clientBureaus.length, color:"#A78BFA" },
+    { label:"External (vendors / other)", value: Math.max(0, nonExCount - clientBureaus.length), color:"#94A3B8" }
+  ].filter(s => s.value > 0);
+  const exServiceList = exServices.slice(0, 6).map(s => `
+    <tr>
+      <td>${mEntityLink(s, {includeType:false})}</td>
+      <td>${statusBadge ? statusBadge(s.status) : escapeHtml(s.status || "Active")}</td>
+    </tr>`).join("");
+  const bureauRows = clientBureaus.slice(0, 8).map(b => `
+    <tr>
+      <td>${mEntityLink(b.n, {includeType:true})}</td>
+      <td class="num">${b.interactions}</td>
+      <td class="num">${b.requests}</td>
+      <td class="num">${b.servicesReceived}</td>
+    </tr>`).join("");
+  const serviceHtml = `
+    <p class="m-lede">What the Executive Office is responsible for and who it serves. EX scope = the Executive Office node plus everything reachable via CONTAINS / HAS_* / OWNS / MANAGES.</p>
+    ${exRoots.length === 0
+      ? `<div style="background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.3); border-radius:10px; padding:14px 16px; font-size:12.5px; color:var(--text-2);">
+          <i class="fa-solid fa-triangle-exclamation" style="color:var(--warn); margin-right:6px;"></i>
+          No <strong>Executive Office</strong> node found in the graph. Add one and connect downstream units via <code>CONTAINS</code> to populate the EX-scope views below.
+         </div>`
+      : ""}
+    <div class="kpi-grid">
+      ${mKpi("Entities in EX scope", exNodes.length, `${pct(exNodes.length, m.N)}% of the graph`, exNodes.length > 0 ? "accent" : "warn")}
+      ${mKpi("EX-owned tech assets", exTechCount, "systems / platforms / apps")}
+      ${mKpi("EX automations", exWorkflowsCount, "workflows + flows owned by EX")}
+      ${mKpi("EX people & roles", exPeopleCount, "in EX directorates / offices")}
+      ${mKpi("Client bureaus", clientBureaus.length, "outside EX, touching EX", clientBureaus.length === 0 ? "warn" : "accent")}
+      ${mKpi("Cross-boundary edges", crossBoundaryTotal, "EX <-> external flows")}
+    </div>
+    <div class="m-section">
+      <h4>EX vs external entities</h4>
+      ${exDonutSegments.length === 0
+        ? '<div class="m-empty">No EX scope detected.</div>'
+        : `<div class="m-seg-donut-wrap">
+            ${mSegmentedDonut(exDonutSegments, m.N, "entities")}
+            ${mSegLegend(exDonutSegments)}
+           </div>`}
+    </div>
+    <div class="m-section">
+      <h4>Service flow across the boundary</h4>
+      <div class="kpi-grid">
+        ${mKpi("Outbound services", outboundServices, "EX -> external (SUPPORTS / RESPONSIBLE_FOR / SENDS_TO)", outboundServices > 0 ? "ok" : null)}
+        ${mKpi("Inbound requests", inboundRequests, "external -> EX (REQUESTED_BY / RECEIVES_FROM / APPROVED_BY)", inboundRequests > 0 ? "accent" : null)}
+      </div>
+    </div>
+    <div class="m-section">
+      <h4>Client bureaus EX serves <span class="m-pill">${clientBureaus.length}</span></h4>
+      ${clientBureaus.length === 0
+        ? `<div class="m-empty">No client bureau nodes detected. Model them as <code>Office</code>, <code>Directorate</code>, or <code>Front Office</code> nodes <em>outside</em> the Executive Office containment tree, then connect them to EX nodes via <code>REQUESTED_BY</code>, <code>SUPPORTS</code>, or <code>RESPONSIBLE_FOR</code> edges.</div>`
+        : `${mHBars(clientBureaus.slice(0,8).map(b => ({
+              label: b.n.label, value: b.interactions, nodeId: b.n.id,
+              sub: b.n.type, color: "var(--violet)"
+            })), { valueFormat: v => v + " edges" })}
+           <details style="margin-top:10px">
+             <summary style="cursor:pointer; font-size:11.5px; color:var(--muted);">Show as detail table</summary>
+             <table class="m-table" style="margin-top:8px">
+              <thead><tr>
+                <th>Bureau</th>
+                <th class="num">All interactions</th>
+                <th class="num">Requests of EX</th>
+                <th class="num">Services received</th>
+              </tr></thead>
+              <tbody>${bureauRows}</tbody>
+             </table>
+           </details>`}
+    </div>
+    <div class="m-section">
+      <h4>EX service catalog <span class="m-pill">${exServices.length}</span></h4>
+      ${exServices.length === 0
+        ? '<div class="m-empty">No <code>Service</code>-typed nodes in EX scope yet.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Service</th><th>Status</th></tr></thead>
+            <tbody>${exServiceList}</tbody>
+           </table>
+           ${exServices.length > 6 ? `<div style="font-size:11px; color:var(--muted); margin-top:4px;">Showing 6 of ${exServices.length}.</div>` : ""}`}
+    </div>
+  `;
+
+
+  const html = `
+    <div class="m-tabs">
+      <button class="m-tab active" data-pane="summary">Executive Summary</button>
+      <button class="m-tab" data-pane="pipeline">Pipeline</button>
+      <button class="m-tab" data-pane="service">Service</button>
+      <button class="m-tab" data-pane="risk">Risk &amp; SPOFs</button>
+      <button class="m-tab" data-pane="coverage">Coverage</button>
+      <button class="m-tab" data-pane="org">Org Footprint</button>
+      <button class="m-tab" data-pane="complexity">Complexity</button>
+    </div>
+    <div class="m-pane active" data-pane="summary">${summaryHtml}</div>
+    <div class="m-pane" data-pane="pipeline">${pipelineHtml}</div>
+    <div class="m-pane" data-pane="service">${serviceHtml}</div>
+    <div class="m-pane" data-pane="risk">${riskHtml}</div>
+    <div class="m-pane" data-pane="coverage">${covHtml}</div>
+    <div class="m-pane" data-pane="org">${orgHtml}</div>
+    <div class="m-pane" data-pane="complexity">${cxHtml}</div>
+  `;
+
+  openModal('<i class="fa-solid fa-chart-line"></i> Leadership Metrics', html, ()=>closeModal(), true);
+  document.getElementById("modal").classList.add("xl");
+  // Tab switching
+  modalBody.querySelectorAll(".m-tab").forEach(tab=>{
+    tab.onclick = ()=>{
+      modalBody.querySelectorAll(".m-tab").forEach(t=>t.classList.remove("active"));
+      modalBody.querySelectorAll(".m-pane").forEach(p=>p.classList.remove("active"));
+      tab.classList.add("active");
+      modalBody.querySelector(`.m-pane[data-pane="${tab.dataset.pane}"]`).classList.add("active");
+    };
+  });
+  // Attach pane titles for the print stylesheet (which stacks all panes)
+  modalBody.querySelectorAll(".m-pane").forEach(p => {
+    const titleMap = { summary:"Executive Summary", pipeline:"Pipeline",
+                       service:"Service", risk:"Risk & SPOFs",
+                       coverage:"Coverage", org:"Org Footprint", complexity:"Complexity" };
+    p.setAttribute("data-pane-title", titleMap[p.dataset.pane] || p.dataset.pane);
+  });
+  // Drill-down: clicking an .m-entity-link closes the modal and jumps to the
+  // node on the graph. Listener is installed once per modalBody — repeat opens
+  // re-bind to the same DOM element so no duplicate handlers stack up.
+  if (!modalBody._metricsDrillDownAttached){
+    const jumpToNode = id => {
+      if (!id) return;
+      const exists = state.graph.nodes.some(n => n.id === id);
+      if (!exists){
+        showToast("That entity no longer exists in the graph", "err");
+        return;
+      }
+      closeModal();
+      try {
+        selectNode(id);
+        if (typeof centerOnNode === "function") centerOnNode(id);
+      } catch (err){
+        // Defensive: if selection plumbing changes, the metrics shouldn't crash
+        console.error("Drill-down failed:", err);
+      }
+    };
+    modalBody.addEventListener("click", e => {
+      const link = e.target.closest(".m-entity-link");
+      if (!link) return;
+      e.preventDefault();
+      jumpToNode(link.dataset.nodeId);
+    });
+    modalBody.addEventListener("keydown", e => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const link = e.target.closest(".m-entity-link");
+      if (!link) return;
+      e.preventDefault();
+      jumpToNode(link.dataset.nodeId);
+    });
+    modalBody._metricsDrillDownAttached = true;
+  }
+  // Info-style modal: hide Save, rename Cancel to "Done"
+  document.getElementById("modal-save").style.display = "none";
+  document.getElementById("modal-cancel").innerHTML = '<i class="fa-solid fa-check"></i> Done';
+  // Inject Copy + Print action buttons into the modal footer.
+  // Clean up first in case a previous open left stale buttons.
+  const foot = document.getElementById("modal-foot");
+  ["btn-metrics-copy","btn-metrics-print"].forEach(id => {
+    const e = document.getElementById(id);
+    if (e) e.remove();
+  });
+  const copyBtn = document.createElement("button");
+  copyBtn.id = "btn-metrics-copy";
+  copyBtn.className = "btn";
+  copyBtn.style.marginRight = "auto";  // push to the left of Done
+  copyBtn.innerHTML = '<i class="fa-solid fa-copy"></i> Copy summary';
+  copyBtn.onclick = () => {
+    const md = generateMetricsMarkdown(m);
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(md).then(
+        () => showToast("Metrics summary copied to clipboard", "ok"),
+        () => showToast("Copy failed — clipboard permission denied", "err")
+      );
+    } else {
+      showToast("Clipboard API not available in this browser", "err");
+    }
+  };
+  const printBtn = document.createElement("button");
+  printBtn.id = "btn-metrics-print";
+  printBtn.className = "btn";
+  printBtn.innerHTML = '<i class="fa-solid fa-print"></i> Print';
+  printBtn.onclick = () => {
+    document.getElementById("modal-backdrop").classList.add("metrics-print");
+    // Defer print so the class settles into the cascade first
+    setTimeout(() => {
+      window.print();
+      document.getElementById("modal-backdrop").classList.remove("metrics-print");
+    }, 50);
+  };
+  foot.insertBefore(copyBtn,  foot.firstChild);
+  foot.insertBefore(printBtn, document.getElementById("modal-cancel"));
+}
+
+/* Markdown export — keeps the same structure leadership sees on screen but
+   paste-friendly for email, Slack, or any doc tool. */
+function generateMetricsMarkdown(m){
+  const c = m.counts, cov = m.coverage, risk = m.risk, org = m.org, cx = m.complexity;
+  const lines = [];
+  lines.push("# Enterprise Relationship Graph — Leadership Snapshot");
+  lines.push("");
+  const meta = [];
+  if (state.fileName) meta.push(`Source: \`${state.fileName}\``);
+  if (state.lastModifiedAt){
+    const dt = new Date(state.lastModifiedAt);
+    if (!isNaN(dt.getTime())){
+      meta.push(`Last edited ${dt.toLocaleString()}${state.lastModifiedBy ? " by " + state.lastModifiedBy : ""}`);
+    }
+  }
+  meta.push(`Generated ${new Date().toLocaleString()}`);
+  lines.push("*" + meta.join(" · ") + "*");
+  lines.push("");
+
+  lines.push("## At a glance");
+  lines.push(`- **${m.N}** entities, **${m.E}** relationships`);
+  lines.push(`- **Ownership coverage: ${cov.ownerPct}%** (${cov.withOwner} of ${m.N} have an owner)`);
+  lines.push(`- **${risk.criticalHubs.length}** critical hubs (entities with 2+ dependents)`);
+  lines.push(`- **${org.crossDirDeps}** dependency relationships cross directorate boundaries`);
+  if (risk.busFactor.length > 0){
+    lines.push(`- **${risk.busFactor.length}** individuals carry 3+ leadership assignments`);
+  }
+  lines.push("");
+
+  lines.push("## Risk");
+  if (risk.criticalHubs.length > 0){
+    lines.push("**Most depended-upon entities** (top 5):");
+    risk.criticalHubs.slice(0,5).forEach((x,i) => {
+      const backup = x.hasBackup ? "backup defined" : "no backup";
+      lines.push(`${i+1}. ${x.n.label} (${x.n.type}) — ${x.dep} dependents, ${backup}`);
+    });
+    lines.push("");
+  }
+  if (risk.busFactor.length > 0){
+    lines.push("**People carrying the most leadership load** (top 5):");
+    risk.busFactor.slice(0,5).forEach((b,i) => {
+      lines.push(`${i+1}. ${b.name} — ${b.total} total (${b.lead} as lead, ${b.owner} as owner)`);
+    });
+    lines.push("");
+  }
+  lines.push("**Other risks:**");
+  lines.push(`- ${risk.orphans.length} orphaned entities (no connections)`);
+  lines.push(`- ${risk.unownedTech.length} unowned tech assets`);
+  lines.push(`- ${risk.deprecatedInUse.length} deprecated/retired entities still in use`);
+  if (risk.vendorExposure.length > 0){
+    lines.push(`- Top vendor by exposure: ${risk.vendorExposure[0].n.label} (${risk.vendorExposure[0].dependents} connections)`);
+  }
+  lines.push("");
+
+  lines.push("## Coverage");
+  lines.push("| Field | Coverage |");
+  lines.push("|---|---|");
+  lines.push(`| Has owner       | ${cov.ownerPct}% (${cov.withOwner}/${m.N}) |`);
+  lines.push(`| Has lead        | ${cov.leadPct}% (${cov.withLead}/${m.N}) |`);
+  lines.push(`| Has description | ${cov.descPct}% (${cov.withDesc}/${m.N}) |`);
+  lines.push(`| Has tags        | ${cov.tagPct}% (${cov.withTags}/${m.N}) |`);
+  lines.push("");
+  lines.push(`${cov.lowQuality} entities are stub records (no owner, lead, or description).`);
+  lines.push("");
+
+  if (org.dirStats.length > 0){
+    lines.push("## Per-directorate footprint");
+    lines.push("| Directorate | Entities | Offices | People | Tech | Owner % |");
+    lines.push("|---|---:|---:|---:|---:|---:|");
+    org.dirStats.forEach(d => {
+      lines.push(`| ${d.name} | ${d.totalInDir} | ${d.offices} | ${d.people} | ${d.systemsOwned} | ${d.totalInDir === 0 ? "—" : d.ownPct + "%"} |`);
+    });
+    lines.push("");
+  }
+
+  // Pipeline section
+  const pl = m.pipeline;
+  lines.push("## Pipeline");
+  lines.push(`- **${pl.lifecycle.active}** entities active in production`);
+  lines.push(`- **${pl.inFlightCount}** entities in flight (pilot + planned + proposed)`);
+  lines.push(`- **${pl.lifecycle.retired}** entities retired/deprecated`);
+  lines.push(`- Active automations: ${pl.activeWorkflows} workflows + ${pl.activeAutomations} Power Automate flows`);
+  lines.push(`- Active analytics: ${pl.activeDashboards} Power BI dashboards`);
+  lines.push(`- Active collaboration: ${pl.activeSites} SharePoint sites, ${pl.activeTeams} Microsoft Teams`);
+  if (pl.perTypeLifecycle.length > 0){
+    lines.push("");
+    lines.push("**Per-type lifecycle:**");
+    lines.push("| Type | Active | Pilot | Planned | Proposed | Retired | Total |");
+    lines.push("|---|---:|---:|---:|---:|---:|---:|");
+    pl.perTypeLifecycle.forEach(t => {
+      lines.push(`| ${t.type} | ${t.active} | ${t.pilot} | ${t.planned} | ${t.proposed} | ${t.retired} | ${t.total} |`);
+    });
+  }
+  lines.push("");
+  lines.push(`Governance pipeline: ${pl.reqsByStage.active} active requirements, ${pl.reqsByStage.pilot + pl.reqsByStage.planned} in flight, ${pl.reqsByStage.proposed} proposed; ${pl.decisionsCount} decisions recorded.`);
+  lines.push("");
+
+  // Service section
+  const sv = m.service;
+  lines.push("## Service");
+  if (sv.exRoots.length === 0){
+    lines.push("*No Executive Office node found in the graph. Add one and connect downstream units via CONTAINS to populate these views.*");
+  } else {
+    lines.push(`- **${sv.exNodes.length}** entities in EX scope (${Math.round(sv.exNodes.length / m.N * 100)}% of the graph)`);
+    lines.push(`- ${sv.exTechCount} EX-owned tech assets, ${sv.exWorkflowsCount} EX automations, ${sv.exPeopleCount} EX people/roles`);
+    lines.push(`- **${sv.clientBureaus.length}** client bureaus touching EX`);
+    lines.push(`- ${sv.crossBoundaryTotal} cross-boundary edges total: ${sv.outboundServices} outbound services, ${sv.inboundRequests} inbound requests`);
+    if (sv.clientBureaus.length > 0){
+      lines.push("");
+      lines.push("**Client bureaus by interaction volume:**");
+      lines.push("| Bureau | All interactions | Requests of EX | Services received |");
+      lines.push("|---|---:|---:|---:|");
+      sv.clientBureaus.slice(0, 8).forEach(b => {
+        lines.push(`| ${b.n.label} (${b.n.type}) | ${b.interactions} | ${b.requests} | ${b.servicesReceived} |`);
+      });
+    }
+    if (sv.exServices.length > 0){
+      lines.push("");
+      lines.push(`**EX service catalog:** ${sv.exServices.length} Service-typed nodes in EX scope.`);
+    }
+  }
+  lines.push("");
+
+  lines.push("## Complexity");
+  if (cx.byDeg[0]) lines.push(`- Top hub: **${cx.byDeg[0].n.label}** (${cx.byDeg[0].d} connections)`);
+  lines.push(`- System integrations: ${cx.integrationCount} (INTEGRATES_WITH + CONNECTED_TO edges)`);
+  lines.push(`- Automations cataloged: ${cx.automationCount} (workflows + Power Automate flows)`);
+  lines.push(`- Longest dependency chain: ${cx.longest} hops`);
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+
+/* ============================================================================
    WIRE UP
    ============================================================================ */
 function wireUp(){
@@ -4740,6 +6375,7 @@ function wireUp(){
 
   document.getElementById("btn-snap-save").onclick = saveCurrentSnapshot;
   document.getElementById("btn-help").onclick = openHelp;
+  document.getElementById("btn-metrics").onclick = openMetricsModal;
   document.getElementById("btn-manage-types").onclick = openManageTypesModal;
 
   document.getElementById("tb-zoom-in").onclick = ()=>{
