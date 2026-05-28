@@ -566,6 +566,19 @@
   .ref-grid{display:grid; grid-template-columns:160px 1fr; gap:6px 12px; font-size:12.5px}
   .ref-grid .rk{color:var(--text); font-weight:500}
   .ref-grid .rv{color:var(--muted)}
+  .help-pane pre{
+    background:var(--card); border:1px solid var(--border);
+    border-radius:6px; padding:10px 12px; margin:0 0 10px;
+    font-family:ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size:12px; line-height:1.5; color:var(--text-2);
+    overflow-x:auto;
+  }
+  .help-pane code{
+    background:rgba(56,189,248,0.08); border:1px solid rgba(56,189,248,0.18);
+    border-radius:4px; padding:1px 5px;
+    font-family:ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size:11.5px; color:var(--text);
+  }
   .kbd-grid{display:grid; grid-template-columns:90px 1fr; gap:6px 14px; font-size:12.5px}
   .kbd-grid .rv{color:var(--text-2)}
 
@@ -1225,7 +1238,7 @@
   </header>
 
   <aside class="sidebar">
-    <div class="section">
+    <div class="section" data-section="search">
       <button class="section-head" type="button" aria-expanded="true"><span><i class="fa-solid fa-magnifying-glass icon" aria-hidden="true"></i>&nbsp; Search</span><i class="fa-solid fa-chevron-down chev" aria-hidden="true"></i></button>
       <div class="section-body">
         <div class="field with-icon">
@@ -1239,7 +1252,7 @@
       </div>
     </div>
 
-    <div class="section">
+    <div class="section" data-section="view-controls">
       <button class="section-head" type="button" aria-expanded="true"><span><i class="fa-solid fa-sliders icon" aria-hidden="true"></i>&nbsp; View Controls</span><i class="fa-solid fa-chevron-down chev" aria-hidden="true"></i></button>
       <div class="section-body">
         <div class="field">
@@ -1281,7 +1294,7 @@
       </div>
     </div>
 
-    <div class="section">
+    <div class="section" data-section="node-types">
       <button class="section-head" type="button" aria-expanded="true"><span><i class="fa-solid fa-circle icon" aria-hidden="true"></i>&nbsp; Node Types</span><i class="fa-solid fa-chevron-down chev" aria-hidden="true"></i></button>
       <div class="section-body">
         <div class="filter-controls">
@@ -1292,7 +1305,7 @@
       </div>
     </div>
 
-    <div class="section">
+    <div class="section" data-section="relationship-types">
       <button class="section-head" type="button" aria-expanded="true"><span><i class="fa-solid fa-arrow-right-long icon" aria-hidden="true"></i>&nbsp; Relationship Types</span><i class="fa-solid fa-chevron-down chev" aria-hidden="true"></i></button>
       <div class="section-body">
         <div class="filter-controls">
@@ -1303,7 +1316,7 @@
       </div>
     </div>
 
-    <div class="section">
+    <div class="section" data-section="edit-graph">
       <button class="section-head" type="button" aria-expanded="true"><span><i class="fa-solid fa-plus icon" aria-hidden="true"></i>&nbsp; Edit Graph</span><i class="fa-solid fa-chevron-down chev" aria-hidden="true"></i></button>
       <div class="section-body">
         <div class="btn-row">
@@ -1323,7 +1336,7 @@
       </div>
     </div>
 
-    <div class="section">
+    <div class="section" data-section="snapshots">
       <button class="section-head" type="button" aria-expanded="true"><span><i class="fa-solid fa-camera icon" aria-hidden="true"></i>&nbsp; Snapshots</span><i class="fa-solid fa-chevron-down chev" aria-hidden="true"></i></button>
       <div class="section-body">
         <button class="btn primary block" id="btn-snap-save" style="margin-bottom:6px"><i class="fa-solid fa-floppy-disk"></i> Save current as snapshot</button>
@@ -1331,7 +1344,7 @@
       </div>
     </div>
 
-    <div class="section">
+    <div class="section" data-section="data">
       <button class="section-head" type="button" aria-expanded="true"><span><i class="fa-solid fa-database icon" aria-hidden="true"></i>&nbsp; Data</span><i class="fa-solid fa-chevron-down chev" aria-hidden="true"></i></button>
       <div class="section-body">
         <div style="font-size:10.5px; color:var(--muted); margin-bottom:4px; letter-spacing:0.3px">Working file</div>
@@ -1781,8 +1794,8 @@ function drawIconSvg(ctx, spec, x, y, iconSize, color){
 const SAMPLE_DATA = (function(){
   const nodes=[], edges=[];
   const n=(id,label,type,extra={})=>nodes.push(Object.assign({
-    id,label,type,description:"",owner:"",lead:"",parent:"",office:"",
-    directorate:"",platform:"",url:"",status:"Active",tags:[],notes:""
+    id,label,type,description:"",owner:"",lead:"",parent:"",office:"",team:"",
+    directorate:"",platform:"",url:"",email:"",phone:"",status:"Active",tags:[],notes:""
   },extra));
   let ei=1; const e=(s,t,ty,extra={})=>edges.push(Object.assign({id:"e"+(ei++),source:s,target:t,type:ty,description:"",notes:""},extra));
 
@@ -1939,6 +1952,61 @@ const SAMPLE_DATA = (function(){
 /* ---------- STATE ---------- */
 const STORAGE_KEY = "enterprise-relationship-graph.v2";
 const SNAP_KEY = "enterprise-relationship-graph.snapshots.v2";
+const UI_STATE_KEY = "erg.uiState.v1";
+
+// Persisted UI preferences: which sidebar sections are collapsed, plus the
+// legend show/hide state. Stored as one object under UI_STATE_KEY so adding
+// new keys later doesn't fragment localStorage.
+function loadUIState(){
+  try {
+    const raw = localStorage.getItem(UI_STATE_KEY);
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    return (obj && typeof obj === "object") ? obj : {};
+  } catch(_){ return {}; }
+}
+function saveUIState(patch){
+  try {
+    const cur = loadUIState();
+    const merged = Object.assign({}, cur, patch);
+    localStorage.setItem(UI_STATE_KEY, JSON.stringify(merged));
+  } catch(_){}
+}
+function captureSidebarCollapse(){
+  const collapsed = [];
+  document.querySelectorAll(".section[data-section]").forEach(sec => {
+    if (sec.classList.contains("collapsed")) collapsed.push(sec.dataset.section);
+  });
+  saveUIState({ collapsedSections: collapsed });
+}
+function restoreSidebarCollapse(){
+  const ui = loadUIState();
+  const collapsed = new Set(Array.isArray(ui.collapsedSections) ? ui.collapsedSections : []);
+  document.querySelectorAll(".section[data-section]").forEach(sec => {
+    const want = collapsed.has(sec.dataset.section);
+    sec.classList.toggle("collapsed", want);
+    const head = sec.querySelector(".section-head");
+    if (head) head.setAttribute("aria-expanded", want ? "false" : "true");
+  });
+}
+function captureLegendCollapse(){
+  const lg = document.getElementById("legend");
+  if (!lg) return;
+  saveUIState({ legendCollapsed: lg.classList.contains("collapsed") });
+}
+function restoreLegendCollapse(){
+  const ui = loadUIState();
+  if (typeof ui.legendCollapsed !== "boolean") return;
+  const lg = document.getElementById("legend");
+  if (!lg) return;
+  lg.classList.toggle("collapsed", ui.legendCollapsed);
+  const btn = document.getElementById("legend-toggle");
+  if (btn) btn.textContent = ui.legendCollapsed ? "show" : "hide";
+}
+function restoreUIState(){
+  restoreSidebarCollapse();
+  restoreLegendCollapse();
+}
 const HISTORY_LIMIT = 30;
 
 const state = {
@@ -3557,6 +3625,16 @@ function renderNodeProfile(el, node){
   if (node.url && node.url.trim()){
     addKv("URL", `<a href="${escapeHtml(node.url)}" target="_blank" rel="noopener">${escapeHtml(node.url)}</a>`, true);
   }
+  if (node.email && node.email.trim()){
+    // Support comma-separated addresses (primary + aliases) by linking each one
+    const emailLinks = node.email.split(",").map(s => s.trim()).filter(Boolean)
+      .map(addr => `<a href="mailto:${escapeHtml(addr)}">${escapeHtml(addr)}</a>`)
+      .join(", ");
+    addKv("Email", emailLinks, true);
+  }
+  if (node.phone && node.phone.trim()){
+    addKv("Phone", `<a href="tel:${escapeHtml(node.phone.replace(/[^0-9+]/g, ""))}">${escapeHtml(node.phone)}</a>`, true);
+  }
 
   const usedEdgeIds = new Set();
   const sectionsHtml = PROFILE_SECTIONS.map(sec=>{
@@ -3888,6 +3966,8 @@ function nodeFormHtml(n){
     <div class="field"><label for="f-team">Team <span class="field-hint">creates a CONTAINS edge if matches a node</span></label><input id="f-team" type="text" list="dl-team" value="${escapeHtml(n.team||"")}" placeholder="Pick a team…"/></div>
     <div class="field"><label for="f-platform">Platform <span class="field-hint">creates a HOSTED_ON edge if matches a node</span></label><input id="f-platform" type="text" list="dl-platform" value="${escapeHtml(n.platform||"")}" placeholder="Pick a platform…"/></div>
     <div class="field"><label for="f-url">URL</label><input id="f-url" type="url" value="${escapeHtml(n.url||"")}" placeholder="https://..."/></div>
+    <div class="field"><label for="f-email">Email <span class="field-hint">primary contact, comma-separate aliases if needed</span></label><input id="f-email" type="email" value="${escapeHtml(n.email||"")}" placeholder="name@org.com"/></div>
+    <div class="field"><label for="f-phone">Phone</label><input id="f-phone" type="tel" value="${escapeHtml(n.phone||"")}" placeholder="optional"/></div>
     <div class="field"><label for="f-tags">Tags (comma separated)</label><input id="f-tags" type="text" value="${escapeHtml((n.tags||[]).join(", "))}"/></div>
     <div class="field"><label for="f-notes">Notes</label><textarea id="f-notes">${escapeHtml(n.notes||"")}</textarea></div>
   `;
@@ -3909,6 +3989,8 @@ function readNodeForm(){
     team: document.getElementById("f-team").value,
     platform: document.getElementById("f-platform").value,
     url: document.getElementById("f-url").value,
+    email: document.getElementById("f-email").value.trim(),
+    phone: document.getElementById("f-phone").value.trim(),
     tags: document.getElementById("f-tags").value.split(",").map(s=>s.trim()).filter(Boolean),
     notes: document.getElementById("f-notes").value
   };
@@ -4504,7 +4586,7 @@ function loadSample(){
 }
 
 /* ----- Tabular export (CSV + XLSX) ----- */
-const NODE_EXPORT_COLS = ["id","label","type","status","owner","lead","parent","reportsTo","directorate","office","platform","url","tags","notes","description","icon"];
+const NODE_EXPORT_COLS = ["id","label","type","status","owner","lead","parent","reportsTo","directorate","office","team","platform","url","email","phone","tags","notes","description","icon"];
 const EDGE_EXPORT_COLS = ["id","source","source_label","target","target_label","type","description","notes","auto","autoField"];
 
 function nodeToRow(n){
@@ -4982,6 +5064,7 @@ function openHelp(){
     <div class="help-tabs">
       <button class="help-tab active" data-pane="quick">Quick Start</button>
       <button class="help-tab" data-pane="edit">Editing</button>
+      <button class="help-tab" data-pane="model">Modeling</button>
       <button class="help-tab" data-pane="views">Views</button>
       <button class="help-tab" data-pane="metrics">Metrics</button>
       <button class="help-tab" data-pane="data">Data</button>
@@ -5014,6 +5097,132 @@ function openHelp(){
       <p>Every change is undoable up to 30 steps, and redo works in both directions through the history. Use the sidebar buttons, the canvas toolbar, or <kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd>. History captures the full state: nodes, edges, custom types, and collapsed branches.</p>
       <h4>Reversing an edge</h4>
       <p>Select an edge → "Reverse direction" in its profile or right-click menu. Useful when you realize you connected the wrong way.</p>
+    </div>
+    <div class="help-pane" data-pane="model">
+      <h4>What this guide covers</h4>
+      <p>The graph is most valuable when it captures the implicit dependencies in your operating model &mdash; who owns what, what runs on what, who serves whom. The patterns below have come out of real modeling conversations and they save rework later. Read end to end the first time you populate a real graph, then keep this tab open as a reference.</p>
+
+      <h4>1. Start with the org skeleton</h4>
+      <p>Every other node hangs off the org hierarchy. Build it once, top down:</p>
+      <pre>Executive Office
+  └─ Front Office
+      └─ Directorate
+          └─ Office
+              └─ Team
+                  └─ Person</pre>
+      <p>For each level, fill <strong>only the most specific structural field</strong>. <em>Parent</em>, <em>Directorate</em>, <em>Office</em>, and <em>Team</em> all create CONTAINS edges &mdash; filling two with the same value creates duplicate edges.</p>
+      <ul>
+        <li><strong>Front Office under Exec Office</strong> &rarr; fill <em>Parent</em></li>
+        <li><strong>Directorate under Front Office</strong> &rarr; fill <em>Parent</em></li>
+        <li><strong>Office under Directorate</strong> &rarr; fill <em>Directorate</em></li>
+        <li><strong>Team under Office</strong> &rarr; fill <em>Office</em></li>
+        <li><strong>Person under Team</strong> &rarr; fill <em>Team</em> (or <em>Office</em> if they're not on a specific team)</li>
+      </ul>
+
+      <h4>2. Assigning directors, leads, and managers</h4>
+      <p>The <em>Lead</em> field on any node auto-creates a RESPONSIBLE_FOR edge <strong>only if the value matches an existing Person node</strong> (case-insensitive). Two gotchas:</p>
+      <ol>
+        <li><strong>Create the Person first.</strong> Typing "Jane Doe" into Lead before Jane exists as a Person saves the text but doesn't create the edge.</li>
+        <li><strong>Re-save the host node if the Person was added later.</strong> The auto-edge fires on save, not retroactively. Open the Directorate again and just save it.</li>
+      </ol>
+      <p>To capture a person's title (Director, Manager, Architect), put it in their Person node's <em>description</em> field. Don't try to encode it in the Lead field of the org unit &mdash; that breaks the edge match.</p>
+      <p>For reporting lines, fill <em>Reports to</em> on the Person to auto-create the REPORTS_TO edge to their manager.</p>
+
+      <h4>3. Platform vs System vs Application</h4>
+      <p>The fuzzy distinction:</p>
+      <ul>
+        <li><strong>Platform</strong> &mdash; a foundation that hosts other entities in your graph. If anything else in your catalog has a HOSTED_ON edge pointing at it, it's a Platform.</li>
+        <li><strong>System</strong> &mdash; a named system used for a specific business function. Out-of-the-box; nothing in your graph is built on top of it.</li>
+        <li><strong>Application</strong> &mdash; a discrete app, typically hosted on a Platform.</li>
+      </ul>
+      <p><strong>The deciding test:</strong> does anything else in my graph point at this via HOSTED_ON? <em>Yes</em> &rarr; Platform. <em>No</em> &rarr; System.</p>
+      <p>Common edge cases:</p>
+      <ul>
+        <li><strong>ServiceNow / Salesforce</strong> &mdash; start as System; promote to Platform once you have 2+ custom or scoped apps on them. Most orgs end up calling them Platforms eventually.</li>
+        <li><strong>Power Platform</strong> &mdash; always Platform, and an umbrella for Power Apps, Power Automate, Power BI, Dataverse, Copilot Studio.</li>
+        <li><strong>SharePoint Online / Microsoft Teams / Exchange Online / Dataverse</strong> &mdash; always Platforms.</li>
+      </ul>
+      <p>Tip: it's much easier to upgrade a System to a Platform later (just change the type on the node) than to downgrade. Start conservative.</p>
+
+      <h4>4. The M365 stack recipe</h4>
+      <p>Create the M365 platforms once. Point everything else at them. On each child Platform, fill <em>Parent</em> = its parent's label to auto-create the CONTAINS edge upward:</p>
+      <pre>Microsoft 365 (Platform)
+  ├─[CONTAINS]→ SharePoint Online (Platform)
+  ├─[CONTAINS]→ Microsoft Teams (Platform)
+  ├─[CONTAINS]→ Exchange Online (Platform)
+  └─[CONTAINS]→ Power Platform (Platform)
+       ├─[CONTAINS]→ Power Apps (Platform)
+       ├─[CONTAINS]→ Power Automate (Platform)
+       ├─[CONTAINS]→ Power BI (Platform)
+       ├─[CONTAINS]→ Dataverse (Platform)
+       └─[CONTAINS]→ Copilot Studio (Platform)</pre>
+      <p>Now every site, team, mailbox, flow, dashboard, and Dataverse table just needs to point at the right Platform via HOSTED_ON. The metrics tab will surface M365 as the top-level hub.</p>
+
+      <h4>5. SharePoint sites &mdash; the three-tier pattern</h4>
+      <ol>
+        <li><strong>Tier 1 (always do this).</strong> Quick-Connect from the owning Office (or Directorate, or Executive Office) to the SharePoint Site. The dialog pre-fills <code>HAS_SITE</code>.</li>
+        <li><strong>Tier 2 (recommended).</strong> On the SharePoint Site node, fill <em>Platform</em> = <code>SharePoint Online</code>. Auto-creates <code>HOSTED_ON</code> &rarr; SharePoint Online. This makes SharePoint Online surface as a critical hub in the Risk tab.</li>
+        <li><strong>Tier 3 (completeness).</strong> Already done if you built the M365 stack above &mdash; SharePoint Online &rarr; CONTAINS &rarr; Microsoft 365.</li>
+      </ol>
+      <p>Same pattern applies to Microsoft Teams (<code>HAS_TEAM</code> + <code>HOSTED_ON Microsoft Teams</code>), Mailboxes (<code>HAS_MAILBOX</code> + <code>HOSTED_ON Exchange Online</code>), Power Automate flows (<code>HOSTED_ON Power Automate</code>), Power BI dashboards (<code>HOSTED_ON Power BI</code>), and so on.</p>
+
+      <h4>6. Teams vs Sites vs Groups vs Mailboxes</h4>
+      <p>Every Microsoft Team has an underlying O365 Group that automatically gets a SharePoint site, group mailbox, Planner board, OneNote, etc. <strong>Don't model that 1:1</strong> &mdash; it's too much duplication.</p>
+      <p>Recommended pattern:</p>
+      <ul>
+        <li><strong>Microsoft Team</strong> &mdash; whenever there's an active Teams workspace with channels and chat.</li>
+        <li><strong>SharePoint Site</strong> &mdash; when (a) the site has no Team behind it (intranet, communication sites), or (b) the site's content/structure matters separately from the Team chat.</li>
+        <li><strong>O365 Group</strong> &mdash; for <em>standalone</em> Groups: distribution lists, security/permission groups, non-Team Group uses. <strong>Skip</strong> when the Group is invisible behind a Team &mdash; it's redundant.</li>
+        <li><strong>Mailbox</strong> &mdash; for shared / function mailboxes (e.g. <code>helpdesk@org.com</code>), Group mailboxes you actively monitor. <strong>Skip</strong> individual person mailboxes &mdash; use the Person node.</li>
+      </ul>
+      <p><strong>Rule of thumb:</strong> if you'd talk about it in a leadership review, give it its own node. If it just exists silently behind another node, skip it.</p>
+
+      <h4>7. Worked example: the Executive Office</h4>
+      <p>A realistic leadership-level workspace, with all three tiers populated:</p>
+      <pre>Executive Office
+  ├─[HAS_TEAM]→     Microsoft Team "EO Team"          ─[HOSTED_ON]→ Microsoft Teams
+  ├─[HAS_SITE]→     SharePoint Site "EO Public"       ─[HOSTED_ON]→ SharePoint Online
+  ├─[HAS_SITE]→     SharePoint Site "EO Internal"     ─[HOSTED_ON]→ SharePoint Online
+  ├─[HAS_MAILBOX]→  Mailbox "executiveoffice@org"     ─[HOSTED_ON]→ Exchange Online
+  └─[HAS_O365_GROUP]→ O365 Group "EO Leadership DL"   ─[HOSTED_ON]→ Microsoft 365</pre>
+      <p>Read top to bottom: the EO has a Teams workspace for chat, two SharePoint sites (one public, one internal), a shared mailbox, and a standalone distribution Group for leadership announcements. Each surface points at its hosting platform. Every platform points at M365.</p>
+
+      <h4>8. Quick reference</h4>
+      <p>What to fill when you add each kind of node:</p>
+      <div class="ref-grid">
+        <div class="rk">New Front Office</div><div class="rv">Parent = Executive Office</div>
+        <div class="rk">New Directorate</div><div class="rv">Parent = Front Office; Lead = director's Person name</div>
+        <div class="rk">New Office</div><div class="rv">Directorate = directorate's name; Lead = office head's Person name</div>
+        <div class="rk">New Team (org)</div><div class="rv">Office = office's name; Lead = team lead's Person name</div>
+        <div class="rk">New Person</div><div class="rv">Team (or Office) = their org unit; Reports to = their manager</div>
+        <div class="rk">New System</div><div class="rv">Owner = owning office's name</div>
+        <div class="rk">New Platform (sub-platform)</div><div class="rv">Parent = host platform's name (e.g. SharePoint Online's Parent = Microsoft 365)</div>
+        <div class="rk">New Application</div><div class="rv">Owner = owning office; Platform = host platform (e.g. Power Apps)</div>
+        <div class="rk">New SharePoint Site</div><div class="rv">Quick-Connect from Office (HAS_SITE); Platform = SharePoint Online</div>
+        <div class="rk">New Microsoft Team</div><div class="rv">Quick-Connect from Office (HAS_TEAM); Platform = Microsoft Teams</div>
+        <div class="rk">New Mailbox (shared)</div><div class="rv">Quick-Connect from Office (HAS_MAILBOX); Platform = Exchange Online</div>
+        <div class="rk">New O365 Group (standalone)</div><div class="rv">Quick-Connect from Office (HAS_O365_GROUP); Platform = Microsoft 365</div>
+        <div class="rk">New Workflow / Flow</div><div class="rv">Owner = owning office; Platform = Power Automate (if it's a Power Automate flow)</div>
+        <div class="rk">New Power BI Dashboard</div><div class="rv">Owner = owning office; Platform = Power BI</div>
+        <div class="rk">New Vendor</div><div class="rv">Connect via Quick-Connect (USES / DEPENDS_ON) from systems that use them</div>
+      </div>
+
+      <h4>9. Signs you're modeling well</h4>
+      <ul>
+        <li>The <strong>Risk tab</strong> surfaces actual platforms as critical hubs (not just org units with many children).</li>
+        <li><strong>Cross-directorate dependency count</strong> on the Service tab is non-zero &mdash; real org work crosses boundaries.</li>
+        <li><strong>Ownership coverage</strong> is &gt;75%; few stub records.</li>
+        <li>Per-directorate footprint sizes feel <strong>proportionate</strong> to actual headcount.</li>
+        <li>The <strong>hierarchical layout</strong> looks like an org chart you could hand to a new hire.</li>
+      </ul>
+
+      <h4>10. Signs you're overcomplicating</h4>
+      <ul>
+        <li>Every Microsoft Team has a sibling SharePoint Site, O365 Group, AND Mailbox node. You're modeling M365's <em>implementation</em> rather than your <em>operating model</em>.</li>
+        <li>Person nodes for every individual contributor. You probably only need leaders, key roles, and SMEs.</li>
+        <li>Platform hierarchies three levels deep. Most orgs stop at two (M365 &rarr; SharePoint Online, not M365 &rarr; SharePoint Online &rarr; SharePoint Sites Service).</li>
+        <li>Edge counts where one office has &gt;50 outgoing edges. Either collapse some via Teams/Sites, or split the office.</li>
+      </ul>
     </div>
     <div class="help-pane" data-pane="views">
       <h4>Layouts</h4>
@@ -6517,6 +6726,7 @@ function wireUp(){
     lg.classList.toggle("collapsed");
     document.getElementById("legend-toggle").textContent =
       lg.classList.contains("collapsed") ? "show" : "hide";
+    captureLegendCollapse();
   };
   document.querySelectorAll(".legend-tab").forEach(tab=>{
     tab.onclick = ()=>{
@@ -6550,6 +6760,7 @@ function wireUp(){
     h.onclick = ()=>{
       const collapsed = h.parentElement.classList.toggle("collapsed");
       h.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      captureSidebarCollapse();
     };
   });
   // Filter all/none
@@ -6697,6 +6908,8 @@ function boot(){
       localStorage.setItem("erg.tour-seen", "1");
     }, 600);
   }
+  // Apply persisted UI prefs (sidebar section + legend collapse states)
+  restoreUIState();
 }
 
 boot();
