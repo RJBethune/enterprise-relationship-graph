@@ -224,7 +224,10 @@
     background:rgba(251,191,36,0.08); border-color:rgba(251,191,36,0.30);
   }
   .form-callout.warn i{color:var(--warn)}
-  input[type="text"], input[type="url"], select, textarea{
+  input[type="text"], input[type="url"], input[type="email"],
+  input[type="tel"], input[type="search"], input[type="number"],
+  input[type="password"], input[type="date"], input[type="time"],
+  select, textarea{
     background:var(--bg-1); border:1px solid var(--border); color:var(--text);
     padding:7px 9px; border-radius:var(--radius-sm); font-size:13px;
     outline:none; transition:border-color 0.15s, box-shadow 0.15s;
@@ -238,6 +241,34 @@
     box-shadow:0 0 0 2px rgba(56,189,248,0.35);
   }
   textarea{resize:vertical; min-height:60px}
+  /* Native select dropdown popup — Chrome/Edge respect background/color on
+     options; Safari and some Firefox versions partially apply them. The
+     closed select itself stays styled by the rule above. */
+  select{
+    /* Strip default browser appearance so background/font are respected */
+    appearance:none; -webkit-appearance:none; -moz-appearance:none;
+    background-image:linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                     linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position:calc(100% - 14px) center, calc(100% - 9px) center;
+    background-size:5px 5px, 5px 5px;
+    background-repeat:no-repeat;
+    padding-right:28px;
+  }
+  select::-ms-expand{display:none}
+  option, optgroup{
+    background:var(--panel); color:var(--text);
+    padding:4px 8px; font-family:inherit;
+  }
+  optgroup{
+    color:var(--accent-2); font-weight:600; font-style:normal;
+    text-transform:uppercase; letter-spacing:0.5px; font-size:11px;
+  }
+  option{font-style:normal}
+  option:checked{
+    background:var(--card-2); color:var(--text);
+  }
+  /* Datalist popups are browser-rendered and unstyleable beyond the input
+     itself, so nothing extra needed here. */
   .field.with-icon{position:relative}
   .field.with-icon input{padding-left:30px}
   .field.with-icon .field-icon{
@@ -1452,13 +1483,13 @@
 const NODE_TYPES = [
   "Executive Office","Front Office","Directorate","Office","Team","Person","Role",
   "System","Platform","Application","SharePoint Site","Microsoft Team","O365 Group",
-  "Mailbox","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset",
+  "Mailbox","Microsoft Form","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset",
   "Document","Requirement","Decision","Vendor","Service","Environment","Other"
 ];
 const EDGE_TYPES = [
   "CONTAINS","REPORTS_TO","OWNS","MANAGES","SUPPORTS","USES","DEPENDS_ON",
   "HOSTED_ON","CONNECTED_TO","INTEGRATES_WITH","HAS_SITE","HAS_TEAM",
-  "HAS_O365_GROUP","HAS_MAILBOX","SENDS_TO","RECEIVES_FROM","AUTOMATES",
+  "HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","SENDS_TO","RECEIVES_FROM","AUTOMATES",
   "STORES_DATA_IN","VISUALIZED_IN","DOCUMENTED_IN","APPROVED_BY","REQUESTED_BY",
   "RESPONSIBLE_FOR","BACKUP_FOR","PART_OF","OTHER"
 ];
@@ -1479,6 +1510,7 @@ const TYPE_STYLE = {
   "Microsoft Team":        { color:"#C084FC", size:15, shape:"diamond", icon:"" }, // users
   "O365 Group":            { color:"#DDD6FE", size:14, shape:"diamond", icon:"" }, // user-friends
   "Mailbox":               { color:"#FDE68A", size:12, shape:"diamond", icon:"" }, // mailbox
+  "Microsoft Form":        { color:"#8B5CF6", size:13, shape:"diamond", icon:"" }, // clipboard-list
   "Workflow":              { color:"#A3E635", size:13, shape:"tri",     icon:"" }, // diagram-project
   "Power Automate Flow":   { color:"#A3E635", size:13, shape:"tri",     icon:"" }, // bolt
   "Power BI Dashboard":    { color:"#FACC15", size:14, shape:"tri",     icon:"" }, // chart-bar
@@ -1530,7 +1562,7 @@ function countNodesOfType(name){
 // to applications, systems, and platforms a node is responsible for, so
 // "collapse Customer Engagement Office" hides CE's whole purview.
 const COLLAPSE_EDGE_TYPES = [
-  "CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX",
+  "CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM",
   "OWNS","MANAGES"
 ];
 function getCollapseChildren(nodeId){
@@ -1738,6 +1770,7 @@ const ICON_REGISTRY = {
   "onenote":        { kind:"svg", viewBox:"0 0 24 24", svg:"M5 3h13v18H5V3zM2 5.5h2v2H2v-2zm0 4.5h2v2H2v-2zm0 4.5h2v2H2v-2zm0 4.5h2v2H2v-2z", label:"OneNote" },
   "power-bi":       { kind:"svg", viewBox:"0 0 24 24", svg:"M5 19V9h3v10H5zm6 0V4h3v15h-3zm6 0v-7h3v7h-3z", label:"Power BI" },
   "power-automate": { kind:"svg", viewBox:"0 0 24 24", svg:"M13 2L4 13h6l-1 9 9-12h-6l1-8z", label:"Power Automate" },
+  "forms":          { kind:"svg", viewBox:"0 0 24 24", svg:"M9 3h6v2H9V3zM5 5h14v16H5V5zM7 9h2v1H7V9zM10 9h7v1h-7V9zM7 12h2v1H7v-1zM10 12h7v1h-7v-1zM7 15h2v1H7v-1zM10 15h7v1h-7v-1zM7 18h2v1H7v-1zM10 18h5v1h-5v-1z", label:"Microsoft Forms" },
   // Other product stand-ins (still using FA solid icons)
   "servicenow":     { font:FA_SOLID_FONT, weight:900, unicode:"", label:"ServiceNow (gears)" },
   "arcgis":         { font:FA_SOLID_FONT, weight:900, unicode:"", label:"ArcGIS (map)" }
@@ -2359,7 +2392,7 @@ function ensurePositions(){
 }
 
 /* ----- Hierarchy helpers (shared by hierarchical / hierarchical-lr / radial) ----- */
-const HIER_DOWN_TYPES = ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","OWNS","MANAGES"];
+const HIER_DOWN_TYPES = ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","OWNS","MANAGES"];
 const HIER_UP_TYPES   = ["REPORTS_TO","PART_OF"];
 
 // Build a forest from the graph: each node gets at most one parent.
@@ -3920,10 +3953,40 @@ function nodeFormHtml(n){
   const typeOpts = customOpts
     ? `<optgroup label="Built-in">${builtinOpts}</optgroup><optgroup label="Custom">${customOpts}</optgroup>`
     : builtinOpts;
-  const iconOpts = ['<option value="">Type default</option>']
-    .concat(Object.keys(ICON_REGISTRY).map(k =>
-      `<option value="${k}" ${n.icon===k?"selected":""}>${ICON_REGISTRY[k].label}</option>`
-    )).join("");
+  // Group icons into named optgroups so the 25+ entries are scannable.
+  // M365 = the SVG brand icons we added; Brand = FA brand glyphs (microsoft,
+  // salesforce, github, ...); Other = enterprise stand-ins (servicenow, arcgis).
+  const ICON_GROUPS = [
+    { label: "Microsoft 365",
+      keys: ["sharepoint","teams","onedrive","outlook","word","excel",
+             "powerpoint","onenote","power-bi","power-automate","forms"] },
+    { label: "Brand",
+      keys: ["microsoft","windows","salesforce","github","gitlab","slack",
+             "aws","google","jira","confluence","docker","apple","linux"] },
+    { label: "Other products",
+      keys: ["servicenow","arcgis"] }
+  ];
+  const seen = new Set();
+  const groupHtml = grp => {
+    const opts = grp.keys
+      .filter(k => ICON_REGISTRY[k])
+      .map(k => {
+        seen.add(k);
+        return `<option value="${k}" ${n.icon===k?"selected":""}>${ICON_REGISTRY[k].label}</option>`;
+      })
+      .join("");
+    return opts ? `<optgroup label="${grp.label}">${opts}</optgroup>` : "";
+  };
+  // Any registry keys not yet covered by a group get an "Other" bucket so
+  // future icon additions still appear without code changes.
+  const ungroupedKeys = Object.keys(ICON_REGISTRY).filter(k => !seen.has(k));
+  const ungroupedHtml = ungroupedKeys.length
+    ? `<optgroup label="Other">${ungroupedKeys.map(k =>
+        `<option value="${k}" ${n.icon===k?"selected":""}>${ICON_REGISTRY[k].label}</option>`
+      ).join("")}</optgroup>` : "";
+  const iconOpts = '<option value="">Type default</option>' +
+                   ICON_GROUPS.map(groupHtml).join("") +
+                   ungroupedHtml;
   // Build datalists from the current graph
   const opt = arr => arr.map(x => `<option value="${escapeHtml(x.label)}"></option>`).join("");
   const allNodes = state.graph.nodes.slice().sort((a,b)=>a.label.localeCompare(b.label));
@@ -4104,6 +4167,7 @@ function guessEdgeType(s, t){
   if (s.type === "Office" && t.type === "Microsoft Team") return "HAS_TEAM";
   if (s.type === "Office" && t.type === "O365 Group") return "HAS_O365_GROUP";
   if (s.type === "Office" && t.type === "Mailbox") return "HAS_MAILBOX";
+  if (s.type === "Office" && t.type === "Microsoft Form") return "HAS_FORM";
   if (s.type === "Office" && t.type === "Person") return "CONTAINS";
   if (s.type === "Office" && t.type === "Team") return "CONTAINS";
   if (s.type === "Team" && t.type === "Person") return "CONTAINS";
@@ -5202,6 +5266,7 @@ function openHelp(){
         <div class="rk">New Microsoft Team</div><div class="rv">Quick-Connect from Office (HAS_TEAM); Platform = Microsoft Teams</div>
         <div class="rk">New Mailbox (shared)</div><div class="rv">Quick-Connect from Office (HAS_MAILBOX); Platform = Exchange Online</div>
         <div class="rk">New O365 Group (standalone)</div><div class="rv">Quick-Connect from Office (HAS_O365_GROUP); Platform = Microsoft 365</div>
+        <div class="rk">New Microsoft Form</div><div class="rv">Quick-Connect from Office (HAS_FORM); Platform = Microsoft 365 (or Microsoft Forms if you add the platform node)</div>
         <div class="rk">New Workflow / Flow</div><div class="rv">Owner = owning office; Platform = Power Automate (if it's a Power Automate flow)</div>
         <div class="rk">New Power BI Dashboard</div><div class="rv">Owner = owning office; Platform = Power BI</div>
         <div class="rk">New Vendor</div><div class="rv">Connect via Quick-Connect (USES / DEPENDS_ON) from systems that use them</div>
@@ -5608,7 +5673,7 @@ function computeLeadershipMetrics(){
     .sort((a,b) => b.interactions - a.interactions);
 
   // Cross-boundary service flows
-  const OUTBOUND_EDGE_TYPES = ["SUPPORTS","RESPONSIBLE_FOR","SENDS_TO","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX"];
+  const OUTBOUND_EDGE_TYPES = ["SUPPORTS","RESPONSIBLE_FOR","SENDS_TO","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM"];
   const INBOUND_EDGE_TYPES  = ["REQUESTED_BY","RECEIVES_FROM","APPROVED_BY"];
   let outboundServices = 0, inboundRequests = 0, crossBoundaryTotal = 0;
   for (const e of edges){
