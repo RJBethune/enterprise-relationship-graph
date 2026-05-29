@@ -525,7 +525,12 @@
     display:flex; align-items:center; justify-content:space-between;
     padding:0 14px; font-size:11.5px; color:var(--muted);
   }
-  .status-bar .left, .status-bar .right{display:flex; gap:14px; align-items:center}
+  .status-bar .left, .status-bar .center, .status-bar .right{display:flex; gap:14px; align-items:center}
+  .status-bar .center{color:var(--muted); flex:0 1 auto}
+  .status-bar .center strong{color:var(--text-2); font-weight:500}
+  .status-bar .center a{color:var(--accent-2); display:inline-flex; align-items:center; gap:5px}
+  .status-bar .center a:hover{color:var(--accent)}
+  .status-bar .center a i{font-size:13px}
   .status-dot{
     display:inline-block; width:7px; height:7px; border-radius:50%;
     background:var(--ok); box-shadow:0 0 8px var(--ok); margin-right:5px; vertical-align:middle;
@@ -987,6 +992,67 @@
     background:var(--accent-2); border-color:var(--accent-2);
   }
 
+  /* Recently Viewed popover (anchored under the header recent button) */
+  #recent-popover{
+    position:absolute; top:54px; right:130px; z-index:120;
+    width:280px; background:var(--panel); border:1px solid var(--border);
+    border-radius:10px; box-shadow:var(--shadow-2);
+    padding:10px; display:none;
+  }
+  #recent-popover.open{display:block}
+  .recent-head{
+    font-size:11px; text-transform:uppercase; letter-spacing:0.6px;
+    color:var(--accent-2); font-weight:600; margin-bottom:8px;
+  }
+  .recent-empty{
+    color:var(--muted); font-size:12px; font-style:italic;
+    padding:14px 6px; text-align:center;
+  }
+  .recent-list{
+    max-height:340px; overflow-y:auto;
+    display:flex; flex-direction:column; gap:2px;
+  }
+  .recent-item{
+    display:flex; align-items:center; gap:8px;
+    padding:6px 8px; border-radius:6px; cursor:pointer;
+    transition:background 0.12s;
+  }
+  .recent-item:hover, .recent-item:focus-visible{
+    background:var(--card); outline:none;
+  }
+  .recent-dot{
+    width:8px; height:8px; border-radius:50%; flex-shrink:0;
+  }
+  .recent-meta{min-width:0; flex:1}
+  .recent-name{
+    font-size:13px; color:var(--text); font-weight:500;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .recent-type{
+    font-size:11px; color:var(--muted);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+
+  /* Edge inline editing: smaller select + textarea inside the profile panel */
+  .edge-inline-row{
+    display:flex; flex-direction:column; gap:4px; margin-bottom:8px;
+  }
+  .edge-inline-row label{
+    font-size:11px; color:var(--muted); text-transform:uppercase;
+    letter-spacing:0.5px;
+  }
+  .edge-inline-row select, .edge-inline-row textarea{
+    width:100%;
+  }
+  .edge-inline-row textarea{
+    min-height:48px; font-size:12.5px;
+  }
+  .edge-inline-saved{
+    color:var(--ok); font-size:11px; opacity:0;
+    transition:opacity 0.2s;
+  }
+  .edge-inline-saved.show{opacity:1}
+
   /* Drill-down: clickable entity name in a metric row jumps to the node */
   .m-table .m-entity-link, .m-entity-link{
     color:var(--accent-2); cursor:pointer;
@@ -1272,11 +1338,13 @@
         <div class="stat"><span class="val" id="stat-vnodes">0</span><span class="lbl">visible</span></div>
         <div class="stat accent"><span class="val" id="stat-sel">·</span><span class="lbl">selected</span></div>
       </div>
+      <button class="header-btn" id="btn-recent" title="Recently viewed entities"><i class="fa-solid fa-clock-rotate-left"></i></button>
       <button class="header-btn" id="btn-data-quality" title="Data quality checks"><i class="fa-solid fa-clipboard-check"></i></button>
       <button class="header-btn" id="btn-metrics" title="Leadership metrics"><i class="fa-solid fa-chart-line"></i></button>
       <button class="header-btn" id="btn-help" title="Help (?)"><i class="fa-solid fa-circle-question"></i></button>
     </div>
   </header>
+  <div id="recent-popover" role="dialog" aria-label="Recently viewed entities"></div>
 
   <aside class="sidebar">
     <div class="section" data-section="search">
@@ -1453,6 +1521,14 @@
       <span><span class="status-dot"></span>Offline-ready · localStorage</span>
       <span id="footer-layout">Layout: force</span>
       <span id="footer-mode"></span>
+    </div>
+    <div class="center">
+      <span>Created by <strong>Ross Bethune</strong></span>
+      <span aria-hidden="true">·</span>
+      <a href="https://github.com/RJBethune/enterprise-relationship-graph" target="_blank" rel="noopener" title="View source on GitHub">
+        <i class="fa-brands fa-github" aria-hidden="true"></i>
+        <span>View on GitHub</span>
+      </a>
     </div>
     <div class="right">
       <span id="footer-hover">Hover a node to inspect</span>
@@ -2091,6 +2167,7 @@ const state = {
   hiddenByCollapse: new Set(),
   orgChartMode: false,
   orgChartSnapshot: null,
+  recentNodes: [],
   collapseCounts: new Map()
 };
 
@@ -3498,7 +3575,7 @@ function centerOnNode(id){
 }
 
 /* ----- Selection ----- */
-function selectNode(id){ state.selectedNode = id; state.selectedEdge = null; renderDetails(); updateStats(); requestRedraw(); }
+function selectNode(id){ state.selectedNode = id; state.selectedEdge = null; renderDetails(); updateStats(); requestRedraw(); pushRecentNode(id); }
 function selectEdge(id){ state.selectedEdge = id; state.selectedNode = null; renderDetails(); updateStats(); requestRedraw(); }
 function clearSelection(){
   state.selectedNode = state.selectedEdge = null;
@@ -3757,6 +3834,7 @@ function renderNodeProfile(el, node){
       <div class="btn-row">
         <button class="btn" id="profile-edit"><i class="fa-solid fa-pen"></i> Edit</button>
         <button class="btn" id="profile-connect"><i class="fa-solid fa-arrows-turn-to-dots"></i> Connect</button>
+        <button class="btn" id="profile-impact" title="See what depends on this entity"><i class="fa-solid fa-bolt"></i> Impact</button>
       </div>
       <div class="btn-row" style="margin-top:6px">
         <button class="btn" id="profile-focus"><i class="fa-solid fa-circle-nodes"></i> Neighborhood</button>
@@ -3770,6 +3848,7 @@ function renderNodeProfile(el, node){
   });
   document.getElementById("profile-edit").onclick = ()=>openNodeModal(node);
   document.getElementById("profile-connect").onclick = ()=>startConnect(node.id);
+  document.getElementById("profile-impact").onclick = ()=>openImpactModal(node.id);
   document.getElementById("profile-focus").onclick = ()=>{
     state.showNeighborhoodOnly = !state.showNeighborhoodOnly;
     updateStats(); requestRedraw();
@@ -3787,11 +3866,26 @@ function renderEdgeProfile(el, edge){
   const ss = s ? typeStyle(s.type) : null, tt = t ? typeStyle(t.type) : null;
   const cat = EDGE_CATEGORY[edge.type] || "other";
   const catStyle = EDGE_STYLE[cat];
+  const typeOpts = EDGE_TYPES.map(t => `<option value="${t}" ${edge.type===t?"selected":""}>${t}</option>`).join("");
   el.innerHTML = `
     <div class="profile-header">
       <span class="type-pill"><i class="fa-solid fa-arrow-right-long ti"></i> Relationship · ${escapeHtml(catStyle.label)}</span>
       <div class="profile-name">${escapeHtml(edge.type)}</div>
-      ${edge.description ? `<p class="profile-desc">${escapeHtml(edge.description)}</p>` : ""}
+    </div>
+    <div class="profile-section">
+      <h4><i class="fa-solid fa-pen"></i> Edit inline <span class="edge-inline-saved" id="edge-saved-flag"><i class="fa-solid fa-check"></i> saved</span></h4>
+      <div class="edge-inline-row">
+        <label for="edge-inline-type">Type</label>
+        <select id="edge-inline-type">${typeOpts}</select>
+      </div>
+      <div class="edge-inline-row">
+        <label for="edge-inline-desc">Description</label>
+        <textarea id="edge-inline-desc" placeholder="Optional context about this relationship">${escapeHtml(edge.description||"")}</textarea>
+      </div>
+      <div class="edge-inline-row">
+        <label for="edge-inline-notes">Notes</label>
+        <textarea id="edge-inline-notes" placeholder="Optional notes">${escapeHtml(edge.notes||"")}</textarea>
+      </div>
     </div>
     <div class="profile-section">
       <h4><i class="fa-solid fa-link"></i> Endpoints</h4>
@@ -3818,20 +3912,53 @@ function renderEdgeProfile(el, edge){
         </div>
       </div>
     </div>
-    ${edge.notes && edge.notes.trim() ? `<div class="profile-section"><h4><i class="fa-solid fa-note-sticky"></i> Notes</h4><div class="notes-block">${escapeHtml(edge.notes)}</div></div>` : ""}
     <div class="profile-section">
       <h4><i class="fa-solid fa-bolt"></i> Actions</h4>
       <div class="btn-row">
-        <button class="btn" id="edge-edit"><i class="fa-solid fa-pen"></i> Edit</button>
         <button class="btn" id="edge-reverse"><i class="fa-solid fa-arrows-rotate"></i> Reverse</button>
+        <button class="btn danger" id="edge-delete"><i class="fa-solid fa-trash"></i> Delete</button>
       </div>
-      <button class="btn danger block" id="edge-delete" style="margin-top:6px"><i class="fa-solid fa-trash"></i> Delete</button>
     </div>
   `;
   el.querySelectorAll(".rel-item").forEach(it=>{
     it.addEventListener("click", ()=>{ const id = it.getAttribute("data-node"); selectNode(id); });
   });
-  document.getElementById("edge-edit").onclick = ()=>openEdgeModal(edge);
+  // Inline-edit wiring: live-save on change, brief "saved" confirmation
+  const savedFlag = document.getElementById("edge-saved-flag");
+  const flashSaved = () => {
+    if (!savedFlag) return;
+    savedFlag.classList.add("show");
+    clearTimeout(flashSaved._t);
+    flashSaved._t = setTimeout(() => savedFlag.classList.remove("show"), 1200);
+  };
+  const typeSel = document.getElementById("edge-inline-type");
+  if (typeSel){
+    typeSel.onchange = () => {
+      edge.type = typeSel.value;
+      afterMutate();
+      flashSaved();
+      // Re-render so the header and category pill update
+      setTimeout(() => renderEdgeProfile(el, edge), 0);
+    };
+  }
+  const descTa = document.getElementById("edge-inline-desc");
+  if (descTa){
+    descTa.onblur = () => {
+      if (edge.description === descTa.value) return;
+      edge.description = descTa.value;
+      afterMutate();
+      flashSaved();
+    };
+  }
+  const notesTa = document.getElementById("edge-inline-notes");
+  if (notesTa){
+    notesTa.onblur = () => {
+      if (edge.notes === notesTa.value) return;
+      edge.notes = notesTa.value;
+      afterMutate();
+      flashSaved();
+    };
+  }
   document.getElementById("edge-reverse").onclick = ()=>{
     const tmp = edge.source; edge.source = edge.target; edge.target = tmp;
     afterMutate(); showToast("Reversed direction", "ok");
@@ -6420,6 +6547,7 @@ function openMetricsModal(){
       <button class="m-tab" data-pane="risk">Risk &amp; SPOFs</button>
       <button class="m-tab" data-pane="coverage">Coverage</button>
       <button class="m-tab" data-pane="org">Org Footprint</button>
+      <button class="m-tab" data-pane="orgintel">Org Intel</button>
       <button class="m-tab" data-pane="complexity">Complexity</button>
     </div>
     <div class="m-pane active" data-pane="summary">${summaryHtml}</div>
@@ -6428,6 +6556,7 @@ function openMetricsModal(){
     <div class="m-pane" data-pane="risk">${riskHtml}</div>
     <div class="m-pane" data-pane="coverage">${covHtml}</div>
     <div class="m-pane" data-pane="org">${orgHtml}</div>
+    <div class="m-pane" data-pane="orgintel">${renderOrgIntelHtml(m)}</div>
     <div class="m-pane" data-pane="complexity">${cxHtml}</div>
   `;
 
@@ -6446,7 +6575,8 @@ function openMetricsModal(){
   modalBody.querySelectorAll(".m-pane").forEach(p => {
     const titleMap = { summary:"Executive Summary", pipeline:"Pipeline",
                        service:"Service", risk:"Risk & SPOFs",
-                       coverage:"Coverage", org:"Org Footprint", complexity:"Complexity" };
+                       coverage:"Coverage", org:"Org Footprint",
+                       orgintel:"Organizational Intelligence", complexity:"Complexity" };
     p.setAttribute("data-pane-title", titleMap[p.dataset.pane] || p.dataset.pane);
   });
   // Drill-down: clicking an .m-entity-link closes the modal and jumps to the
@@ -6922,6 +7052,443 @@ function openDataQualityModal(){
 }
 
 
+
+/* ============================================================================
+   RECENTLY VIEWED NODES
+   ============================================================================ */
+const RECENT_MAX = 15;
+
+function pushRecentNode(id){
+  if (!id) return;
+  if (!Array.isArray(state.recentNodes)) state.recentNodes = [];
+  // Move-to-front semantics: remove any existing, prepend
+  state.recentNodes = state.recentNodes.filter(x => x !== id);
+  state.recentNodes.unshift(id);
+  if (state.recentNodes.length > RECENT_MAX){
+    state.recentNodes = state.recentNodes.slice(0, RECENT_MAX);
+  }
+  saveUIState({ recentNodes: state.recentNodes });
+  const pop = document.getElementById("recent-popover");
+  if (pop && pop.classList.contains("open")) renderRecentPopover();
+}
+
+function loadRecentNodesFromStorage(){
+  const ui = loadUIState();
+  if (Array.isArray(ui.recentNodes)) state.recentNodes = ui.recentNodes;
+  else state.recentNodes = [];
+}
+
+function renderRecentPopover(){
+  const pop = document.getElementById("recent-popover");
+  if (!pop) return;
+  const validRecent = state.recentNodes
+    .map(id => state.graph.nodes.find(n => n.id === id))
+    .filter(Boolean);
+  if (validRecent.length === 0){
+    pop.innerHTML = '<div class="recent-empty">No recently viewed entities. Click any node on the graph and it lands here.</div>';
+    return;
+  }
+  pop.innerHTML = `
+    <div class="recent-head">Recently viewed <span style="color:var(--muted); font-weight:400">(${validRecent.length})</span></div>
+    <div class="recent-list">
+      ${validRecent.map(n => {
+        const ts = typeStyle(n.type);
+        return `<div class="recent-item" data-node-id="${escapeHtml(n.id)}" role="button" tabindex="0">
+          <span class="recent-dot" style="background:${ts.color}"></span>
+          <div class="recent-meta">
+            <div class="recent-name">${escapeHtml(n.label)}</div>
+            <div class="recent-type">${escapeHtml(n.type)}</div>
+          </div>
+        </div>`;
+      }).join("")}
+    </div>
+    <button class="btn ghost block recent-clear" style="margin-top:6px"><i class="fa-solid fa-xmark"></i> Clear history</button>
+  `;
+  pop.querySelectorAll(".recent-item").forEach(el => {
+    const go = () => {
+      const id = el.dataset.nodeId;
+      pop.classList.remove("open");
+      selectNode(id);
+      if (typeof centerOnNode === "function") centerOnNode(id);
+    };
+    el.onclick = go;
+    el.onkeydown = e => { if (e.key === "Enter" || e.key === " "){ e.preventDefault(); go(); } };
+  });
+  pop.querySelector(".recent-clear").onclick = () => {
+    state.recentNodes = [];
+    saveUIState({ recentNodes: [] });
+    renderRecentPopover();
+  };
+}
+
+function toggleRecentPopover(){
+  const pop = document.getElementById("recent-popover");
+  if (!pop) return;
+  if (pop.classList.contains("open")){
+    pop.classList.remove("open");
+  } else {
+    renderRecentPopover();
+    pop.classList.add("open");
+  }
+}
+
+/* ============================================================================
+   IMPACT ANALYSIS — what depends on this node?
+   ============================================================================ */
+// PURE DEPENDENCY WALK: only follow incoming dependency edges, never
+// transitive ownership. This keeps the impact analysis honest — if X
+// breaks, only things that DEPEND on X transitively break. Ownership
+// edges (CONTAINS, OWNS, etc.) are surfaced separately on hop 0 as
+// "things this node directly owns or contains" without recursive expansion,
+// since those represent organizational restructuring rather than breakage.
+const IMPACT_DEPENDENCY_EDGES = ["DEPENDS_ON","USES","HOSTED_ON","SUPPORTS","INTEGRATES_WITH","CONNECTED_TO","RESPONSIBLE_FOR"];
+const IMPACT_OWNERSHIP_EDGES = ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","OWNS","MANAGES"];
+
+function computeImpactTree(nodeId, maxDepth){
+  maxDepth = maxDepth || 8;
+  const visited = new Set([nodeId]);
+  const byHop = new Map();
+  const startNode = state.graph.nodes.find(n => n.id === nodeId);
+  if (!startNode) return { byHop, totalAffected: 0, depth: 0, directlyOwned: [] };
+  byHop.set(0, [{ node: startNode, viaEdge: null }]);
+
+  // Pure incoming-dependency walk (transitive)
+  let frontier = new Set([nodeId]);
+  for (let depth = 1; depth <= maxDepth; depth++){
+    const nextFrontier = new Set();
+    const hopList = [];
+    for (const curId of frontier){
+      for (const e of state.graph.edges){
+        if (e.target === curId && IMPACT_DEPENDENCY_EDGES.includes(e.type)){
+          if (!visited.has(e.source)){
+            visited.add(e.source);
+            nextFrontier.add(e.source);
+            const sNode = state.graph.nodes.find(n => n.id === e.source);
+            if (sNode) hopList.push({ node: sNode, viaEdge: e, parentId: curId });
+          }
+        }
+      }
+    }
+    if (hopList.length > 0) byHop.set(depth, hopList);
+    if (nextFrontier.size === 0) break;
+    frontier = nextFrontier;
+  }
+
+  // Hop 0 also exposes one-shot organizational impact: things this node
+  // directly contains/owns/manages. Not transitive — restructuring concern,
+  // not a breakage cascade.
+  const directlyOwned = [];
+  for (const e of state.graph.edges){
+    if (e.source === nodeId && IMPACT_OWNERSHIP_EDGES.includes(e.type)){
+      const tNode = state.graph.nodes.find(n => n.id === e.target);
+      if (tNode) directlyOwned.push({ node: tNode, viaEdge: e });
+    }
+  }
+
+  return { byHop, totalAffected: visited.size - 1, depth: byHop.size - 1, directlyOwned };
+}
+
+function openImpactModal(nodeId){
+  const node = state.graph.nodes.find(n => n.id === nodeId);
+  if (!node){ showToast("Node not found", "err"); return; }
+  const impact = computeImpactTree(nodeId);
+
+  // Count by node type for a quick "impact composition" view
+  const typeCounts = new Map();
+  for (const [hop, list] of impact.byHop){
+    if (hop === 0) continue;
+    for (const item of list){
+      typeCounts.set(item.node.type, (typeCounts.get(item.node.type) || 0) + 1);
+    }
+  }
+  const topTypes = [...typeCounts.entries()].sort((a,b) => b[1] - a[1]).slice(0,8);
+
+  const sevForCount = c => c === 0 ? "ok" : (c > 15 ? "crit" : c > 5 ? "warn" : "accent");
+  const directCount = impact.byHop.get(1)?.length || 0;
+  const lede = `<p class="m-lede">If <strong>${escapeHtml(node.label)}</strong> (${escapeHtml(node.type)}) is removed, retired, or has an outage, here's what's affected. The analysis walks dependency edges (DEPENDS_ON, USES, HOSTED_ON, SUPPORTS, INTEGRATES_WITH, CONNECTED_TO) and ownership edges (CONTAINS, OWNS, MANAGES, HAS_*, RESPONSIBLE_FOR) outward.</p>`;
+
+  const kpiHtml = `
+    <div class="kpi-grid">
+      ${mKpi("Dependency cascade", impact.totalAffected, "things that break transitively", sevForCount(impact.totalAffected))}
+      ${mKpi("Direct dependents", directCount, "1 hop away")}
+      ${mKpi("Cascade depth", impact.depth, "hops to deepest dependent")}
+      ${mKpi("Directly owned", impact.directlyOwned.length, "1-hop containment / ownership")}
+    </div>
+  `;
+
+  const ownedHtml = impact.directlyOwned.length === 0 ? "" : `
+    <div class="m-section">
+      <h4>Organizational impact (not a cascade)</h4>
+      <p style="font-size:12px; color:var(--text-2); margin:0 0 8px;">Entities this node directly contains, owns, or manages. If this node is removed, these items don't break but need to be reassigned.</p>
+      <table class="m-table"><thead><tr><th>Entity</th><th>Via</th></tr></thead><tbody>
+        ${impact.directlyOwned.slice(0,20).map(item => `
+          <tr>
+            <td>${mEntityLink(item.node, {includeType:true})}</td>
+            <td style="color:var(--muted); font-size:11px;">${escapeHtml(item.viaEdge.type)}</td>
+          </tr>`).join("")}
+        ${impact.directlyOwned.length > 20 ? `<tr><td colspan="2" style="color:var(--muted); font-size:11px;">Showing 20 of ${impact.directlyOwned.length}.</td></tr>` : ""}
+      </tbody></table>
+    </div>
+  `;
+
+  const compositionHtml = topTypes.length === 0 ? "" : `
+    <div class="m-section">
+      <h4>What kinds of things are affected</h4>
+      ${mHBars(topTypes.map(([t, c]) => ({ label: t, value: c, color: typeStyle(t).color })))}
+    </div>
+  `;
+
+  let hopsHtml = "";
+  for (let depth = 1; depth <= impact.depth; depth++){
+    const hops = impact.byHop.get(depth) || [];
+    if (hops.length === 0) continue;
+    const visible = hops.slice(0, 25);
+    hopsHtml += `
+      <div class="m-section">
+        <h4>Hop ${depth} <span class="m-pill">${hops.length}</span></h4>
+        <table class="m-table"><thead><tr><th>Entity</th><th>Via</th></tr></thead><tbody>
+          ${visible.map(item => `
+            <tr>
+              <td>${mEntityLink(item.node, {includeType:true})}</td>
+              <td style="color:var(--muted); font-size:11px;">${item.viaEdge ? escapeHtml(item.viaEdge.type) : ""}</td>
+            </tr>`).join("")}
+          ${hops.length > visible.length ? `<tr><td colspan="2" style="color:var(--muted); font-size:11px;">Showing ${visible.length} of ${hops.length} at this hop.</td></tr>` : ""}
+        </tbody></table>
+      </div>
+    `;
+  }
+
+  const html = lede + kpiHtml + (impact.totalAffected === 0
+    ? '<div class="m-empty" style="margin-top:14px;">Nothing depends on this entity transitively. Removing it has no breakage cascade.</div>'
+    : compositionHtml + hopsHtml) + ownedHtml;
+
+  openModal(`<i class="fa-solid fa-bolt"></i> Impact &mdash; ${escapeHtml(node.label)}`, html, ()=>closeModal(), true);
+  document.getElementById("modal").classList.add("xl");
+  if (!modalBody._metricsDrillDownAttached){
+    const jumpToNode = id => {
+      if (!id) return;
+      const exists = state.graph.nodes.some(n => n.id === id);
+      if (!exists){ showToast("That entity no longer exists", "err"); return; }
+      closeModal();
+      try { selectNode(id); if (typeof centerOnNode === "function") centerOnNode(id); }
+      catch (err){ console.error("Drill-down failed:", err); }
+    };
+    modalBody.addEventListener("click", e => {
+      const link = e.target.closest(".m-entity-link");
+      if (!link) return;
+      e.preventDefault();
+      jumpToNode(link.dataset.nodeId);
+    });
+    modalBody._metricsDrillDownAttached = true;
+  }
+  document.getElementById("modal-save").style.display = "none";
+  document.getElementById("modal-cancel").innerHTML = '<i class="fa-solid fa-check"></i> Done';
+}
+
+/* ============================================================================
+   ORGANIZATIONAL INTELLIGENCE — span of control, reporting depth,
+   bridge nodes, knowledge concentration, cross-boundary collaboration.
+   ============================================================================ */
+function computeOrgIntelligence(){
+  const nodes = state.graph.nodes;
+  const edges = state.graph.edges;
+  const has = v => !!(v && String(v).trim());
+
+  // ---- Span of control (REPORTS_TO incoming) ----
+  // Edge semantics: A REPORTS_TO B means A's manager is B. So B's direct
+  // reports count = # of incoming REPORTS_TO edges.
+  const directReports = new Map();
+  for (const e of edges){
+    if (e.type !== "REPORTS_TO") continue;
+    directReports.set(e.target, (directReports.get(e.target) || 0) + 1);
+  }
+  const managers = nodes
+    .filter(n => (n.type === "Person" || n.type === "Role") && (directReports.get(n.id) || 0) > 0)
+    .map(n => ({ node: n, reports: directReports.get(n.id) }))
+    .sort((a,b) => b.reports - a.reports);
+  const overloadedManagers = managers.filter(m => m.reports > 10);
+  const thinManagers = managers.filter(m => m.reports === 1);
+
+  // ---- Reporting depth (longest REPORTS_TO chain) ----
+  const adj = new Map();
+  for (const e of edges){
+    if (e.type !== "REPORTS_TO") continue;
+    if (!adj.has(e.target)) adj.set(e.target, []);
+    adj.get(e.target).push(e.source);
+  }
+  const reportsToSomeone = new Set();
+  for (const e of edges){ if (e.type === "REPORTS_TO") reportsToSomeone.add(e.source); }
+  const peopleRoots = nodes.filter(n => (n.type === "Person" || n.type === "Role") && !reportsToSomeone.has(n.id) && adj.has(n.id));
+  function chainDepth(id){
+    const memo = new Map();
+    function dfs(curId, visiting){
+      if (memo.has(curId)) return memo.get(curId);
+      if (visiting.has(curId)) return 0;
+      visiting.add(curId);
+      let best = 0;
+      for (const c of (adj.get(curId) || [])){
+        const d = 1 + dfs(c, visiting);
+        if (d > best) best = d;
+      }
+      visiting.delete(curId);
+      memo.set(curId, best);
+      return best;
+    }
+    return dfs(id, new Set());
+  }
+  const rootDepths = peopleRoots.map(r => ({ node: r, depth: chainDepth(r.id) })).sort((a,b) => b.depth - a.depth);
+  const maxReportingDepth = rootDepths.length > 0 ? rootDepths[0].depth : 0;
+
+  // ---- Knowledge concentration (people named as Owner on many entities) ----
+  const ownerLoad = new Map();
+  for (const n of nodes){
+    if (!has(n.owner)) continue;
+    const key = n.owner.trim();
+    ownerLoad.set(key, (ownerLoad.get(key) || 0) + 1);
+  }
+  const ownersAsPersons = [];
+  for (const [name, count] of ownerLoad){
+    const node = nodes.find(n => n.label === name && (n.type === "Person" || n.type === "Role"));
+    ownersAsPersons.push({ name, count, nodeId: node ? node.id : null, isKnownPerson: !!node });
+  }
+  ownersAsPersons.sort((a,b) => b.count - a.count);
+  const topOwners = ownersAsPersons.slice(0, 10);
+
+  // ---- Bridge nodes (touch many distinct directorates) ----
+  const dirs = nodes.filter(n => n.type === "Directorate");
+  const dirOf = new Map();
+  for (const d of dirs){
+    dirOf.set(d.id, d.label);
+    if (typeof getCollapseDescendants === "function"){
+      const desc = getCollapseDescendants(d.id);
+      for (const id of desc){ if (!dirOf.has(id)) dirOf.set(id, d.label); }
+    }
+  }
+  for (const n of nodes){
+    if (!dirOf.has(n.id) && has(n.directorate)) dirOf.set(n.id, n.directorate);
+  }
+  const dirReach = new Map();
+  for (const n of nodes) dirReach.set(n.id, new Set());
+  for (const e of edges){
+    const sd = dirOf.get(e.source), td = dirOf.get(e.target);
+    if (sd){ const r = dirReach.get(e.target); if (r) r.add(sd); }
+    if (td){ const r = dirReach.get(e.source); if (r) r.add(td); }
+  }
+  const bridges = nodes
+    .map(n => ({ node: n, dirCount: (dirReach.get(n.id) || new Set()).size }))
+    .filter(b => b.dirCount >= 2)
+    .filter(b => b.node.type !== "Executive Office" && b.node.type !== "Front Office")
+    .sort((a,b) => b.dirCount - a.dirCount)
+    .slice(0, 10);
+
+  // ---- Cross-directorate collaboration ratio ----
+  const COLLAB_EDGE_TYPES = ["SUPPORTS","SENDS_TO","RECEIVES_FROM","REQUESTED_BY","RESPONSIBLE_FOR"];
+  let crossDir = 0, sameDir = 0;
+  for (const e of edges){
+    if (!COLLAB_EDGE_TYPES.includes(e.type)) continue;
+    const sd = dirOf.get(e.source), td = dirOf.get(e.target);
+    if (!sd || !td) continue;
+    if (sd === td) sameDir++;
+    else crossDir++;
+  }
+  const totalCollab = crossDir + sameDir;
+  const crossPct = totalCollab === 0 ? 0 : Math.round(crossDir / totalCollab * 100);
+
+  return {
+    managers, overloadedManagers, thinManagers,
+    rootDepths, maxReportingDepth,
+    topOwners,
+    bridges,
+    crossDir, sameDir, totalCollab, crossPct
+  };
+}
+
+function renderOrgIntelHtml(m){
+  // m is the metrics object; we recompute org intel here for freshness
+  const oi = computeOrgIntelligence();
+  const managerRows = oi.managers.slice(0, 10).map(x => `
+    <tr>
+      <td>${mEntityLink(x.node, {includeType:true})}</td>
+      <td class="num">${x.reports}</td>
+      <td>${x.reports > 10 ? '<span class="m-pill warn">overloaded</span>' : x.reports === 1 ? '<span class="m-pill">thin</span>' : '<span class="m-pill ok">healthy</span>'}</td>
+    </tr>`).join("");
+  const depthRows = oi.rootDepths.slice(0, 5).map(x => `
+    <tr>
+      <td>${mEntityLink(x.node, {includeType:true})}</td>
+      <td class="num">${x.depth}</td>
+    </tr>`).join("");
+  const ownerRows = oi.topOwners.map(o => `
+    <tr>
+      <td>${o.nodeId ? mEntityLinkByName(o.name, o.nodeId) : escapeHtml(o.name)}${o.isKnownPerson ? "" : ' <span class="m-pill warn" title="Name appears as Owner but is not a Person/Role node">unmapped</span>'}</td>
+      <td class="num">${o.count}</td>
+    </tr>`).join("");
+  const bridgeRows = oi.bridges.map(b => `
+    <tr>
+      <td>${mEntityLink(b.node, {includeType:true})}</td>
+      <td class="num">${b.dirCount}</td>
+    </tr>`).join("");
+
+  return `
+    <p class="m-lede">Structural patterns in how your organization is wired: who manages whom, how deep the org runs, who quietly connects everything together, and how much real work crosses directorate boundaries.</p>
+    <div class="kpi-grid">
+      ${mKpi("Managers detected", oi.managers.length, "people with direct reports")}
+      ${mKpi("Span overloads", oi.overloadedManagers.length, ">10 direct reports", oi.overloadedManagers.length > 0 ? "warn" : "ok")}
+      ${mKpi("Single-report managers", oi.thinManagers.length, "may be unnecessary layer", oi.thinManagers.length > 0 ? "accent" : "ok")}
+      ${mKpi("Reporting depth", oi.maxReportingDepth, "longest chain of reports")}
+      ${mKpi("Bridge entities", oi.bridges.length, "touch &ge;2 directorates", oi.bridges.length > 0 ? "accent" : null)}
+      ${mKpi("Cross-dir collaboration", oi.crossPct + "%", `${oi.crossDir} of ${oi.totalCollab} collaboration edges`)}
+    </div>
+    <div class="m-section">
+      <h4>Span of control</h4>
+      ${oi.managers.length === 0
+        ? '<div class="m-empty">No REPORTS_TO edges modeled yet. Add reporting lines on Person nodes to populate this view.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Manager</th><th class="num">Direct reports</th><th>Span health</th></tr></thead>
+            <tbody>${managerRows}</tbody>
+           </table>
+           <div style="font-size:11px; color:var(--muted); margin-top:6px;">Industry rule of thumb: 5&ndash;9 direct reports is healthy. &gt;10 is overloaded; &lt;3 may indicate an unnecessary layer.</div>`}
+    </div>
+    <div class="m-section">
+      <h4>Deepest reporting chains</h4>
+      ${oi.rootDepths.length === 0
+        ? '<div class="m-empty">No multi-level reporting chains detected.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Top of chain</th><th class="num">Layers below</th></tr></thead>
+            <tbody>${depthRows}</tbody>
+           </table>`}
+    </div>
+    <div class="m-section">
+      <h4>Knowledge concentration (top owners)</h4>
+      <p style="font-size:12px; color:var(--text-2); margin:0 0 8px;">People named as Owner on the most entities. High concentrations mean if they leave, knowledge transfer becomes urgent.</p>
+      ${oi.topOwners.length === 0
+        ? '<div class="m-empty">No Owner fields populated yet.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Owner</th><th class="num">Entities owned</th></tr></thead>
+            <tbody>${ownerRows}</tbody>
+           </table>`}
+    </div>
+    <div class="m-section">
+      <h4>Bridge entities <span class="m-pill">${oi.bridges.length}</span></h4>
+      <p style="font-size:12px; color:var(--text-2); margin:0 0 8px;">Entities that touch multiple directorates. They knit the org together &mdash; valuable but also concentration risks if they fail or move.</p>
+      ${oi.bridges.length === 0
+        ? '<div class="m-empty">No entities span multiple directorates yet.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Entity</th><th class="num">Directorates touched</th></tr></thead>
+            <tbody>${bridgeRows}</tbody>
+           </table>`}
+    </div>
+    <div class="m-section">
+      <h4>Cross-boundary collaboration</h4>
+      <p style="font-size:12.5px; color:var(--text-2); margin:0;">
+        <strong>${oi.crossPct}%</strong> of collaboration edges (SUPPORTS, SENDS_TO, RECEIVES_FROM, REQUESTED_BY, RESPONSIBLE_FOR) cross directorate boundaries
+        (${oi.crossDir} cross-directorate / ${oi.sameDir} within-directorate, ${oi.totalCollab} total).
+        ${oi.crossPct < 20 ? " Heavily siloed organization." : oi.crossPct < 50 ? " Mostly siloed with some cross-pollination." : oi.crossPct < 75 ? " Healthy mix of within and cross-directorate work." : " Highly cross-functional organization."}
+      </p>
+    </div>
+  `;
+}
+
+
 /* ============================================================================
    WIRE UP
    ============================================================================ */
@@ -7016,6 +7583,17 @@ function wireUp(){
   document.getElementById("btn-metrics").onclick = openMetricsModal;
   document.getElementById("btn-data-quality").onclick = openDataQualityModal;
   document.getElementById("btn-export-mermaid").onclick = exportMermaid;
+  document.getElementById("btn-recent").onclick = toggleRecentPopover;
+  // Close Recently Viewed popover on outside click
+  document.addEventListener("click", e => {
+    const pop = document.getElementById("recent-popover");
+    if (!pop || !pop.classList.contains("open")) return;
+    if (pop.contains(e.target)) return;
+    if (e.target.closest("#btn-recent")) return;
+    pop.classList.remove("open");
+  });
+  // Load recently-viewed from storage on boot
+  loadRecentNodesFromStorage();
   document.getElementById("btn-manage-types").onclick = openManageTypesModal;
 
   document.getElementById("tb-zoom-in").onclick = ()=>{
