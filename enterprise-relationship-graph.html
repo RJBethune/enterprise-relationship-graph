@@ -648,16 +648,19 @@
     padding:7px 10px; background:var(--bg-1);
     border:1px solid var(--border); border-radius:7px;
   }
-  /* Universal swatch box: flex-centered with normalized FA icon sizing */
+  /* Universal swatch box: CSS Grid place-items:center is more reliable than
+     flex+text-align for centering FA icons, which have varying internal
+     baselines and glyph positions. The previous width:1em + text-align:center
+     trick was causing visible off-centering for asymmetric glyphs like cubes,
+     handshake, and chart icons. */
   .mt-swatch{
     width:26px; height:26px; border-radius:6px;
-    display:inline-flex; align-items:center; justify-content:center;
+    display:inline-grid; place-items:center;
     color:#04101F; box-shadow:0 0 0 1px rgba(255,255,255,0.12);
-    flex-shrink:0; line-height:1; font-size:13px;
+    flex-shrink:0; line-height:1; font-size:14px;
   }
   .mt-swatch i{
     line-height:1; display:block;
-    width:1em; text-align:center; /* FA fa-fw equivalent for consistent width */
   }
   .mt-row .mt-name{flex:1; min-width:0; font-size:12.5px; color:var(--text)}
   .mt-row .mt-meta{font-size:10.5px; color:var(--muted); white-space:nowrap}
@@ -672,7 +675,7 @@
     border:1px solid var(--border); border-radius:6px;
     font-size:11.5px; color:var(--text-2);
   }
-  .mt-builtin .mt-swatch{width:22px; height:22px; font-size:11px; border-radius:5px}
+  .mt-builtin .mt-swatch{width:24px; height:24px; font-size:12px; border-radius:5px}
   .mt-editor{
     background:var(--card-2); border:1px solid var(--accent);
     border-radius:9px; padding:12px; margin-bottom:12px;
@@ -3267,6 +3270,15 @@ function render(){
 
     ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width;
     ctx.setLineDash(isSel ? [] : (es.dash || []));
+    // Marching-ants animation for edges touching the selected node.
+    // Negative dashOffset = forward flow (source -> target). Path-finder
+    // mode owns its own dash treatment, so skip animation there.
+    const animateThisEdge = state.selectedNode && !pathActive &&
+      (e.source === state.selectedNode || e.target === state.selectedNode);
+    if (animateThisEdge){
+      ctx.setLineDash([10, 5]);
+      ctx.lineDashOffset = -(performance.now() / 70) % 15;
+    }
 
     const dx = b.x-a.x, dy = b.y-a.y;
     const len = Math.sqrt(dx*dx+dy*dy) || 1;
@@ -3283,6 +3295,7 @@ function render(){
     ctx.quadraticCurveTo(cpx, cpy, ex, ey);
     ctx.stroke();
     ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
     drawArrow(cpx, cpy, ex, ey, isSel ? 9 : 7);
 
     if ((isSel || isHov || (t.scale >= 0.9 && inv) || (state.showAllEdgeLabels && t.scale >= 0.55)) && !dim){
@@ -3440,7 +3453,11 @@ function render(){
 function tick(){
   const wasMoving = needsRedraw;
   simulateStep();
-  if (needsRedraw || state.layout === "force"){ render(); needsRedraw = false; }
+  // Continue redrawing while a node is selected so the connected-edge
+  // marching-ants animation has frames. Also drives normal force/redraw paths.
+  if (needsRedraw || state.layout === "force" || state.selectedNode){
+    render(); needsRedraw = false;
+  }
   // Track stillness; pause rAF when nothing's happening to save battery
   const interacting = state.draggedNode || state.dragMode || state.connectingFrom;
   if (!wasMoving && state.layout !== "force" && !interacting) settleCounter++;
@@ -3451,6 +3468,8 @@ function tick(){
   } else {
     settleCounter = 0;
   }
+  // Selection keeps animation alive — never let settleCounter pause us
+  if (state.selectedNode) settleCounter = 0;
   if (settleCounter > SETTLE_THRESHOLD){
     rafActive = false;
     return;
