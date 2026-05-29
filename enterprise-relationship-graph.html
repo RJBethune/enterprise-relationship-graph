@@ -3717,16 +3717,50 @@ const PROFILE_SECTIONS = [
   { title:"Integrations & Connections", icon:"fa-arrows-left-right-to-line", test:(n,r)=>["INTEGRATES_WITH","CONNECTED_TO","SENDS_TO","RECEIVES_FROM"].includes(r.edge.type) }
 ];
 
+/* ---------- Edge deduplication ----------
+   Multiple edges with the same (source, target, type) are always meaningless
+   in this graph model — they distort metrics (edge counts, critical hubs,
+   service flows), bloat the profile panel, and confuse the path-finder. They
+   typically arise when a user both fills the Lead field on a node AND
+   Quick-Connects the same Person via RESPONSIBLE_FOR, or otherwise creates
+   the same edge twice through different mechanisms.
+
+   This helper dedupes in place, keeping the FIRST occurrence (which is
+   usually the manual edge if any exists, since auto-edges are created on
+   form save which comes after Quick-Connect in typical workflows).
+*/
+function removeDuplicateEdges(){
+  if (!state.graph || !Array.isArray(state.graph.edges)) return 0;
+  const seen = new Set();
+  const kept = [];
+  let removed = 0;
+  for (const e of state.graph.edges){
+    const key = `${e.source}|${e.target}|${e.type}`;
+    if (seen.has(key)){ removed++; continue; }
+    seen.add(key);
+    kept.push(e);
+  }
+  if (removed > 0) state.graph.edges = kept;
+  return removed;
+}
+
 function relationshipsFor(node){
   const out = [];
+  const seen = new Set();
   state.graph.edges.forEach(e=>{
-    if (e.source === node.id){
-      const other = findNode(e.target);
-      if (other) out.push({ edge:e, dir:"out", other });
-    } else if (e.target === node.id){
-      const other = findNode(e.source);
-      if (other) out.push({ edge:e, dir:"in", other });
-    }
+    let other, dir;
+    if (e.source === node.id){ other = findNode(e.target); dir = "out"; }
+    else if (e.target === node.id){ other = findNode(e.source); dir = "in"; }
+    else return;
+    if (!other) return;
+    // Defense in depth: collapse logical duplicates (same other node + same
+    // edge type + same direction) into one entry so the profile panel never
+    // shows "Person X RESPONSIBLE_FOR Office Y" twice even if the data has
+    // two edge records.
+    const dedupeKey = `${dir}:${other.id}:${e.type}`;
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+    out.push({ edge:e, dir, other });
   });
   return out;
 }
@@ -4442,6 +4476,9 @@ function cancelConnect(){
 }
 
 function afterMutate(skipDirty, skipHistory){
+  // Auto-dedupe any duplicate edges introduced by this mutation. Silent —
+  // a duplicate edge is always a bug, not a feature, so no toast.
+  removeDuplicateEdges();
   // Capture the post-mutation state for redo to work. Undo/redo themselves
   // pass skipHistory=true so they don't re-push the state they just restored.
   if (!skipHistory) pushHistory();
@@ -4711,6 +4748,13 @@ function parseBundle(text){
 
 function applyLoadedBundle(bundle, fileName){
   state.graph = bundle.graph;
+  // Clean up duplicate edges from legacy data (e.g., a user filled the Lead
+  // field AND Quick-Connected the same person — two edges got created).
+  // Silent if nothing was found; toast with count if duplicates were removed.
+  const dupeCount = removeDuplicateEdges();
+  if (dupeCount > 0){
+    setTimeout(() => showToast(`Cleaned up ${dupeCount} duplicate edge${dupeCount===1?"":"s"} on load`, "ok"), 200);
+  }
   // Ensure optional collections exist on the loaded graph (older / external files
   // may omit them); subsequent code assumes both are arrays.
   if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
@@ -5774,12 +5818,24 @@ function computeLeadershipMetrics(){
   const has = v => !!(v && String(v).trim());
   const pct = (a,b) => b === 0 ? 0 : Math.round(a/b*100);
 
-  // Coverage
-  const withOwner = nodes.filter(n => has(n.owner)).length;
-  const withLead  = nodes.filter(n => has(n.lead)).length;
+  // Coverage — field-filled OR connected via the corresponding edge counts
+  // as "has a lead/owner". This matches the user's mental model: a node with
+  // a Quick-Connected RESPONSIBLE_FOR edge has a lead even if the field is empty.
+  const nodesWithIncomingOWNS = new Set();
+  const nodesWithIncomingRESPONSIBLE_FOR = new Set();
+  const nodesWithIncomingCONTAINS = new Set();
+  for (const e of edges){
+    if (e.type === "OWNS") nodesWithIncomingOWNS.add(e.target);
+    else if (e.type === "RESPONSIBLE_FOR") nodesWithIncomingRESPONSIBLE_FOR.add(e.target);
+    else if (e.type === "CONTAINS") nodesWithIncomingCONTAINS.add(e.target);
+  }
+  const hasOwnership = n => has(n.owner) || nodesWithIncomingOWNS.has(n.id);
+  const hasLead      = n => has(n.lead)  || nodesWithIncomingRESPONSIBLE_FOR.has(n.id);
+  const withOwner = nodes.filter(hasOwnership).length;
+  const withLead  = nodes.filter(hasLead).length;
   const withDesc  = nodes.filter(n => has(n.description)).length;
   const withTags  = nodes.filter(n => Array.isArray(n.tags) && n.tags.length > 0).length;
-  const lowQuality= nodes.filter(n => !has(n.owner) && !has(n.lead) && !has(n.description)).length;
+  const lowQuality= nodes.filter(n => !hasOwnership(n) && !hasLead(n) && !has(n.description)).length;
 
   // Risk
   const depInCount = id => (inE.get(id)||[]).filter(e => METRICS_DEPENDENCY_EDGES.includes(e.type)).length;
@@ -5830,7 +5886,7 @@ function computeLeadershipMetrics(){
     const pop = [d.id, ...descSet].map(id => byId.get(id)).filter(Boolean);
     let offices = 0, people = 0, systemsOwned = 0, ownedInDir = 0;
     for (const n of pop){
-      if (n.id !== d.id && has(n.owner)) ownedInDir++;
+      if (n.id !== d.id && hasOwnership(n)) ownedInDir++;
       if (n.type === "Office") offices++;
       if (n.type === "Person" || n.type === "Role") people++;
       if (inAny(n, METRICS_TECH_TYPES)) systemsOwned++;
@@ -5986,20 +6042,39 @@ function computeLeadershipMetrics(){
   // Bus-factor — surface People/Roles carrying the most leadership load
   // (named as Owner or Lead on other nodes). Concentration is a structural
   // risk leadership cares about: who would we miss most if they left?
+  // Track every (person, edge) pair we've already counted so combined field+edge
+  // sources don't double-count when the auto-edge sync has already created an edge.
   const personLoad = new Map();  // person/role label -> { lead: count, owner: count }
+  const countedEdges = new Set();  // edge ids that have been counted
+  const bumpLoad = (key, kind) => {
+    if (!personLoad.has(key)) personLoad.set(key, { lead: 0, owner: 0 });
+    personLoad.get(key)[kind]++;
+  };
+  // First: count edge-based connections (edges are the canonical truth — every
+  // field-derived relationship also has a corresponding auto-created edge)
+  for (const e of edges){
+    if (e.type !== "RESPONSIBLE_FOR" && e.type !== "OWNS") continue;
+    const src = byId.get(e.source);
+    if (!src || (src.type !== "Person" && src.type !== "Role")) continue;
+    countedEdges.add(e.id);
+    bumpLoad(src.label, e.type === "RESPONSIBLE_FOR" ? "lead" : "owner");
+  }
+  // Then: catch field-filled cases where the name doesn't match a Person node
+  // (no edge gets auto-created, so this is the only signal). Skip if the field
+  // matches a person/role node since we already counted that via the edge.
   for (const n of nodes){
     if (has(n.lead)){
       const key = n.lead.trim();
-      if (!personLoad.has(key)) personLoad.set(key, { lead: 0, owner: 0 });
-      personLoad.get(key).lead++;
+      const node = byLabel.get(key);
+      if (!node || (node.type !== "Person" && node.type !== "Role")) bumpLoad(key, "lead");
     }
     if (has(n.owner)){
       const key = n.owner.trim();
-      // Only count owner load when it matches a Person/Role (not an Office)
-      const ownerNode = byLabel.get(key);
-      if (ownerNode && (ownerNode.type === "Person" || ownerNode.type === "Role")){
-        if (!personLoad.has(key)) personLoad.set(key, { lead: 0, owner: 0 });
-        personLoad.get(key).owner++;
+      const node = byLabel.get(key);
+      if (node && (node.type === "Person" || node.type === "Role")){
+        // Already counted via the OWNS edge if it exists
+        const ownsEdge = edges.find(e => e.type === "OWNS" && e.source === node.id && e.target === n.id);
+        if (!ownsEdge) bumpLoad(key, "owner");
       }
     }
   }
@@ -7041,25 +7116,28 @@ function computeValidationViolations(){
       fix:"Either delete (and clean its edges) or change status back to Active.",
       check: n => /inactive|deprecated|retired/i.test(n.status || "") && totalEdges(n.id) > 0 },
 
-    // WARNINGS — structural gaps that hurt the metrics tab's accuracy
+    // WARNINGS — structural gaps that hurt the metrics tab's accuracy.
+    // These rules treat a filled field OR an incoming structural edge as
+    // equivalent (since Quick-Connect creates the edge directly, bypassing
+    // the form field).
     { id:"warn-directorate-no-lead", title:"Directorate missing Lead", severity:"warn",
-      fix:"Create the director as a Person, then edit the Directorate and fill Lead.",
-      check: n => n.type === "Directorate" && !has(n.lead) },
+      fix:"Either fill Lead with the director's Person name, or Quick-Connect a Person to this Directorate with RESPONSIBLE_FOR.",
+      check: n => n.type === "Directorate" && !has(n.lead) && !hasIncoming(n.id, "RESPONSIBLE_FOR") },
     { id:"warn-office-no-lead", title:"Office missing Lead", severity:"warn",
-      fix:"Create the office head as a Person, then edit the Office and fill Lead.",
-      check: n => n.type === "Office" && !has(n.lead) },
+      fix:"Either fill Lead with the office head's Person name, or Quick-Connect a Person to this Office with RESPONSIBLE_FOR.",
+      check: n => n.type === "Office" && !has(n.lead) && !hasIncoming(n.id, "RESPONSIBLE_FOR") },
     { id:"warn-office-no-directorate", title:"Office missing Directorate (orphaned in org tree)", severity:"warn",
-      fix:"Edit the Office and fill the Directorate field (or Parent if it's not under a Directorate).",
-      check: n => n.type === "Office" && !has(n.directorate) && !has(n.parent) },
+      fix:"Edit the Office and fill the Directorate field (or Parent), or Quick-Connect from a Directorate via CONTAINS.",
+      check: n => n.type === "Office" && !has(n.directorate) && !has(n.parent) && !hasIncoming(n.id, "CONTAINS") },
     { id:"warn-team-no-office", title:"Team missing Office (orphaned in org tree)", severity:"warn",
-      fix:"Edit the Team and fill the Office field.",
-      check: n => n.type === "Team" && !has(n.office) && !has(n.parent) },
+      fix:"Edit the Team and fill the Office field, or Quick-Connect from an Office via CONTAINS.",
+      check: n => n.type === "Team" && !has(n.office) && !has(n.parent) && !hasIncoming(n.id, "CONTAINS") },
     { id:"warn-orphan", title:"Orphaned node (zero connections)", severity:"warn",
       fix:"Either delete the node or connect it to its parent via Quick-Connect.",
       check: n => totalEdges(n.id) === 0 },
     { id:"warn-system-no-owner", title:"System missing Owner", severity:"warn",
-      fix:"Edit the System and fill Owner with the responsible Office's name.",
-      check: n => n.type === "System" && !has(n.owner) },
+      fix:"Either fill Owner with the responsible Office, or Quick-Connect from an Office via OWNS.",
+      check: n => n.type === "System" && !has(n.owner) && !hasIncoming(n.id, "OWNS") },
     { id:"warn-site-no-office", title:"SharePoint Site missing HAS_SITE from any org unit", severity:"warn",
       fix:"Quick-Connect from the owning Office (or Directorate) to the site.",
       check: n => n.type === "SharePoint Site" && !hasIncoming(n.id, "HAS_SITE") },
@@ -7078,11 +7156,11 @@ function computeValidationViolations(){
       fix:"Edit the Person and add their work email.",
       check: n => n.type === "Person" && !has(n.email) },
     { id:"info-person-no-office", title:"Person not assigned to an Office or Team", severity:"info",
-      fix:"Edit the Person and fill Office or Team field.",
-      check: n => n.type === "Person" && !has(n.office) && !has(n.team) && !has(n.parent) },
+      fix:"Edit and fill Office or Team, or Quick-Connect from an org unit via CONTAINS.",
+      check: n => n.type === "Person" && !has(n.office) && !has(n.team) && !has(n.parent) && !hasIncoming(n.id, "CONTAINS") },
     { id:"info-platform-no-owner", title:"Platform missing Owner", severity:"info",
-      fix:"Edit the Platform and fill Owner.",
-      check: n => n.type === "Platform" && !has(n.owner) },
+      fix:"Either fill Owner, or Quick-Connect from an Office via OWNS.",
+      check: n => n.type === "Platform" && !has(n.owner) && !hasIncoming(n.id, "OWNS") },
     { id:"info-site-no-platform", title:"SharePoint Site missing Platform (HOSTED_ON)", severity:"info",
       fix:"Edit the Site and fill Platform = SharePoint Online (create the platform node first if needed).",
       check: n => n.type === "SharePoint Site" && !has(n.platform) && !hasOutgoing(n.id, "HOSTED_ON") },
@@ -7474,12 +7552,22 @@ function computeOrgIntelligence(){
   const rootDepths = peopleRoots.map(r => ({ node: r, depth: chainDepth(r.id) })).sort((a,b) => b.depth - a.depth);
   const maxReportingDepth = rootDepths.length > 0 ? rootDepths[0].depth : 0;
 
-  // ---- Knowledge concentration (people named as Owner on many entities) ----
+  // ---- Knowledge concentration (people named as Owner or Lead) ----
+  // Count edges first (canonical), then field-only cases where the name
+  // doesn't resolve to a Person/Role node.
   const ownerLoad = new Map();
+  const bumpOwner = (key) => ownerLoad.set(key, (ownerLoad.get(key) || 0) + 1);
+  for (const e of edges){
+    if (e.type !== "OWNS" && e.type !== "RESPONSIBLE_FOR") continue;
+    const src = nodes.find(n => n.id === e.source);
+    if (!src || (src.type !== "Person" && src.type !== "Role")) continue;
+    bumpOwner(src.label);
+  }
+  // Field-only cases (no auto-edge created because the name doesn't match a Person)
+  const personLabels = new Set(nodes.filter(n => n.type === "Person" || n.type === "Role").map(n => n.label));
   for (const n of nodes){
-    if (!has(n.owner)) continue;
-    const key = n.owner.trim();
-    ownerLoad.set(key, (ownerLoad.get(key) || 0) + 1);
+    if (has(n.owner) && !personLabels.has(n.owner.trim())) bumpOwner(n.owner.trim());
+    if (has(n.lead)  && !personLabels.has(n.lead.trim()))  bumpOwner(n.lead.trim());
   }
   const ownersAsPersons = [];
   for (const [name, count] of ownerLoad){
