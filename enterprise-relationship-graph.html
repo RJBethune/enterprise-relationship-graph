@@ -1671,13 +1671,13 @@
 const NODE_TYPES = [
   "Executive Office","Front Office","Directorate","Office","Team","Person","Role",
   "System","Platform","Application","SharePoint Site","Microsoft Team","O365 Group",
-  "Mailbox","Microsoft Form","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset",
+  "Distribution List","Mailbox","Microsoft Form","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset",
   "Document","Requirement","Decision","Vendor","Service","Environment","Other"
 ];
 const EDGE_TYPES = [
   "CONTAINS","REPORTS_TO","OWNS","MANAGES","SUPPORTS","USES","DEPENDS_ON",
   "HOSTED_ON","CONNECTED_TO","INTEGRATES_WITH","HAS_SITE","HAS_TEAM",
-  "HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","SENDS_TO","RECEIVES_FROM","AUTOMATES",
+  "HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST","SENDS_TO","RECEIVES_FROM","AUTOMATES",
   "STORES_DATA_IN","VISUALIZED_IN","DOCUMENTED_IN","APPROVED_BY","REQUESTED_BY",
   "RESPONSIBLE_FOR","BACKUP_FOR","PART_OF","OTHER"
 ];
@@ -1697,6 +1697,7 @@ const TYPE_STYLE = {
   "SharePoint Site":       { color:"#22D3EE", size:15, shape:"diamond", icon:"" }, // share
   "Microsoft Team":        { color:"#C084FC", size:15, shape:"diamond", icon:"" }, // users
   "O365 Group":            { color:"#DDD6FE", size:14, shape:"diamond", icon:"" }, // user-friends
+  "Distribution List":     { color:"#F0ABFC", size:13, shape:"diamond", icon:"" }, // paper-plane
   "Mailbox":               { color:"#FDE68A", size:12, shape:"diamond", icon:"" }, // envelope
   "Microsoft Form":        { color:"#8B5CF6", size:13, shape:"diamond", icon:"" }, // clipboard-list
   "Workflow":              { color:"#A3E635", size:13, shape:"tri",     icon:"" }, // diagram-project
@@ -1755,7 +1756,7 @@ function countNodesOfType(name){
 // to applications, systems, and platforms a node is responsible for, so
 // "collapse Customer Engagement Office" hides CE's whole purview.
 const COLLAPSE_EDGE_TYPES = [
-  "CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM",
+  "CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST",
   "OWNS","MANAGES"
 ];
 function getCollapseChildren(nodeId){
@@ -2651,7 +2652,7 @@ function ensurePositions(){
 }
 
 /* ----- Hierarchy helpers (shared by hierarchical / hierarchical-lr / radial) ----- */
-const HIER_DOWN_TYPES = ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","OWNS","MANAGES"];
+const HIER_DOWN_TYPES = ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST","OWNS","MANAGES"];
 const HIER_UP_TYPES   = ["REPORTS_TO","PART_OF"];
 
 // Build a forest from the graph: each node gets at most one parent.
@@ -4661,6 +4662,7 @@ function guessEdgeType(s, t){
   if (s.type === "Office" && t.type === "O365 Group") return "HAS_O365_GROUP";
   if (s.type === "Office" && t.type === "Mailbox") return "HAS_MAILBOX";
   if (s.type === "Office" && t.type === "Microsoft Form") return "HAS_FORM";
+  if (s.type === "Office" && t.type === "Distribution List") return "HAS_DISTRIBUTION_LIST";
   if (s.type === "Office" && t.type === "Person") return "CONTAINS";
   if (s.type === "Office" && t.type === "Team") return "CONTAINS";
   if (s.type === "Team" && t.type === "Person") return "CONTAINS";
@@ -5813,6 +5815,7 @@ function openHelp(){
         <div class="rk">New Mailbox (shared)</div><div class="rv">Quick-Connect from Office (HAS_MAILBOX); Platform = Exchange Online</div>
         <div class="rk">New O365 Group (standalone)</div><div class="rv">Quick-Connect from Office (HAS_O365_GROUP); Platform = Microsoft 365</div>
         <div class="rk">New Microsoft Form</div><div class="rv">Quick-Connect from Office (HAS_FORM); Platform = Microsoft 365 (or Microsoft Forms if you add the platform node)</div>
+        <div class="rk">New Distribution List</div><div class="rv">Quick-Connect from Office (HAS_DISTRIBUTION_LIST); Platform = Exchange Online. Use for traditional Exchange distribution lists (DLs), distinct from O365 Groups.</div>
         <div class="rk">New Workflow / Flow</div><div class="rv">Owner = owning office; Platform = Power Automate (if it's a Power Automate flow)</div>
         <div class="rk">New Power BI Dashboard</div><div class="rv">Owner = owning office; Platform = Power BI</div>
         <div class="rk">New Vendor</div><div class="rv">Connect via Quick-Connect (USES / DEPENDS_ON) from systems that use them</div>
@@ -6274,7 +6277,7 @@ function computeLeadershipMetrics(){
     .sort((a,b) => b.interactions - a.interactions);
 
   // Cross-boundary service flows
-  const OUTBOUND_EDGE_TYPES = ["SUPPORTS","RESPONSIBLE_FOR","SENDS_TO","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM"];
+  const OUTBOUND_EDGE_TYPES = ["SUPPORTS","RESPONSIBLE_FOR","SENDS_TO","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST"];
   const INBOUND_EDGE_TYPES  = ["REQUESTED_BY","RECEIVES_FROM","APPROVED_BY"];
   let outboundServices = 0, inboundRequests = 0, crossBoundaryTotal = 0;
   for (const e of edges){
@@ -7282,6 +7285,7 @@ function generateMermaid(){
     "Mailbox":           (id,l) => `${id}[("${l}")]:::collab`,
     "O365 Group":        (id,l) => `${id}[("${l}")]:::collab`,
     "Microsoft Form":    (id,l) => `${id}[("${l}")]:::collab`,
+    "Distribution List": (id,l) => `${id}[("${l}")]:::collab`,
     "Workflow":          (id,l) => `${id}{{"${l}"}}`,
     "Power Automate Flow": (id,l) => `${id}{{"${l}"}}`,
     "Power BI Dashboard": (id,l) => `${id}{{"${l}"}}`,
