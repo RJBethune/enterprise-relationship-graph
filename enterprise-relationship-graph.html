@@ -676,6 +676,18 @@
     font-size:11.5px; color:var(--text-2);
   }
   .mt-builtin .mt-swatch{width:24px; height:24px; font-size:12px; border-radius:5px}
+  .mt-reset-btn{
+    background:transparent; border:1px solid var(--border);
+    color:var(--accent-2); cursor:pointer;
+    padding:2px 6px; border-radius:4px; font-size:10px;
+    margin-left:auto; flex-shrink:0;
+    display:inline-flex; align-items:center; gap:3px;
+    transition:background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .mt-reset-btn:hover{
+    background:rgba(56,189,248,0.12); color:var(--accent);
+    border-color:var(--accent);
+  }
   .mt-editor{
     background:var(--card-2); border:1px solid var(--accent);
     border-radius:9px; padding:12px; margin-bottom:12px;
@@ -1950,11 +1962,11 @@ const ICON_REGISTRY = {
                       { d:"M12.5 12.5h8.5v8.5h-8.5z", color:"#FFB900" }
                     ], label:"Microsoft 365" },
   "sharepoint":     { kind:"svg", viewBox:"0 0 24 24", paths:[
-                      { d:"M15 1a4.5 4.5 0 100 9 4.5 4.5 0 000-9z", color:"#036C70" },
-                      { d:"M19 8a3.5 3.5 0 100 7 3.5 3.5 0 000-7z", color:"#1A9BA2" },
-                      { d:"M15 16a3 3 0 100 6 3 3 0 000-6z", color:"#3FBEB6" },
-                      { d:"M2.5 7.5h10v10h-10z", color:"#038387" },
-                      { d:"M4 9h7v1H4zM9 9.5h2v2H9zM4 11.5h7v1H4zM4 12h2v3H4zM4 15h7v1H4z", color:"#FFFFFF" }
+                      { d:"M15 2.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7z", color:"#036C70" },
+                      { d:"M18 9a3 3 0 100 6 3 3 0 000-6z", color:"#1A9BA2" },
+                      { d:"M15 15a3 3 0 100 6 3 3 0 000-6z", color:"#3FBEB6" },
+                      { d:"M3 9h9v9H3z", color:"#038387" },
+                      { d:"M4 10h7v1H4zM9.5 11h1.5v1.5H9.5zM4 12.5h7v1H4zM4 13.5h1.5v1.5H4zM4 15h7v1H4z", color:"#FFFFFF" }
                     ], label:"SharePoint" },
   "teams":          { kind:"svg", viewBox:"0 0 24 24", brandColor:"#5059C9", svg:"M8.5 4a2.8 2.8 0 100 5.6 2.8 2.8 0 000-5.6zM15.5 5.5a2.3 2.3 0 100 4.6 2.3 2.3 0 000-4.6zM4 15c0-2.5 2-4.5 4.5-4.5S13 12.5 13 15v3H4v-3zM14 13c0-1.7 1.3-3 3-3s3 1.3 3 3v5h-6v-5z", label:"Microsoft Teams" },
   "onedrive":       { kind:"svg", viewBox:"0 0 24 24", brandColor:"#0078D4", svg:"M7 18a4 4 0 010-8c.2 0 .4 0 .6.1A5.5 5.5 0 0118 9a3.5 3.5 0 011 6.9c-.2.1-.4.1-.7.1H7z", label:"OneDrive" },
@@ -5400,11 +5412,33 @@ function openManageTypesModal(){
     grid.innerHTML = NODE_TYPES.map(t=>{
       const ts = typeStyle(t);
       const used = countNodesOfType(t);
+      // Count nodes of this type that have an explicit icon override
+      const overrideCount = state.graph.nodes.filter(n =>
+        n.type === t && n.icon && String(n.icon).trim()).length;
+      const resetBtn = overrideCount > 0
+        ? `<button class="mt-reset-btn" data-type="${escapeHtml(t)}" title="Clear ${overrideCount} icon override${overrideCount===1?"":"s"} on ${t} nodes so they use the type default"><i class="fa-solid fa-rotate-left"></i> ${overrideCount}</button>`
+        : '';
       return `<div class="mt-builtin" title="${used} node${used===1?"":"s"} of this type">
         <span class="mt-swatch" style="background:${ts.color}; color:${iconFgFor(ts.color)}"><i class="fa-solid">${ts.icon||""}</i></span>
         <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${escapeHtml(t)}</span>
+        ${resetBtn}
       </div>`;
     }).join("");
+    // Wire reset buttons
+    grid.querySelectorAll(".mt-reset-btn").forEach(btn => {
+      btn.onclick = (ev) => {
+        ev.stopPropagation();
+        const type = btn.dataset.type;
+        const affected = state.graph.nodes.filter(n =>
+          n.type === type && n.icon && String(n.icon).trim());
+        if (affected.length === 0) return;
+        if (!confirm(`Clear icon overrides on ${affected.length} ${type} node${affected.length===1?"":"s"}? They'll fall back to the ${type} type default icon.`)) return;
+        affected.forEach(n => { n.icon = ""; });
+        afterMutate();
+        showToast(`Reset icons on ${affected.length} ${type} node${affected.length===1?"":"s"}`, "ok");
+        buildBuiltinGrid();  // re-render so the button updates
+      };
+    });
   }
   function buildCustomList(){
     const list = document.getElementById("mt-custom-list");
