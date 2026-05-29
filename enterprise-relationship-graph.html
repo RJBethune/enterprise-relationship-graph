@@ -1945,6 +1945,7 @@ const ICON_REGISTRY = {
   "excel":          { kind:"svg", viewBox:"0 0 24 24", brandColor:"#217346", svg:"M3 5h18v14H3V5zm0 3.5h18v1H3v-1zm0 4h18v1H3v-1zm0 4h18v1H3v-1zM7.5 5h1v14h-1V5zm5 0h1v14h-1V5zm5 0h1v14h-1V5z", label:"Excel" },
   "powerpoint":     { kind:"svg", viewBox:"0 0 24 24", brandColor:"#B7472A", svg:"M4 3h16v18H4V3zm3 14v-5h2v5H7zm4 0V8h2v9h-2zm4 0v-3h2v3h-2z", label:"PowerPoint" },
   "onenote":        { kind:"svg", viewBox:"0 0 24 24", brandColor:"#80397B", svg:"M5 3h13v18H5V3zM2 5.5h2v2H2v-2zm0 4.5h2v2H2v-2zm0 4.5h2v2H2v-2zm0 4.5h2v2H2v-2z", label:"OneNote" },
+  "power-platform": { kind:"svg", viewBox:"0 0 24 24", brandColor:"#742774", svg:"M3 9h6v6H3V9zm6-6h6v6H9V3zm0 12h6v6H9v-6zm6-6h6v6h-6V9z", label:"Power Platform" },
   "power-bi":       { kind:"svg", viewBox:"0 0 24 24", brandColor:"#F2C811", svg:"M5 19V9h3v10H5zm6 0V4h3v15h-3zm6 0v-7h3v7h-3z", label:"Power BI" },
   "power-automate": { kind:"svg", viewBox:"0 0 24 24", brandColor:"#0066FF", svg:"M13 2L4 13h6l-1 9 9-12h-6l1-8z", label:"Power Automate" },
   "power-apps":     { kind:"svg", viewBox:"0 0 24 24", brandColor:"#742774", svg:"M12 2l8.66 5v10L12 22l-8.66-5V7L12 2zm0 4.5L6.93 9.5v5L12 17.5l5.07-3v-5L12 6.5zm-1 3h2v2h2v2h-2v2h-2v-2H9v-2h2V9.5z", label:"Power Apps" },
@@ -4352,8 +4353,8 @@ function nodeFormHtml(n){
   const ICON_GROUPS = [
     { label: "Microsoft 365",
       keys: ["microsoft-365","sharepoint","teams","onedrive","outlook","exchange",
-             "word","excel","powerpoint","onenote","power-bi","power-automate",
-             "power-apps","dataverse","copilot-studio","forms"] },
+             "word","excel","powerpoint","onenote","power-platform","power-bi",
+             "power-automate","power-apps","dataverse","copilot-studio","forms"] },
     { label: "Brand",
       keys: ["microsoft","windows","salesforce","github","gitlab","slack",
              "aws","google","jira","confluence","docker","apple","linux"] },
@@ -4371,16 +4372,19 @@ function nodeFormHtml(n){
       .join("");
     return opts ? `<optgroup label="${grp.label}">${opts}</optgroup>` : "";
   };
-  // Any registry keys not yet covered by a group get an "Other" bucket so
+  // CRITICAL ORDERING: compute the grouped HTML FIRST so the `seen` Set is
+  // populated. Previously ungroupedKeys was computed before any groupHtml call
+  // had run, so `seen` was empty and every icon ended up listed in both its
+  // named group AND the "Other" catch-all.
+  const groupedHtml = ICON_GROUPS.map(groupHtml).join("");
+  // Any registry keys not covered by a named group get an "Other" bucket so
   // future icon additions still appear without code changes.
   const ungroupedKeys = Object.keys(ICON_REGISTRY).filter(k => !seen.has(k));
   const ungroupedHtml = ungroupedKeys.length
     ? `<optgroup label="Other">${ungroupedKeys.map(k =>
         `<option value="${k}" ${n.icon===k?"selected":""}>${ICON_REGISTRY[k].label}</option>`
       ).join("")}</optgroup>` : "";
-  const iconOpts = '<option value="">Type default</option>' +
-                   ICON_GROUPS.map(groupHtml).join("") +
-                   ungroupedHtml;
+  const iconOpts = '<option value="">Type default</option>' + groupedHtml + ungroupedHtml;
   // Build datalists from the current graph
   const opt = arr => arr.map(x => `<option value="${escapeHtml(x.label)}"></option>`).join("");
   const allNodes = state.graph.nodes.slice().sort((a,b)=>a.label.localeCompare(b.label));
