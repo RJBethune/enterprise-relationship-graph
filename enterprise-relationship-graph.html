@@ -1677,7 +1677,7 @@ const TYPE_STYLE = {
   "SharePoint Site":       { color:"#22D3EE", size:15, shape:"diamond", icon:"" }, // share
   "Microsoft Team":        { color:"#C084FC", size:15, shape:"diamond", icon:"" }, // users
   "O365 Group":            { color:"#DDD6FE", size:14, shape:"diamond", icon:"" }, // user-friends
-  "Mailbox":               { color:"#FDE68A", size:12, shape:"diamond", icon:"" }, // mailbox
+  "Mailbox":               { color:"#FDE68A", size:12, shape:"diamond", icon:"" }, // envelope
   "Microsoft Form":        { color:"#8B5CF6", size:13, shape:"diamond", icon:"" }, // clipboard-list
   "Workflow":              { color:"#A3E635", size:13, shape:"tri",     icon:"" }, // diagram-project
   "Power Automate Flow":   { color:"#A3E635", size:13, shape:"tri",     icon:"" }, // bolt
@@ -1941,7 +1941,13 @@ const ICON_REGISTRY = {
                       { d:"M3 12.5h8.5v8.5H3z", color:"#00A4EF" },
                       { d:"M12.5 12.5h8.5v8.5h-8.5z", color:"#FFB900" }
                     ], label:"Microsoft 365" },
-  "sharepoint":     { kind:"svg", viewBox:"0 0 24 24", brandColor:"#038387", svg:"M3 6h7l2 2h9v11H3V6zm12 6l-4 4h2.5v3h3v-3H19l-4-4z", label:"SharePoint" },
+  "sharepoint":     { kind:"svg", viewBox:"0 0 24 24", paths:[
+                      { d:"M15 1a4.5 4.5 0 100 9 4.5 4.5 0 000-9z", color:"#036C70" },
+                      { d:"M19 8a3.5 3.5 0 100 7 3.5 3.5 0 000-7z", color:"#1A9BA2" },
+                      { d:"M15 16a3 3 0 100 6 3 3 0 000-6z", color:"#3FBEB6" },
+                      { d:"M2.5 7.5h10v10h-10z", color:"#038387" },
+                      { d:"M4 9h7v1H4zM9 9.5h2v2H9zM4 11.5h7v1H4zM4 12h2v3H4zM4 15h7v1H4z", color:"#FFFFFF" }
+                    ], label:"SharePoint" },
   "teams":          { kind:"svg", viewBox:"0 0 24 24", brandColor:"#5059C9", svg:"M8.5 4a2.8 2.8 0 100 5.6 2.8 2.8 0 000-5.6zM15.5 5.5a2.3 2.3 0 100 4.6 2.3 2.3 0 000-4.6zM4 15c0-2.5 2-4.5 4.5-4.5S13 12.5 13 15v3H4v-3zM14 13c0-1.7 1.3-3 3-3s3 1.3 3 3v5h-6v-5z", label:"Microsoft Teams" },
   "onedrive":       { kind:"svg", viewBox:"0 0 24 24", brandColor:"#0078D4", svg:"M7 18a4 4 0 010-8c.2 0 .4 0 .6.1A5.5 5.5 0 0118 9a3.5 3.5 0 011 6.9c-.2.1-.4.1-.7.1H7z", label:"OneDrive" },
   "outlook":        { kind:"svg", viewBox:"0 0 24 24", brandColor:"#0078D4", svg:"M3 6h18v12H3V6zm1.5 1.5l7.5 5.5 7.5-5.5h-15z", label:"Outlook" },
