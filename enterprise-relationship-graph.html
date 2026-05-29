@@ -24,12 +24,30 @@
   in this single file. State persists in localStorage. JSON import/export and
   named snapshots let you back up, share, and version your graphs.
 
-  v3 adds a Leadership Metrics dashboard (chart-line button in the header):
-  seven tabs covering scale, lifecycle pipeline, EX service delivery, risk,
-  data coverage, organizational footprint, and operational complexity. All
-  charts are inline SVG (no extra dependencies); every entity in a chart or
-  table is clickable to jump to the node on the graph. Includes Markdown
-  clipboard export and a print-friendly view that stacks all tabs.
+  v3 highlights:
+    * Leadership Metrics dashboard (chart-line button) with 8 tabs: Executive
+      Summary, Pipeline, Service, Risk & SPOFs, Coverage, Org Footprint, Org
+      Intel, Complexity. Hand-rolled inline SVG charts. Markdown + Print export.
+    * Data Quality dashboard (clipboard-check button) with 16 type-aware rules
+      grouped by severity, drill-down to violating nodes.
+    * Impact Analysis (bolt button on any node profile) — pure dependency
+      cascade walk, separate "directly owned" section for restructuring impact.
+    * Mermaid export — type-aware flowchart, portable to any markdown renderer.
+    * Org Chart layout — filters to people + org units, snapshots prior state.
+    * Recently Viewed popover (clock-rotate-left button) — last 15 entities.
+    * Edge inline editing — type / description / notes editable in side panel.
+    * Email + phone fields on every node type, mailto: / tel: links in profile.
+    * M365 brand SVG icons (SharePoint, Teams, OneDrive, Outlook, Word, Excel,
+      PowerPoint, OneNote, Power BI, Power Automate, Forms).
+    * Team node type for sub-office org units. Microsoft Form node type.
+    * Sidebar section + legend collapse states persist across reloads.
+
+  Architecture quick-reference (see TOC at top of the embedded script):
+    state lives in one object + localStorage; mutations route through
+    afterMutate() which persists, marks dirty, updates collapse set, and
+    requests a redraw. Auto-edges from form fields are declared in SYNC_RULES.
+    Modals share a single open/close contract. JSON bundle format is v3
+    (envelope + graph) with backwards compatibility for v2 and legacy v1.
 
   Features: help system, quick-connect mode, right-click menus, undo/redo,
   hover tooltips, PNG export, named snapshots, edge styling by type,
@@ -871,6 +889,18 @@
     .legend-item{color:#222 !important}
     .legend-tabs{display:none !important} /* show whichever tab is open */
   }
+  /* Mid-width: header buttons multiplying make the right side cramped.
+     Hide the filename label below 1100px (keep file-chip icon for save action). */
+  @media (max-width:1100px){
+    .file-chip .fc-name{display:none}
+    .stats .stat .lbl{display:none}
+    .status-bar .center{display:none}
+  }
+  /* Narrower still: hide modified chip and brand subtitle */
+  @media (max-width:1000px){
+    .modified-chip{display:none !important}
+    .brand-text p{display:none}
+  }
   /* Tablet/phone: stack panels vertically, hide rarely-used controls */
   @media (max-width:900px){
     .app{
@@ -1563,8 +1593,58 @@
 
 <script>
 /* ============================================================================
-   ENTERPRISE RELATIONSHIP GRAPH — v2
-   Full feature set in one offline-capable file. CDN: Font Awesome + Inter.
+   ENTERPRISE RELATIONSHIP GRAPH — v3
+   Single-file, offline-capable. CDN: Font Awesome 6 + Inter.
+
+   ----------------------------------------------------------------------------
+   TABLE OF CONTENTS  (jump targets — search for the exact section banner)
+   ----------------------------------------------------------------------------
+     TYPE METADATA              — NODE_TYPES, EDGE_TYPES, TYPE_STYLE, EDGE_STYLE
+     ICON REGISTRY              — FA brand glyphs + inline SVG brand icons
+     SAMPLE DATA                — 80-node demo graph (the sample button loads this)
+     STATE                      — the central `state` object + localStorage keys
+     RENDERING                  — Canvas2D draw loop, hit-testing, transforms
+     LAYOUT ALGORITHMS          — force, hierarchical, radial, concentric, grid,
+                                  org-chart (alias of hierarchical with filter snapshot)
+     FILTERS & VISIBILITY       — isVisibleNode/Edge, collapse, neighborhood, search
+     PROFILE PANELS             — renderNodeProfile, renderEdgeProfile (inline edit)
+     MODALS                     — openModal/closeModal contract + per-feature modals
+     AUTO-EDGE SYNC             — SYNC_RULES + syncStructuralEdges
+     QUICK-CONNECT              — guessEdgeType + Quick-Connect mode
+     SAVE / LOAD                — currentBundle, parseBundle (accepts v2 + v3)
+     EXPORTS                    — CSV / XLSX / PNG / Mermaid
+     LEADERSHIP METRICS         — computeLeadershipMetrics + 8-tab modal
+     IMPACT ANALYSIS            — pure dependency cascade (no ownership leak)
+     DATA QUALITY VALIDATION    — 16 type-aware rules, severity-grouped modal
+     ORG INTELLIGENCE           — span of control, bridges, knowledge concentration
+     RECENTLY VIEWED            — popover with last 15 selected entities
+     UI STATE PERSISTENCE       — sidebar collapse + legend + recent in localStorage
+     WIRE UP                    — DOM event listeners attached on boot
+     BOOT                       — boot() initializes everything
+
+   ----------------------------------------------------------------------------
+   ARCHITECTURE — how things connect
+   ----------------------------------------------------------------------------
+     State lives in a single `state` object (graph, filters, layout, selection,
+       collapse, recent, etc.). LocalStorage mirrors graph (STORAGE_KEY) + UI
+       preferences (UI_STATE_KEY). The JSON file on disk is the source of truth.
+
+     Rendering runs through requestAnimationFrame. Most mutations call
+       afterMutate() which: pushes history (undo), persists to localStorage,
+       updates the file-chip dirty indicator, recomputes collapse-hidden set,
+       and calls requestRedraw().
+
+     Auto-edges: filling Parent / Directorate / Office / Team / Platform / Owner
+       / Lead / Reports-to on a node form auto-creates the matching graph edge.
+       SYNC_RULES declares which field maps to which edge type and direction.
+
+     Modals: all share `openModal(title, html, onSave, wide)` / closeModal().
+       Info-style modals hide the Save button and rename Cancel to "Done".
+       The Metrics modal adds `.xl` for an extra-wide layout.
+
+     Save / load: currentBundle() produces a v3 envelope { version, exportedAt,
+       lastModifiedBy, lastModifiedAt, graph, snapshots }. parseBundle() accepts
+       v2 (no email/phone/team fields) and v3, defaulting missing fields.
    ============================================================================ */
 
 /* ---------- TYPE METADATA ---------- */
@@ -4590,11 +4670,20 @@ function applyStampFromBundle(bundle){
   updateModifiedChip();
 }
 
+/* JSON bundle schema versions:
+     v1 — legacy graph-only object (just { nodes, edges }), still loadable
+     v2 — added envelope: { version, exportedAt, lastModifiedBy, lastModifiedAt, graph, snapshots }
+     v3 — additive (still backwards-compatible loader):
+            - Node fields: email, phone, team
+            - Node types: "Team" (org sub-unit), "Microsoft Form"
+            - Edge types: HAS_FORM
+            - Older v2 files still load — missing fields default at read time.
+*/
 function currentBundle(){
   const now = new Date().toISOString();
   const editor = getEditorName() || "unknown";
   return {
-    version: 2,
+    version: 3,
     exportedAt: now,
     lastModifiedBy: editor,
     lastModifiedAt: now,
