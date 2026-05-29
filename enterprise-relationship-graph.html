@@ -1712,8 +1712,13 @@ function getCustomType(name){
   return (state.graph && state.graph.customNodeTypes || []).find(t => t.name === name) || null;
 }
 function allNodeTypes(){
-  const custom = (state.graph && state.graph.customNodeTypes || []).map(t => t.name);
-  // Custom types appear at the end; "Other" stays the universal fallback
+  // Custom types appear at the end; built-in names take precedence to avoid
+  // duplicate entries in filter UIs / pickers when custom types collide with
+  // built-ins promoted later.
+  const builtinLower = new Set(NODE_TYPES.map(t => t.toLowerCase()));
+  const custom = (state.graph && state.graph.customNodeTypes || [])
+    .map(t => t.name)
+    .filter(n => n && !builtinLower.has(n.toLowerCase()));
   return [...NODE_TYPES, ...custom];
 }
 function countNodesOfType(name){
@@ -1927,18 +1932,25 @@ const ICON_REGISTRY = {
   "docker":     { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Docker" },
   "apple":      { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Apple" },
   "linux":      { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Linux" },
-  // SVG brand icons for the M365 stack (single-color, render in iconFgFor color)
-  "sharepoint":     { kind:"svg", viewBox:"0 0 24 24", svg:"M12 3a3 3 0 100 6 3 3 0 000-6zM5 14a3 3 0 100 6 3 3 0 000-6zM19 14a3 3 0 100 6 3 3 0 000-6zM11.4 8.6l-4.5 5.5 1.5 1.2 4.5-5.5zM12.6 8.6l4.5 5.5-1.5 1.2-4.5-5.5z", label:"SharePoint" },
-  "teams":          { kind:"svg", viewBox:"0 0 24 24", svg:"M8.5 4a2.8 2.8 0 100 5.6 2.8 2.8 0 000-5.6zM15.5 5.5a2.3 2.3 0 100 4.6 2.3 2.3 0 000-4.6zM4 15c0-2.5 2-4.5 4.5-4.5S13 12.5 13 15v3H4v-3zM14 13c0-1.7 1.3-3 3-3s3 1.3 3 3v5h-6v-5z", label:"Microsoft Teams" },
-  "onedrive":       { kind:"svg", viewBox:"0 0 24 24", svg:"M7 18a4 4 0 010-8c.2 0 .4 0 .6.1A5.5 5.5 0 0118 9a3.5 3.5 0 011 6.9c-.2.1-.4.1-.7.1H7z", label:"OneDrive" },
-  "outlook":        { kind:"svg", viewBox:"0 0 24 24", svg:"M3 6h18v12H3V6zm1.5 1.5l7.5 5.5 7.5-5.5h-15z", label:"Outlook" },
-  "word":           { kind:"svg", viewBox:"0 0 24 24", svg:"M5 3h11l4 4v14H5V3zm2 7v2h10v-2H7zm0 4v2h10v-2H7zm0 4v2h7v-2H7z", label:"Word" },
-  "excel":          { kind:"svg", viewBox:"0 0 24 24", svg:"M3 5h18v14H3V5zm0 3.5h18v1H3v-1zm0 4h18v1H3v-1zm0 4h18v1H3v-1zM7.5 5h1v14h-1V5zm5 0h1v14h-1V5zm5 0h1v14h-1V5z", label:"Excel" },
-  "powerpoint":     { kind:"svg", viewBox:"0 0 24 24", svg:"M4 3h16v18H4V3zm3 14v-5h2v5H7zm4 0V8h2v9h-2zm4 0v-3h2v3h-2z", label:"PowerPoint" },
-  "onenote":        { kind:"svg", viewBox:"0 0 24 24", svg:"M5 3h13v18H5V3zM2 5.5h2v2H2v-2zm0 4.5h2v2H2v-2zm0 4.5h2v2H2v-2zm0 4.5h2v2H2v-2z", label:"OneNote" },
-  "power-bi":       { kind:"svg", viewBox:"0 0 24 24", svg:"M5 19V9h3v10H5zm6 0V4h3v15h-3zm6 0v-7h3v7h-3z", label:"Power BI" },
-  "power-automate": { kind:"svg", viewBox:"0 0 24 24", svg:"M13 2L4 13h6l-1 9 9-12h-6l1-8z", label:"Power Automate" },
-  "forms":          { kind:"svg", viewBox:"0 0 24 24", svg:"M9 3h6v2H9V3zM5 5h14v16H5V5zM7 9h2v1H7V9zM10 9h7v1h-7V9zM7 12h2v1H7v-1zM10 12h7v1h-7v-1zM7 15h2v1H7v-1zM10 15h7v1h-7v-1zM7 18h2v1H7v-1zM10 18h5v1h-5v-1z", label:"Microsoft Forms" },
+  // SVG brand icons for the M365 stack. brandColor (optional) renders the icon
+  // on a small white badge in the product's brand color, matching the M365
+  // launcher look. If omitted, icon renders in iconFgFor color.
+  "microsoft-365":  { kind:"svg", viewBox:"0 0 24 24", brandColor:"#D83B01", svg:"M14 4l-9 4v8l9 4 9-4V8l-9-4zm0 2.5l6.5 2.9L14 12.3 7.5 9.4 14 6.5zM7 11.2l6 2.7v6.6l-6-2.7v-6.6zm14 0v6.6l-6 2.7v-6.6l6-2.7z", label:"Microsoft 365" },
+  "sharepoint":     { kind:"svg", viewBox:"0 0 24 24", brandColor:"#038387", svg:"M3 6h7l2 2h9v11H3V6zm12 6l-4 4h2.5v3h3v-3H19l-4-4z", label:"SharePoint" },
+  "teams":          { kind:"svg", viewBox:"0 0 24 24", brandColor:"#5059C9", svg:"M8.5 4a2.8 2.8 0 100 5.6 2.8 2.8 0 000-5.6zM15.5 5.5a2.3 2.3 0 100 4.6 2.3 2.3 0 000-4.6zM4 15c0-2.5 2-4.5 4.5-4.5S13 12.5 13 15v3H4v-3zM14 13c0-1.7 1.3-3 3-3s3 1.3 3 3v5h-6v-5z", label:"Microsoft Teams" },
+  "onedrive":       { kind:"svg", viewBox:"0 0 24 24", brandColor:"#0078D4", svg:"M7 18a4 4 0 010-8c.2 0 .4 0 .6.1A5.5 5.5 0 0118 9a3.5 3.5 0 011 6.9c-.2.1-.4.1-.7.1H7z", label:"OneDrive" },
+  "outlook":        { kind:"svg", viewBox:"0 0 24 24", brandColor:"#0078D4", svg:"M3 6h18v12H3V6zm1.5 1.5l7.5 5.5 7.5-5.5h-15z", label:"Outlook" },
+  "exchange":       { kind:"svg", viewBox:"0 0 24 24", brandColor:"#0072C6", svg:"M3 5h18v4H3V5zm0 5h18v4H3v-4zm0 5h18v4H3v-4zM5 6h2v2H5V6zm0 5h2v2H5v-2zm0 5h2v2H5v-2zm12 0l-2-2v1.5h-3v1h3v1.5z", label:"Exchange Online" },
+  "word":           { kind:"svg", viewBox:"0 0 24 24", brandColor:"#2B579A", svg:"M5 3h11l4 4v14H5V3zm2 7v2h10v-2H7zm0 4v2h10v-2H7zm0 4v2h7v-2H7z", label:"Word" },
+  "excel":          { kind:"svg", viewBox:"0 0 24 24", brandColor:"#217346", svg:"M3 5h18v14H3V5zm0 3.5h18v1H3v-1zm0 4h18v1H3v-1zm0 4h18v1H3v-1zM7.5 5h1v14h-1V5zm5 0h1v14h-1V5zm5 0h1v14h-1V5z", label:"Excel" },
+  "powerpoint":     { kind:"svg", viewBox:"0 0 24 24", brandColor:"#B7472A", svg:"M4 3h16v18H4V3zm3 14v-5h2v5H7zm4 0V8h2v9h-2zm4 0v-3h2v3h-2z", label:"PowerPoint" },
+  "onenote":        { kind:"svg", viewBox:"0 0 24 24", brandColor:"#80397B", svg:"M5 3h13v18H5V3zM2 5.5h2v2H2v-2zm0 4.5h2v2H2v-2zm0 4.5h2v2H2v-2zm0 4.5h2v2H2v-2z", label:"OneNote" },
+  "power-bi":       { kind:"svg", viewBox:"0 0 24 24", brandColor:"#F2C811", svg:"M5 19V9h3v10H5zm6 0V4h3v15h-3zm6 0v-7h3v7h-3z", label:"Power BI" },
+  "power-automate": { kind:"svg", viewBox:"0 0 24 24", brandColor:"#0066FF", svg:"M13 2L4 13h6l-1 9 9-12h-6l1-8z", label:"Power Automate" },
+  "power-apps":     { kind:"svg", viewBox:"0 0 24 24", brandColor:"#742774", svg:"M12 2l8.66 5v10L12 22l-8.66-5V7L12 2zm0 4.5L6.93 9.5v5L12 17.5l5.07-3v-5L12 6.5zm-1 3h2v2h2v2h-2v2h-2v-2H9v-2h2V9.5z", label:"Power Apps" },
+  "dataverse":      { kind:"svg", viewBox:"0 0 24 24", brandColor:"#5C2D91", svg:"M12 3c-4.5 0-7 1.2-7 2.5v13C5 19.8 7.5 21 12 21s7-1.2 7-2.5v-13C19 4.2 16.5 3 12 3zm0 2c3.4 0 5 .8 5 .5S15.4 6 12 6s-5-.2-5-.5S8.6 5 12 5zm5 13.5C17 18.8 15.4 19 12 19s-5-.2-5-.5v-2.7c1.3.4 3 .7 5 .7s3.7-.3 5-.7v2.7zm0-5C17 13.8 15.4 14 12 14s-5-.2-5-.5v-2.7c1.3.4 3 .7 5 .7s3.7-.3 5-.7v2.7zm0-5C17 8.8 15.4 9 12 9s-5-.2-5-.5V6.7c0 .3 1.6 1.3 5 1.3s5-1 5-1.3v2z", label:"Dataverse" },
+  "copilot-studio": { kind:"svg", viewBox:"0 0 24 24", brandColor:"#6B5BE0", svg:"M12 2l1.6 6.4 6.4 1.6-6.4 1.6L12 18l-1.6-6.4L4 10l6.4-1.6L12 2zm6 12l.7 2.8L21.5 17.5l-2.8.7L18 21l-.7-2.8-2.8-.7 2.8-.7L18 14zm-13 4l.5 2 2 .5-2 .5L5 21l-.5-2-2-.5 2-.5L5 16z", label:"Copilot Studio" },
+  "forms":          { kind:"svg", viewBox:"0 0 24 24", brandColor:"#BC2C9C", svg:"M9 3h6v2H9V3zM5 5h14v16H5V5zM7 9h2v1H7V9zM10 9h7v1h-7V9zM7 12h2v1H7v-1zM10 12h7v1h-7v-1zM7 15h2v1H7v-1zM10 15h7v1h-7v-1zM7 18h2v1H7v-1zM10 18h5v1h-5v-1z", label:"Microsoft Forms" },
   // Other product stand-ins (still using FA solid icons)
   "servicenow":     { font:FA_SOLID_FONT, weight:900, unicode:"", label:"ServiceNow (gears)" },
   "arcgis":         { font:FA_SOLID_FONT, weight:900, unicode:"", label:"ArcGIS (map)" }
@@ -1949,7 +1961,8 @@ const ICON_REGISTRY = {
 function iconSpec(node){
   const normalize = entry => {
     if (entry && entry.kind === "svg"){
-      return { kind:"svg", svg:entry.svg, viewBox:entry.viewBox || "0 0 24 24" };
+      return { kind:"svg", svg:entry.svg, viewBox:entry.viewBox || "0 0 24 24",
+               brandColor: entry.brandColor };
     }
     return { kind:"fa", font:entry.font, weight:entry.weight, unicode:entry.unicode };
   };
@@ -1981,11 +1994,24 @@ function drawIconSvg(ctx, spec, x, y, iconSize, color){
   if (!path) return;
   const vb = (spec.viewBox || "0 0 24 24").split(/\s+/).map(Number);
   const vbX = vb[0], vbY = vb[1], vbW = vb[2], vbH = vb[3];
-  const scale = iconSize / Math.max(vbW, vbH);
+  // When a brand color is specified, draw the icon on a small white circular
+  // badge so the brand color reads against any node background. Mirrors the
+  // visual style of the M365 app launcher (colored shape on white tile).
+  if (spec.brandColor){
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.beginPath();
+    ctx.arc(x, y, iconSize * 0.62, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  const fillColor = spec.brandColor || color;
+  const drawSize = spec.brandColor ? iconSize * 0.85 : iconSize;
+  const drawScale = drawSize / Math.max(vbW, vbH);
   ctx.save();
-  ctx.fillStyle = color;
+  ctx.fillStyle = fillColor;
   ctx.translate(x, y);
-  ctx.scale(scale, scale);
+  ctx.scale(drawScale, drawScale);
   ctx.translate(-(vbX + vbW/2), -(vbY + vbH/2));
   ctx.fill(path);
   ctx.restore();
@@ -2258,6 +2284,21 @@ function loadInitial(){
     ? loaded : JSON.parse(JSON.stringify(SAMPLE_DATA));
   if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
   if (!Array.isArray(state.graph.collapsedNodes)) state.graph.collapsedNodes = [];
+  // Run dedup cleanups on the restored data BEFORE filters are computed,
+  // otherwise the filter Sets will include the about-to-be-removed dupes.
+  const edgeDupes = removeDuplicateEdges();
+  const typeDupes = removeDuplicateCustomTypes();
+  // Persist the cleaned state so the bad data is gone on next reload too
+  if (edgeDupes > 0 || typeDupes > 0){
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)); } catch(_){}
+    // Toast after boot settles so it's visible
+    setTimeout(() => {
+      const msgs = [];
+      if (edgeDupes > 0) msgs.push(`${edgeDupes} duplicate edge${edgeDupes===1?"":"s"}`);
+      if (typeDupes > 0) msgs.push(`${typeDupes} redundant custom type${typeDupes===1?"":"s"} (now built-in)`);
+      showToast("Cleaned up " + msgs.join(" and "), "ok");
+    }, 800);
+  }
   resetFiltersFromGraph();
   recomputeHiddenByCollapse();
 }
@@ -3759,6 +3800,33 @@ function effectivePlatform(node){
   return "";
 }
 
+/* ---------- Custom node type deduplication ----------
+   When a custom node type was created BEFORE that type became built-in
+   (e.g. Team, Microsoft Form), the custom type lingers in
+   state.graph.customNodeTypes and the Type dropdown shows it twice — once
+   as built-in, once as custom. This cleanup strips any custom type whose
+   name matches a built-in (case-insensitive). Existing nodes typed with the
+   custom name stay valid because the built-in name resolves identically.
+*/
+function removeDuplicateCustomTypes(){
+  if (!state.graph || !Array.isArray(state.graph.customNodeTypes)) return 0;
+  const builtinLower = new Set(NODE_TYPES.map(t => t.toLowerCase().trim()));
+  const original = state.graph.customNodeTypes.length;
+  // Also dedupe custom types that have the same name as each other (case &
+  // whitespace insensitive) — keep the first occurrence.
+  const seenLower = new Set();
+  state.graph.customNodeTypes = state.graph.customNodeTypes.filter(t => {
+    if (!t || !t.name) return false;
+    const key = String(t.name).toLowerCase().trim();
+    if (!key) return false;
+    if (builtinLower.has(key)) return false;  // collides with built-in
+    if (seenLower.has(key)) return false;     // duplicate custom type
+    seenLower.add(key);
+    return true;
+  });
+  return original - state.graph.customNodeTypes.length;
+}
+
 /* ---------- Edge deduplication ----------
    Multiple edges with the same (source, target, type) are always meaningless
    in this graph model — they distort metrics (edge counts, critical hubs,
@@ -4265,8 +4333,14 @@ modalSave.addEventListener("click", ()=>{ if (modalSaveHandler) modalSaveHandler
 
 function nodeFormHtml(n){
   n = n || {};
-  // Built-in types in main group, custom types in their own optgroup
-  const customNames = (state.graph.customNodeTypes || []).map(t => t.name);
+  // Built-in types in main group, custom types in their own optgroup.
+  // Custom types whose name matches a built-in (case-insensitive) are hidden
+  // here — defense in depth alongside removeDuplicateCustomTypes() which
+  // cleans the underlying data on load/save.
+  const builtinLowerSet = new Set(NODE_TYPES.map(t => t.toLowerCase()));
+  const customNames = (state.graph.customNodeTypes || [])
+    .map(t => t.name)
+    .filter(nm => nm && !builtinLowerSet.has(nm.toLowerCase()));
   const builtinOpts = NODE_TYPES.map(t=>`<option value="${t}" ${n.type===t?"selected":""}>${t}</option>`).join("");
   const customOpts  = customNames.map(t=>`<option value="${t}" ${n.type===t?"selected":""}>${t}</option>`).join("");
   const typeOpts = customOpts
@@ -4277,8 +4351,9 @@ function nodeFormHtml(n){
   // salesforce, github, ...); Other = enterprise stand-ins (servicenow, arcgis).
   const ICON_GROUPS = [
     { label: "Microsoft 365",
-      keys: ["sharepoint","teams","onedrive","outlook","word","excel",
-             "powerpoint","onenote","power-bi","power-automate","forms"] },
+      keys: ["microsoft-365","sharepoint","teams","onedrive","outlook","exchange",
+             "word","excel","powerpoint","onenote","power-bi","power-automate",
+             "power-apps","dataverse","copilot-studio","forms"] },
     { label: "Brand",
       keys: ["microsoft","windows","salesforce","github","gitlab","slack",
              "aws","google","jira","confluence","docker","apple","linux"] },
@@ -4545,6 +4620,9 @@ function afterMutate(skipDirty, skipHistory){
   // Auto-dedupe any duplicate edges introduced by this mutation. Silent —
   // a duplicate edge is always a bug, not a feature, so no toast.
   removeDuplicateEdges();
+  // Also strip any custom node types that collide with built-ins (no toast,
+  // identical purpose).
+  removeDuplicateCustomTypes();
   // Capture the post-mutation state for redo to work. Undo/redo themselves
   // pass skipHistory=true so they don't re-push the state they just restored.
   if (!skipHistory) pushHistory();
@@ -4820,6 +4898,12 @@ function applyLoadedBundle(bundle, fileName){
   const dupeCount = removeDuplicateEdges();
   if (dupeCount > 0){
     setTimeout(() => showToast(`Cleaned up ${dupeCount} duplicate edge${dupeCount===1?"":"s"} on load`, "ok"), 200);
+  }
+  // Strip custom node types that have since become built-in (e.g., a user
+  // created a custom "Team" before Team was promoted to built-in).
+  const typeDupes = removeDuplicateCustomTypes();
+  if (typeDupes > 0){
+    setTimeout(() => showToast(`Removed ${typeDupes} redundant custom type${typeDupes===1?"":"s"} (now built-in)`, "ok"), 400);
   }
   // Ensure optional collections exist on the loaded graph (older / external files
   // may omit them); subsequent code assumes both are arrays.
