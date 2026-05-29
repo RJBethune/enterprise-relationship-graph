@@ -5294,6 +5294,7 @@ function openHelp(){
       <button class="help-tab" data-pane="model">Modeling</button>
       <button class="help-tab" data-pane="views">Views</button>
       <button class="help-tab" data-pane="metrics">Metrics</button>
+      <button class="help-tab" data-pane="analysis">Analysis</button>
       <button class="help-tab" data-pane="data">Data</button>
       <button class="help-tab" data-pane="kbd">Shortcuts</button>
       <button class="help-tab" data-pane="ref">Reference</button>
@@ -5322,8 +5323,10 @@ function openHelp(){
       <p>Select an item, then use the <kbd>Edit</kbd> / <kbd>Delete selected</kbd> buttons in the sidebar, the action buttons inside the profile panel, or right-click → menu. <kbd>Backspace</kbd> deletes the selected item.</p>
       <h4>Undo & redo</h4>
       <p>Every change is undoable up to 30 steps, and redo works in both directions through the history. Use the sidebar buttons, the canvas toolbar, or <kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd>. History captures the full state: nodes, edges, custom types, and collapsed branches.</p>
+      <h4>Editing an edge inline</h4>
+      <p>Click any edge on the canvas and the right panel becomes a live editor. The <em>Type</em> dropdown changes the relationship type with a brief "&check; saved" confirmation. <em>Description</em> and <em>Notes</em> textareas save when you tab/click away. No modal needed for the common case.</p>
       <h4>Reversing an edge</h4>
-      <p>Select an edge → "Reverse direction" in its profile or right-click menu. Useful when you realize you connected the wrong way.</p>
+      <p>Select an edge → "Reverse" in its profile or right-click menu. Useful when you realize you connected the wrong way.</p>
     </div>
     <div class="help-pane" data-pane="model">
       <h4>What this guide covers</h4>
@@ -5456,8 +5459,10 @@ function openHelp(){
       <h4>Layouts</h4>
       <ul>
         <li><strong>Force-directed:</strong> organic, good for exploring connectivity.</li>
-        <li><strong>Hierarchical:</strong> top-down tree based on CONTAINS, REPORTS_TO, OWNS, etc. Good for org-chart views.</li>
-        <li><strong>Concentric:</strong> rings by entity type (Executive at center, leaves outside).</li>
+        <li><strong>Hierarchical (top-down) / Hierarchical (left-right):</strong> tree based on CONTAINS, REPORTS_TO, OWNS, etc. Good for general structure.</li>
+        <li><strong>Org Chart (people + reports):</strong> filters down to Person, Role, and the four org-unit types (Executive Office through Team) and arranges by REPORTS_TO chains. Picking a different layout from the dropdown silently restores your previous filter set and view.</li>
+        <li><strong>Radial tree / Concentric:</strong> rings by entity type (Executive at center, leaves outside).</li>
+        <li><strong>Group by attribute:</strong> clusters nodes by type / directorate / office / parent / status / platform. Pick the attribute in the secondary dropdown that appears.</li>
         <li><strong>Grid:</strong> every node spaced evenly. Useful for an audit overview.</li>
       </ul>
       <h4>Filters</h4>
@@ -5482,7 +5487,7 @@ function openHelp(){
     <div class="help-pane" data-pane="metrics">
       <h4>What it is</h4>
       <p>Click the <i class="fa-solid fa-chart-line"></i> chart icon in the header (next to the help button) to open the <strong>Leadership Metrics</strong> dashboard. It computes a snapshot of metrics directly from the current graph state &mdash; no extra data is stored anywhere &mdash; so the numbers always reflect what's in the file right now.</p>
-      <h4>The seven tabs</h4>
+      <h4>The eight tabs</h4>
       <ul>
         <li><strong>Executive Summary</strong> &mdash; ten headline KPIs and an entity-composition donut showing scale at a glance.</li>
         <li><strong>Pipeline</strong> &mdash; lifecycle distribution (Active / Pilot / Planned / Proposed / Retired), active delivery surfaces (workflows, automations, dashboards, sites, Teams), per-type lifecycle breakdown, and the governance pipeline.</li>
@@ -5490,13 +5495,14 @@ function openHelp(){
         <li><strong>Risk &amp; SPOFs</strong> &mdash; critical hubs (most-depended-upon entities), vendor exposure, bus-factor (people carrying 3+ leadership assignments), orphans, deprecated-but-still-in-use.</li>
         <li><strong>Coverage</strong> &mdash; four radial gauges for ownership, lead, description, and tag completeness, plus a per-directorate ownership table.</li>
         <li><strong>Org Footprint</strong> &mdash; stacked horizontal bars per directorate showing the offices / people / tech proportions.</li>
+        <li><strong>Org Intel</strong> &mdash; structural patterns: span of control (with healthy/thin/overloaded flags), longest reporting chains, knowledge concentration (top owners), bridge entities (nodes touching multiple directorates), and cross-directorate collaboration ratio.</li>
         <li><strong>Complexity</strong> &mdash; top hubs by degree, integration count, automation count, longest dependency chain.</li>
       </ul>
       <h4>Sharing the numbers</h4>
       <p>The modal footer has two action buttons:</p>
       <ul>
         <li><kbd>Copy summary</kbd> &mdash; copies a Markdown report (file name, freshness timestamp, all headline metrics, top critical hubs, per-directorate table, etc.) to your clipboard. Paste into email, Slack, Teams, Confluence, or any doc tool.</li>
-        <li><kbd>Print</kbd> &mdash; opens the system print dialog with a stylesheet that hides the dark theme and stacks all seven tabs as labeled sections. Use the browser's "Save as PDF" option to produce a printable report.</li>
+        <li><kbd>Print</kbd> &mdash; opens the system print dialog with a stylesheet that hides the dark theme and stacks all eight tabs as labeled sections. Use the browser's "Save as PDF" option to produce a printable report.</li>
       </ul>
       <h4>Drill-down</h4>
       <p>Entity names in any chart bar or detail table are clickable. Clicking jumps to that node on the graph and closes the modal &mdash; useful when reviewing the metrics with someone and they ask "show me that one."</p>
@@ -5508,6 +5514,39 @@ function openHelp(){
         <li><strong>Client bureaus</strong> are Office / Directorate / Front Office nodes <em>outside</em> EX scope, ranked by edge count connecting to EX. The Service tab tells you how to model them if you don't yet have any.</li>
       </ul>
     </div>
+    <div class="help-pane" data-pane="analysis">
+      <h4>What this tab covers</h4>
+      <p>Three header buttons and one in-profile button that turn the graph into an analysis surface. Each one answers a specific operational question.</p>
+
+      <h4>Impact Analysis (the <i class="fa-solid fa-bolt"></i> button on any node profile)</h4>
+      <p>Select any node, click <strong>Impact</strong> in the profile panel, and a modal opens showing the dependency cascade if that node is removed, retired, or has an outage. The walk follows incoming dependency edges only (DEPENDS_ON, USES, HOSTED_ON, SUPPORTS, INTEGRATES_WITH, CONNECTED_TO, RESPONSIBLE_FOR) up to 8 hops &mdash; pure "what breaks" without the noise of organizational reshuffling.</p>
+      <ul>
+        <li><strong>Dependency cascade KPI</strong> &mdash; total entities that break transitively, severity-colored at 5 and 15.</li>
+        <li><strong>Composition bar chart</strong> &mdash; which types are affected (Platforms? Applications? People?).</li>
+        <li><strong>Per-hop sections</strong> &mdash; every affected entity grouped by distance, with the edge type that made the connection.</li>
+        <li><strong>Directly owned section</strong> &mdash; things this node contains, owns, or manages directly (1 hop, no recursion). These don't <em>break</em> if the node is removed, but they need to be reassigned.</li>
+      </ul>
+      <p>Every entity in the modal is clickable and drills back to the graph. Useful when leadership asks "if we retire ServiceNow, what breaks first?" or "if this person leaves, what's homeless?"</p>
+
+      <h4>Data Quality (the <i class="fa-solid fa-clipboard-check"></i> button in the header)</h4>
+      <p>Opens a modal showing every node that violates one of 16 catalog-hygiene rules, grouped by severity:</p>
+      <ul>
+        <li><strong>Critical</strong> &mdash; distorts the Metrics dashboard (deprecated entities still in use).</li>
+        <li><strong>Warning</strong> &mdash; structural gaps (Directorate missing Lead, Office missing Directorate, orphans, SharePoint Sites without HAS_SITE from an org unit, Mailboxes/Teams/Forms similarly).</li>
+        <li><strong>Improve</strong> &mdash; completeness (Person missing email or office assignment, Platform missing Owner, sites missing HOSTED_ON Platform).</li>
+        <li><strong>Polish</strong> &mdash; nice-to-have (nodes without descriptions).</li>
+      </ul>
+      <p>Each violation row shows a one-line fix recommendation and is clickable to jump to the offending node. Use this view daily as you populate the graph &mdash; it surfaces gaps systematically rather than waiting for the Metrics tab to look weird.</p>
+
+      <h4>Recently Viewed (the <i class="fa-solid fa-clock-rotate-left"></i> button in the header)</h4>
+      <p>Tracks the last 15 entities you've clicked. Click the icon for a quick-jump popover with color-dotted entries showing label and type. Click any to jump straight to that entity on the graph. The list dedupes (re-visiting bumps to the top) and persists across page reloads via localStorage. "Clear history" resets it.</p>
+
+      <h4>Mermaid Export (the <i class="fa-solid fa-diagram-project"></i> button in the Data section)</h4>
+      <p>Copies a Mermaid <code>flowchart TD</code> diagram of the currently visible graph to your clipboard. Paste into any markdown editor that supports Mermaid &mdash; GitHub READMEs, GitLab wikis, Confluence (with the Mermaid plugin), Notion, Obsidian, VS Code preview. Type-aware shape syntax: Executive Office as double-rect, org units as rect, Persons/Roles as stadium, Platforms as parallelogram, M365 collab surfaces as cylinder, Workflows/Dashboards as hexagon, Decisions as diamond. The <code>classDef</code> color rules ship inline so the diagram is portable &mdash; no theme config needed in the consuming tool.</p>
+
+      <h4>Org Chart layout (Layout dropdown &rarr; "Org Chart (people + reports)")</h4>
+      <p>Snapshots your current filter set, narrows the view to Person + Role + the four org-unit types (Executive Office, Front Office, Directorate, Office, Team), and arranges by REPORTS_TO chains via the hierarchical algorithm. Picking any other layout silently restores your previous filter set and switches to that layout. Useful for printing a real org chart from your graph data.</p>
+    </div>
     <div class="help-pane" data-pane="data">
       <h4>Working file (source of truth)</h4>
       <p>The intended workflow: <strong>open a JSON file, edit, save</strong>. The file on disk is the source of truth. The header shows the open file name plus an amber dot when there are unsaved changes. Click the chip (or press <kbd>Ctrl</kbd>+<kbd>S</kbd>) to save back to that file.</p>
@@ -5518,6 +5557,13 @@ function openHelp(){
       <h4>Named snapshots</h4>
       <p>"Save current as snapshot" stores a labeled, timestamped copy. Use them for milestones ("Sept 2025 baseline", "Post-reorg proposal") or to compare scenarios. Load from the snapshots list any time.</p>
       <h4>Export formats</h4>
+      <ul>
+        <li><strong>CSV</strong> &mdash; <code>nodes.csv</code> + <code>edges.csv</code> for opening in Excel/Google Sheets or piping into other tools.</li>
+        <li><strong>Excel (.xlsx)</strong> &mdash; multi-sheet workbook with formatted nodes and edges.</li>
+        <li><strong>PNG</strong> &mdash; image of the currently visible graph at canvas resolution.</li>
+        <li><strong>Mermaid</strong> &mdash; copies a <code>flowchart TD</code> Mermaid diagram of the visible graph to your clipboard. Paste into GitHub, GitLab, Confluence, Notion, Obsidian, VS Code preview, or any Mermaid-rendering markdown editor. Type-aware shape syntax with embedded <code>classDef</code> color rules so the diagram is portable. See the Analysis tab for more detail.</li>
+      </ul>
+      <h4>Other export details</h4>
       <ul>
         <li><strong>JSON:</strong> complete round-trip backup. Every node and edge with every field, <em>plus all your saved snapshots</em>, bundled in one file. Best format for sharing your full workspace with a colleague: hand them the HTML file and this JSON, they import it, and they see exactly what you see including snapshot history. Import replaces the current graph (push to history first; you can undo) and merges snapshots by ID with newer timestamps winning. Old graph-only JSON files still import correctly.</li>
         <li><strong>CSV:</strong> downloads two files (<code>nodes.csv</code> and <code>edges.csv</code>) with all fields. Edges include resolved source and target labels alongside their IDs, so the file is human-readable in Excel without cross-referencing. UTF-8 BOM included so Excel opens it cleanly.</li>
