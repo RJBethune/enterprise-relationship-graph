@@ -1526,6 +1526,11 @@
       <span id="connect-banner-text">Quick-connect mode: click a target node</span>
       <button class="ban-close" id="connect-banner-close"><i class="fa-solid fa-xmark" aria-hidden="true"></i> Cancel (Esc)</button>
     </div>
+    <div class="canvas-banner" id="org-chart-banner" style="display:none">
+      <i class="fa-solid fa-people-arrows" aria-hidden="true"></i>
+      <span>Org Chart view &mdash; showing People + Roles + org units only</span>
+      <button class="ban-close" id="org-chart-banner-close"><i class="fa-solid fa-xmark" aria-hidden="true"></i> Exit (back to previous layout)</button>
+    </div>
     <div class="canvas-banner" id="path-banner" style="display:none">
       <i class="fa-solid fa-route" aria-hidden="true"></i>
       <span id="path-banner-text">Path-finder: click source node, then click target</span>
@@ -2773,7 +2778,16 @@ function applyLayout(name){
       p.vx = p.vy = 0;
     });
   }
+  // Show/hide Org Chart mode banner based on state set earlier in this function
+  const ocBanner = document.getElementById("org-chart-banner");
+  if (ocBanner) ocBanner.style.display = state.orgChartMode ? "" : "none";
   requestRedraw();
+  // Auto-fit after layout change so the user sees the result immediately
+  // without having to click Fit. Skip for force since it self-animates from
+  // current positions and would jump on every recompute otherwise.
+  if (name !== "force"){
+    setTimeout(() => { if (typeof fitGraph === "function") fitGraph(); }, 80);
+  }
 }
 
 /* Top-down (TB) or left-right (LR) tidy tree layout.
@@ -8033,6 +8047,17 @@ function wireUp(){
   document.getElementById("btn-data-quality").onclick = openDataQualityModal;
   document.getElementById("btn-export-mermaid").onclick = exportMermaid;
   document.getElementById("btn-recent").onclick = toggleRecentPopover;
+  // Org Chart banner exit button — restores the layout that was active
+  // before the user switched to Org Chart mode.
+  const ocClose = document.getElementById("org-chart-banner-close");
+  if (ocClose){
+    ocClose.onclick = () => {
+      const restoreTo = (state.orgChartSnapshot && state.orgChartSnapshot.layout) || "force";
+      const sel = document.getElementById("layout-select");
+      if (sel) sel.value = restoreTo;
+      applyLayout(restoreTo);
+    };
+  }
   // Close Recently Viewed popover on outside click
   document.addEventListener("click", e => {
     const pop = document.getElementById("recent-popover");
