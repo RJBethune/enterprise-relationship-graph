@@ -1935,7 +1935,12 @@ const ICON_REGISTRY = {
   // SVG brand icons for the M365 stack. brandColor (optional) renders the icon
   // on a small white badge in the product's brand color, matching the M365
   // launcher look. If omitted, icon renders in iconFgFor color.
-  "microsoft-365":  { kind:"svg", viewBox:"0 0 24 24", brandColor:"#D83B01", svg:"M3 3h12v12H3V3zm6 6h12v12H9V9z", label:"Microsoft 365" },
+  "microsoft-365":  { kind:"svg", viewBox:"0 0 24 24", paths:[
+                      { d:"M3 3h8.5v8.5H3z", color:"#F25022" },
+                      { d:"M12.5 3h8.5v8.5h-8.5z", color:"#7FBA00" },
+                      { d:"M3 12.5h8.5v8.5H3z", color:"#00A4EF" },
+                      { d:"M12.5 12.5h8.5v8.5h-8.5z", color:"#FFB900" }
+                    ], label:"Microsoft 365" },
   "sharepoint":     { kind:"svg", viewBox:"0 0 24 24", brandColor:"#038387", svg:"M3 6h7l2 2h9v11H3V6zm12 6l-4 4h2.5v3h3v-3H19l-4-4z", label:"SharePoint" },
   "teams":          { kind:"svg", viewBox:"0 0 24 24", brandColor:"#5059C9", svg:"M8.5 4a2.8 2.8 0 100 5.6 2.8 2.8 0 000-5.6zM15.5 5.5a2.3 2.3 0 100 4.6 2.3 2.3 0 000-4.6zM4 15c0-2.5 2-4.5 4.5-4.5S13 12.5 13 15v3H4v-3zM14 13c0-1.7 1.3-3 3-3s3 1.3 3 3v5h-6v-5z", label:"Microsoft Teams" },
   "onedrive":       { kind:"svg", viewBox:"0 0 24 24", brandColor:"#0078D4", svg:"M7 18a4 4 0 010-8c.2 0 .4 0 .6.1A5.5 5.5 0 0118 9a3.5 3.5 0 011 6.9c-.2.1-.4.1-.7.1H7z", label:"OneDrive" },
@@ -1962,7 +1967,8 @@ const ICON_REGISTRY = {
 function iconSpec(node){
   const normalize = entry => {
     if (entry && entry.kind === "svg"){
-      return { kind:"svg", svg:entry.svg, viewBox:entry.viewBox || "0 0 24 24",
+      return { kind:"svg", svg:entry.svg, paths:entry.paths,
+               viewBox:entry.viewBox || "0 0 24 24",
                brandColor: entry.brandColor };
     }
     return { kind:"fa", font:entry.font, weight:entry.weight, unicode:entry.unicode };
@@ -1991,14 +1997,15 @@ function getIconPath(svgString){
 // Draw an SVG-kind icon spec on a canvas context, centered at (x, y) and
 // scaled so its viewBox fits within iconSize. fillStyle is set to color.
 function drawIconSvg(ctx, spec, x, y, iconSize, color){
-  const path = getIconPath(spec.svg);
-  if (!path) return;
+  const hasMulti = Array.isArray(spec.paths) && spec.paths.length > 0;
+  const hasSingle = !!spec.svg;
+  if (!hasMulti && !hasSingle) return;
+  const useBadge = !!spec.brandColor || hasMulti;
   const vb = (spec.viewBox || "0 0 24 24").split(/\s+/).map(Number);
   const vbX = vb[0], vbY = vb[1], vbW = vb[2], vbH = vb[3];
-  // When a brand color is specified, draw the icon on a small white circular
-  // badge so the brand color reads against any node background. Mirrors the
-  // visual style of the M365 app launcher (colored shape on white tile).
-  if (spec.brandColor){
+  // Multi-color and brand-color icons render on a white circular badge so
+  // brand colors read against any node background — M365 app launcher style.
+  if (useBadge){
     ctx.save();
     ctx.fillStyle = "rgba(255,255,255,0.95)";
     ctx.beginPath();
@@ -2006,15 +2013,28 @@ function drawIconSvg(ctx, spec, x, y, iconSize, color){
     ctx.fill();
     ctx.restore();
   }
-  const fillColor = spec.brandColor || color;
-  const drawSize = spec.brandColor ? iconSize * 0.85 : iconSize;
+  const drawSize = useBadge ? iconSize * 0.85 : iconSize;
   const drawScale = drawSize / Math.max(vbW, vbH);
   ctx.save();
-  ctx.fillStyle = fillColor;
   ctx.translate(x, y);
   ctx.scale(drawScale, drawScale);
   ctx.translate(-(vbX + vbW/2), -(vbY + vbH/2));
-  ctx.fill(path);
+  if (hasMulti){
+    // Multi-path: each path renders in its own color (or default if not set)
+    for (const p of spec.paths){
+      const path = getIconPath(p.d);
+      if (!path) continue;
+      ctx.fillStyle = p.color || color;
+      ctx.fill(path);
+    }
+  } else {
+    // Single-path: render in brandColor if specified, else default
+    const path = getIconPath(spec.svg);
+    if (path){
+      ctx.fillStyle = spec.brandColor || color;
+      ctx.fill(path);
+    }
+  }
   ctx.restore();
 }
 
@@ -7280,11 +7300,11 @@ function computeValidationViolations(){
     { id:"warn-office-no-lead", title:"Office missing Lead", severity:"warn",
       fix:"Either fill Lead with the office head's Person name, or Quick-Connect a Person to this Office with RESPONSIBLE_FOR.",
       check: n => n.type === "Office" && !has(n.lead) && !hasIncoming(n.id, "RESPONSIBLE_FOR") },
-    { id:"warn-office-no-directorate", title:"Office missing Directorate (orphaned in org tree)", severity:"warn",
-      fix:"Edit the Office and fill the Directorate field (or Parent), or Quick-Connect from a Directorate via CONTAINS.",
+    { id:"warn-office-orphaned", title:"Office orphaned in org tree", severity:"warn",
+      fix:"Edit and fill Directorate (or Parent for non-Directorate placements), or Quick-Connect from a Directorate/Front Office/Executive Office via CONTAINS.",
       check: n => n.type === "Office" && !has(n.directorate) && !has(n.parent) && !hasIncoming(n.id, "CONTAINS") },
-    { id:"warn-team-no-office", title:"Team missing Office (orphaned in org tree)", severity:"warn",
-      fix:"Edit the Team and fill the Office field, or Quick-Connect from an Office via CONTAINS.",
+    { id:"warn-team-orphaned", title:"Team orphaned in org tree", severity:"warn",
+      fix:"Edit and fill the Office field (or Parent), or Quick-Connect from an Office/Directorate via CONTAINS.",
       check: n => n.type === "Team" && !has(n.office) && !has(n.parent) && !hasIncoming(n.id, "CONTAINS") },
     { id:"warn-orphan", title:"Orphaned node (zero connections)", severity:"warn",
       fix:"Either delete the node or connect it to its parent via Quick-Connect.",
@@ -7310,8 +7330,20 @@ function computeValidationViolations(){
       fix:"Edit the Person and add their work email.",
       check: n => n.type === "Person" && !has(n.email) },
     { id:"info-person-no-office", title:"Person not assigned to an Office or Team", severity:"info",
-      fix:"Edit and fill Office or Team, or Quick-Connect from an org unit via CONTAINS.",
-      check: n => n.type === "Person" && !has(n.office) && !has(n.team) && !has(n.parent) && !hasIncoming(n.id, "CONTAINS") },
+      fix:"Edit and fill Office or Team, Quick-Connect from an org unit via CONTAINS, or make them a Lead/Owner/Manager of something (counts as org-integrated).",
+      check: n => n.type === "Person"
+        && !has(n.office) && !has(n.team) && !has(n.parent)
+        && !hasIncoming(n.id, "CONTAINS")
+        // Leadership edges count as org integration: leading, owning, or
+        // managing something means the person is structurally embedded in
+        // the operating model even without an explicit office assignment.
+        && !hasOutgoing(n.id, "RESPONSIBLE_FOR")
+        && !hasOutgoing(n.id, "OWNS")
+        && !hasOutgoing(n.id, "MANAGES")
+        // Reporting chain also counts — if she's someone's manager or has a
+        // manager, she's part of an org hierarchy regardless of office field.
+        && !hasIncoming(n.id, "REPORTS_TO")
+        && !hasOutgoing(n.id, "REPORTS_TO") },
     { id:"info-platform-no-owner", title:"Platform missing Owner", severity:"info",
       fix:"Either fill Owner, or Quick-Connect from an Office via OWNS.",
       check: n => n.type === "Platform" && !has(n.owner) && !hasIncoming(n.id, "OWNS") },
@@ -7321,6 +7353,25 @@ function computeValidationViolations(){
     { id:"info-msteam-no-platform", title:"Microsoft Team missing Platform (HOSTED_ON)", severity:"info",
       fix:"Edit the Team and fill Platform = Microsoft Teams.",
       check: n => n.type === "Microsoft Team" && !has(n.platform) && !hasOutgoing(n.id, "HOSTED_ON") },
+
+    // ADDITIONAL WARNINGS (audit additions)
+    { id:"warn-app-no-owner", title:"Application missing Owner", severity:"warn",
+      fix:"Edit and fill Owner with the responsible Office, or Quick-Connect from an Office via OWNS.",
+      check: n => n.type === "Application" && !has(n.owner) && !hasIncoming(n.id, "OWNS") },
+    { id:"warn-workflow-no-owner", title:"Workflow/Flow missing Owner", severity:"warn",
+      fix:"Either fill Owner with the responsible Office, or Quick-Connect from an Office via OWNS.",
+      check: n => (n.type === "Workflow" || n.type === "Power Automate Flow") && !has(n.owner) && !hasIncoming(n.id, "OWNS") },
+    { id:"crit-self-loop", title:"Node has self-referencing edge", severity:"critical",
+      fix:"Edit the node's edges and delete the self-loop — a node should never connect to itself (rename gone wrong, accidental Quick-Connect on the source node, etc.).",
+      check: n => edges.some(e => e.source === n.id && e.target === n.id) },
+
+    // ADDITIONAL IMPROVEMENTS (audit additions)
+    { id:"info-role-no-lead", title:"Role missing a Person filling it", severity:"info",
+      fix:"Roles (e.g., 'Chief Architect') should have a Person assigned. Edit and fill Lead with the Person's name, or Quick-Connect a Person to this Role via RESPONSIBLE_FOR.",
+      check: n => n.type === "Role" && !has(n.lead) && !hasIncoming(n.id, "RESPONSIBLE_FOR") },
+    { id:"info-app-no-platform", title:"Application missing Platform (HOSTED_ON)", severity:"info",
+      fix:"Edit and fill Platform with the host (e.g., ServiceNow, Salesforce, Power Apps). Captures the runtime dependency for Risk tab cascades.",
+      check: n => n.type === "Application" && !has(n.platform) && !hasOutgoing(n.id, "HOSTED_ON") },
 
     // LOW — polish, not urgent
     { id:"low-no-description", title:"Node without description", severity:"low",
