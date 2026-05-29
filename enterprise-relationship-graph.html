@@ -978,6 +978,15 @@
   .m-pill.warn{color:var(--warn); border-color:rgba(251,191,36,0.35)}
   .m-pill.crit{color:var(--crit); border-color:rgba(248,113,113,0.35)}
 
+  /* Org chart view toggle — visual emphasis when active */
+  .btn.primary{
+    background:var(--accent); color:#04101F;
+    border-color:var(--accent);
+  }
+  .btn.primary:hover{
+    background:var(--accent-2); border-color:var(--accent-2);
+  }
+
   /* Drill-down: clickable entity name in a metric row jumps to the node */
   .m-table .m-entity-link, .m-entity-link{
     color:var(--accent-2); cursor:pointer;
@@ -1263,6 +1272,7 @@
         <div class="stat"><span class="val" id="stat-vnodes">0</span><span class="lbl">visible</span></div>
         <div class="stat accent"><span class="val" id="stat-sel">·</span><span class="lbl">selected</span></div>
       </div>
+      <button class="header-btn" id="btn-data-quality" title="Data quality checks"><i class="fa-solid fa-clipboard-check"></i></button>
       <button class="header-btn" id="btn-metrics" title="Leadership metrics"><i class="fa-solid fa-chart-line"></i></button>
       <button class="header-btn" id="btn-help" title="Help (?)"><i class="fa-solid fa-circle-question"></i></button>
     </div>
@@ -1292,6 +1302,7 @@
             <option value="force">Force-directed</option>
             <option value="hierarchical">Hierarchical (top-down)</option>
             <option value="hierarchical-lr">Hierarchical (left-right)</option>
+            <option value="org-chart">Org Chart (people + reports)</option>
             <option value="radial">Radial tree</option>
             <option value="cluster">Group by attribute</option>
             <option value="concentric">Concentric (by type)</option>
@@ -1385,10 +1396,11 @@
         </div>
         <button class="btn block" id="btn-file-save-as" style="margin-top:6px"><i class="fa-solid fa-file-arrow-down" aria-hidden="true"></i> Save As...</button>
         <div style="font-size:10.5px; color:var(--muted); margin:10px 0 4px; letter-spacing:0.3px">Export a copy as</div>
-        <div class="btn-row" style="grid-template-columns:repeat(3,1fr); gap:4px">
+        <div class="btn-row" style="grid-template-columns:repeat(4,1fr); gap:4px">
           <button class="btn" id="btn-export-csv" title="CSV (nodes.csv + edges.csv)" aria-label="Export CSV"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></button>
           <button class="btn" id="btn-export-xlsx" title="Excel workbook (.xlsx)" aria-label="Export Excel"><i class="fa-solid fa-file-excel" aria-hidden="true"></i></button>
           <button class="btn" id="btn-export-png" title="PNG image of the visible graph" aria-label="Export PNG"><i class="fa-solid fa-image" aria-hidden="true"></i></button>
+          <button class="btn" id="btn-export-mermaid" title="Mermaid diagram (paste into any markdown editor that supports Mermaid)" aria-label="Export Mermaid"><i class="fa-solid fa-diagram-project" aria-hidden="true"></i></button>
         </div>
         <button class="btn warn block" id="btn-sample" style="margin-top:8px"><i class="fa-solid fa-flask" aria-hidden="true"></i> Load sample data</button>
         <input type="file" id="file-input" accept="application/json" style="display:none" />
@@ -2077,6 +2089,8 @@ const state = {
   },
   // Collapsed-branch tracking (parent-of-children, computed from collapsedNodes)
   hiddenByCollapse: new Set(),
+  orgChartMode: false,
+  orgChartSnapshot: null,
   collapseCounts: new Map()
 };
 
@@ -2459,8 +2473,30 @@ function subtreeLeaves(id, childrenOf, memo){
 }
 
 function applyLayout(name){
+  // Mode entry/exit for Org Chart — snapshot the filter set on entry,
+  // restore it when the user picks any other layout.
+  if (name === "org-chart" && !state.orgChartMode){
+    state.orgChartSnapshot = {
+      filtersNode: [...state.filtersNode],
+      layout: state.layout || "force"
+    };
+    state.orgChartMode = true;
+    state.filtersNode = new Set(["Person","Role","Executive Office","Front Office","Directorate","Office","Team"]);
+    if (typeof buildFilterUI === "function") buildFilterUI();
+    showToast("Org chart view — REPORTS_TO chains drive the layout. Pick another layout to exit.", "ok");
+  } else if (name !== "org-chart" && state.orgChartMode){
+    if (state.orgChartSnapshot){
+      state.filtersNode = new Set(state.orgChartSnapshot.filtersNode);
+      if (typeof buildFilterUI === "function") buildFilterUI();
+    }
+    state.orgChartMode = false;
+    state.orgChartSnapshot = null;
+    showToast("Exited org chart view", "ok");
+  }
   state.layout = name;
-  document.getElementById("footer-layout").textContent = "Layout: " + name;
+  document.getElementById("footer-layout").textContent = "Layout: " + (name === "org-chart" ? "Org Chart" : name);
+  // Org Chart shares its rendering with the top-down hierarchical layout.
+  if (name === "org-chart") name = "hierarchical";
   // Show/hide the cluster-attr picker.
   const clusterField = document.getElementById("cluster-attr-field");
   if (clusterField) clusterField.style.display = (name === "cluster") ? "" : "none";
@@ -6624,6 +6660,268 @@ function generateMetricsMarkdown(m){
 }
 
 
+
+/* ============================================================================
+   MERMAID EXPORT
+   ============================================================================ */
+function generateMermaid(){
+  const visNodes = state.graph.nodes.filter(isVisibleNode);
+  const visIds = new Set(visNodes.map(n => n.id));
+  const visEdges = state.graph.edges.filter(e =>
+    state.filtersEdge.has(e.type) && visIds.has(e.source) && visIds.has(e.target)
+  );
+
+  // Mermaid IDs must be alphanumeric/underscore. Prefix with n_ for safety.
+  const mid = id => "n_" + String(id).replace(/[^a-zA-Z0-9_]/g, "_");
+  // Mermaid uses # for HTML entities inside double-quoted strings
+  const esc = s => String(s || "").replace(/"/g, "#quot;").replace(/[<>]/g, "").trim() || "(unnamed)";
+
+  // Shape syntax per type. Mermaid shape vocabulary:
+  //   rect [..], rounded (..), stadium ([..]), subroutine [[..]],
+  //   cylindrical [(..)], parallelogram [/../], hexagon {{..}}, diamond {..}
+  const SHAPES = {
+    "Executive Office":  (id,l) => `${id}[["${l}"]]:::execOffice`,
+    "Front Office":      (id,l) => `${id}["${l}"]:::orgUnit`,
+    "Directorate":       (id,l) => `${id}["${l}"]:::orgUnit`,
+    "Office":            (id,l) => `${id}["${l}"]:::orgUnit`,
+    "Team":              (id,l) => `${id}["${l}"]:::orgUnit`,
+    "Person":            (id,l) => `${id}(["${l}"])`,
+    "Role":              (id,l) => `${id}(["${l}"])`,
+    "System":            (id,l) => `${id}[/"${l}"/]`,
+    "Platform":          (id,l) => `${id}[/"${l}"/]:::platform`,
+    "Application":       (id,l) => `${id}[/"${l}"/]`,
+    "SharePoint Site":   (id,l) => `${id}[("${l}")]:::collab`,
+    "Microsoft Team":    (id,l) => `${id}[("${l}")]:::collab`,
+    "Mailbox":           (id,l) => `${id}[("${l}")]:::collab`,
+    "O365 Group":        (id,l) => `${id}[("${l}")]:::collab`,
+    "Microsoft Form":    (id,l) => `${id}[("${l}")]:::collab`,
+    "Workflow":          (id,l) => `${id}{{"${l}"}}`,
+    "Power Automate Flow": (id,l) => `${id}{{"${l}"}}`,
+    "Power BI Dashboard": (id,l) => `${id}{{"${l}"}}`,
+    "Vendor":            (id,l) => `${id}["${l}"]:::vendor`,
+    "Decision":          (id,l) => `${id}{"${l}"}`,
+    "Requirement":       (id,l) => `${id}["${l}"]:::req`,
+  };
+  const defShape = (id, l) => `${id}["${l}"]`;
+
+  const lines = [
+    "%% Enterprise Relationship Graph — Mermaid export",
+    "%% Generated " + new Date().toISOString(),
+    "flowchart TD"
+  ];
+  for (const n of visNodes){
+    lines.push("  " + (SHAPES[n.type] || defShape)(mid(n.id), esc(n.label)));
+  }
+  if (visEdges.length) lines.push("");
+  for (const e of visEdges){
+    lines.push(`  ${mid(e.source)} -->|${e.type}| ${mid(e.target)}`);
+  }
+  // Class definitions for visual differentiation
+  lines.push("");
+  lines.push("  classDef execOffice fill:#FBBF24,stroke:#92400E,color:#000,font-weight:bold");
+  lines.push("  classDef orgUnit fill:#7DD3FC,stroke:#0369A1,color:#000");
+  lines.push("  classDef platform fill:#818CF8,stroke:#3730A3,color:#FFF");
+  lines.push("  classDef collab fill:#C084FC,stroke:#6B21A8,color:#FFF");
+  lines.push("  classDef vendor fill:#FCA5A5,stroke:#991B1B,color:#000");
+  lines.push("  classDef req fill:#FEF3C7,stroke:#92400E,color:#000");
+  return lines.join("\n");
+}
+
+function exportMermaid(){
+  const md = generateMermaid();
+  if (navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(md).then(
+      () => showToast(`Mermaid diagram copied (${md.split("\n").length} lines) — paste into any markdown editor that supports Mermaid`, "ok"),
+      () => showToast("Copy failed — clipboard permission denied", "err")
+    );
+  } else {
+    showToast("Clipboard API not available in this browser", "err");
+  }
+}
+
+/* ============================================================================
+   DATA QUALITY VALIDATION
+   ============================================================================ */
+function computeValidationViolations(){
+  const nodes = state.graph.nodes;
+  const edges = state.graph.edges;
+  const has = v => !!(v && String(v).trim());
+
+  // Build per-node adjacency maps keyed by edge type for fast checks
+  const inE = new Map(), outE = new Map();
+  for (const n of nodes){ inE.set(n.id, new Map()); outE.set(n.id, new Map()); }
+  for (const e of edges){
+    if (inE.has(e.target)){
+      const m = inE.get(e.target);
+      m.set(e.type, (m.get(e.type) || 0) + 1);
+    }
+    if (outE.has(e.source)){
+      const m = outE.get(e.source);
+      m.set(e.type, (m.get(e.type) || 0) + 1);
+    }
+  }
+  const hasIncoming = (id, type) => ((inE.get(id) || new Map()).get(type) || 0) > 0;
+  const hasOutgoing = (id, type) => ((outE.get(id) || new Map()).get(type) || 0) > 0;
+  const totalEdges = id => {
+    let n = 0;
+    const im = inE.get(id), om = outE.get(id);
+    if (im) for (const v of im.values()) n += v;
+    if (om) for (const v of om.values()) n += v;
+    return n;
+  };
+
+  const RULES = [
+    // CRITICAL — distorts metrics or breaks the trust of the dashboard
+    { id:"crit-deprecated-in-use", title:"Deprecated/retired entity still in use", severity:"critical",
+      fix:"Either delete (and clean its edges) or change status back to Active.",
+      check: n => /inactive|deprecated|retired/i.test(n.status || "") && totalEdges(n.id) > 0 },
+
+    // WARNINGS — structural gaps that hurt the metrics tab's accuracy
+    { id:"warn-directorate-no-lead", title:"Directorate missing Lead", severity:"warn",
+      fix:"Create the director as a Person, then edit the Directorate and fill Lead.",
+      check: n => n.type === "Directorate" && !has(n.lead) },
+    { id:"warn-office-no-lead", title:"Office missing Lead", severity:"warn",
+      fix:"Create the office head as a Person, then edit the Office and fill Lead.",
+      check: n => n.type === "Office" && !has(n.lead) },
+    { id:"warn-office-no-directorate", title:"Office missing Directorate (orphaned in org tree)", severity:"warn",
+      fix:"Edit the Office and fill the Directorate field (or Parent if it's not under a Directorate).",
+      check: n => n.type === "Office" && !has(n.directorate) && !has(n.parent) },
+    { id:"warn-team-no-office", title:"Team missing Office (orphaned in org tree)", severity:"warn",
+      fix:"Edit the Team and fill the Office field.",
+      check: n => n.type === "Team" && !has(n.office) && !has(n.parent) },
+    { id:"warn-orphan", title:"Orphaned node (zero connections)", severity:"warn",
+      fix:"Either delete the node or connect it to its parent via Quick-Connect.",
+      check: n => totalEdges(n.id) === 0 },
+    { id:"warn-system-no-owner", title:"System missing Owner", severity:"warn",
+      fix:"Edit the System and fill Owner with the responsible Office's name.",
+      check: n => n.type === "System" && !has(n.owner) },
+    { id:"warn-site-no-office", title:"SharePoint Site missing HAS_SITE from any org unit", severity:"warn",
+      fix:"Quick-Connect from the owning Office (or Directorate) to the site.",
+      check: n => n.type === "SharePoint Site" && !hasIncoming(n.id, "HAS_SITE") },
+    { id:"warn-team-no-has-team", title:"Microsoft Team missing HAS_TEAM from any org unit", severity:"warn",
+      fix:"Quick-Connect from the owning Office to the Team.",
+      check: n => n.type === "Microsoft Team" && !hasIncoming(n.id, "HAS_TEAM") },
+    { id:"warn-mailbox-no-office", title:"Mailbox missing HAS_MAILBOX from any org unit", severity:"warn",
+      fix:"Quick-Connect from the owning Office to the Mailbox.",
+      check: n => n.type === "Mailbox" && !hasIncoming(n.id, "HAS_MAILBOX") },
+    { id:"warn-form-no-office", title:"Microsoft Form missing HAS_FORM from any org unit", severity:"warn",
+      fix:"Quick-Connect from the owning Office to the Form.",
+      check: n => n.type === "Microsoft Form" && !hasIncoming(n.id, "HAS_FORM") },
+
+    // INFO — data completeness improvements
+    { id:"info-person-no-email", title:"Person missing email", severity:"info",
+      fix:"Edit the Person and add their work email.",
+      check: n => n.type === "Person" && !has(n.email) },
+    { id:"info-person-no-office", title:"Person not assigned to an Office or Team", severity:"info",
+      fix:"Edit the Person and fill Office or Team field.",
+      check: n => n.type === "Person" && !has(n.office) && !has(n.team) && !has(n.parent) },
+    { id:"info-platform-no-owner", title:"Platform missing Owner", severity:"info",
+      fix:"Edit the Platform and fill Owner.",
+      check: n => n.type === "Platform" && !has(n.owner) },
+    { id:"info-site-no-platform", title:"SharePoint Site missing Platform (HOSTED_ON)", severity:"info",
+      fix:"Edit the Site and fill Platform = SharePoint Online (create the platform node first if needed).",
+      check: n => n.type === "SharePoint Site" && !has(n.platform) && !hasOutgoing(n.id, "HOSTED_ON") },
+    { id:"info-msteam-no-platform", title:"Microsoft Team missing Platform (HOSTED_ON)", severity:"info",
+      fix:"Edit the Team and fill Platform = Microsoft Teams.",
+      check: n => n.type === "Microsoft Team" && !has(n.platform) && !hasOutgoing(n.id, "HOSTED_ON") },
+
+    // LOW — polish, not urgent
+    { id:"low-no-description", title:"Node without description", severity:"low",
+      fix:"Add a one-line description so others know what this is.",
+      check: n => !has(n.description) },
+  ];
+
+  const violations = [];
+  for (const rule of RULES){
+    const affected = nodes.filter(rule.check);
+    if (affected.length > 0) violations.push({ rule, nodes: affected });
+  }
+  return violations;
+}
+
+function openDataQualityModal(){
+  const groups = computeValidationViolations();
+  const total = groups.reduce((s, g) => s + g.nodes.length, 0);
+  const bySev = { critical:0, warn:0, info:0, low:0 };
+  groups.forEach(g => { bySev[g.rule.severity] += g.nodes.length; });
+  const affectedIds = new Set();
+  groups.forEach(g => g.nodes.forEach(n => affectedIds.add(n.id)));
+  const cleanCount = state.graph.nodes.length - affectedIds.size;
+
+  const sevLabel = { critical:"Critical", warn:"Warning", info:"Improve", low:"Polish" };
+  const sevPill = { critical:"crit", warn:"warn", info:"", low:"" };
+
+  const summaryHtml = `
+    <div class="kpi-grid">
+      ${mKpi("Total violations", total, "across all rules", total === 0 ? "ok" : (bySev.critical > 0 ? "crit" : "warn"))}
+      ${mKpi("Critical", bySev.critical, "distorts the metrics tab", bySev.critical > 0 ? "crit" : "ok")}
+      ${mKpi("Warnings", bySev.warn, "structural gaps", bySev.warn > 0 ? "warn" : "ok")}
+      ${mKpi("Improvements", bySev.info, "data completeness", "accent")}
+      ${mKpi("Polish", bySev.low, "nice to have")}
+      ${mKpi("Clean nodes", cleanCount, "no rules violated", "ok")}
+    </div>`;
+
+  // Order groups by severity within each tier
+  const sevOrder = { critical:0, warn:1, info:2, low:3 };
+  groups.sort((a,b) => sevOrder[a.rule.severity] - sevOrder[b.rule.severity]);
+
+  const sectionsHtml = groups.length === 0
+    ? '<div class="m-empty" style="text-align:center; padding:40px 0;"><i class="fa-solid fa-circle-check" style="color:var(--ok); font-size:32px;"></i><div style="margin-top:12px; font-size:14px; color:var(--text);">No violations. Catalog is clean.</div></div>'
+    : groups.map(g => `
+        <div class="m-section">
+          <h4>
+            <span class="m-pill ${sevPill[g.rule.severity]}">${sevLabel[g.rule.severity]}</span>
+            ${escapeHtml(g.rule.title)}
+            <span class="m-pill">${g.nodes.length}</span>
+          </h4>
+          <div style="font-size:11.5px; color:var(--muted); margin:0 0 8px;"><i class="fa-solid fa-lightbulb" style="margin-right:4px;"></i> ${escapeHtml(g.rule.fix)}</div>
+          <table class="m-table"><tbody>
+            ${g.nodes.slice(0,15).map(n => `<tr><td>${mEntityLink(n, {includeType:true})}</td></tr>`).join("")}
+            ${g.nodes.length > 15 ? `<tr><td style="color:var(--muted); font-size:11px;">Showing 15 of ${g.nodes.length} &mdash; the rest follow the same fix.</td></tr>` : ""}
+          </tbody></table>
+        </div>`).join("");
+
+  const html = `
+    <p class="m-lede">Catalog gaps to fix. Each rule flags a missing field or edge that affects accuracy on the Metrics dashboard. Click any entity to jump to it on the graph.</p>
+    ${summaryHtml}
+    ${sectionsHtml}
+  `;
+
+  openModal('<i class="fa-solid fa-clipboard-check"></i> Data Quality', html, ()=>closeModal(), true);
+  document.getElementById("modal").classList.add("xl");
+
+  // Reuse the drill-down click handler that the metrics modal already installs.
+  // Since modalBody._metricsDrillDownAttached persists, clicks on .m-entity-link
+  // here work automatically.
+  if (!modalBody._metricsDrillDownAttached){
+    const jumpToNode = id => {
+      if (!id) return;
+      const exists = state.graph.nodes.some(n => n.id === id);
+      if (!exists){ showToast("That entity no longer exists in the graph", "err"); return; }
+      closeModal();
+      try { selectNode(id); if (typeof centerOnNode === "function") centerOnNode(id); }
+      catch (err){ console.error("Drill-down failed:", err); }
+    };
+    modalBody.addEventListener("click", e => {
+      const link = e.target.closest(".m-entity-link");
+      if (!link) return;
+      e.preventDefault();
+      jumpToNode(link.dataset.nodeId);
+    });
+    modalBody.addEventListener("keydown", e => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const link = e.target.closest(".m-entity-link");
+      if (!link) return;
+      e.preventDefault();
+      jumpToNode(link.dataset.nodeId);
+    });
+    modalBody._metricsDrillDownAttached = true;
+  }
+  document.getElementById("modal-save").style.display = "none";
+  document.getElementById("modal-cancel").innerHTML = '<i class="fa-solid fa-check"></i> Done';
+}
+
+
 /* ============================================================================
    WIRE UP
    ============================================================================ */
@@ -6716,6 +7014,8 @@ function wireUp(){
   document.getElementById("btn-snap-save").onclick = saveCurrentSnapshot;
   document.getElementById("btn-help").onclick = openHelp;
   document.getElementById("btn-metrics").onclick = openMetricsModal;
+  document.getElementById("btn-data-quality").onclick = openDataQualityModal;
+  document.getElementById("btn-export-mermaid").onclick = exportMermaid;
   document.getElementById("btn-manage-types").onclick = openManageTypesModal;
 
   document.getElementById("tb-zoom-in").onclick = ()=>{
