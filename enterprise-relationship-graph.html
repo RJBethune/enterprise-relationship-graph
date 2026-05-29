@@ -3670,9 +3670,12 @@ function scheduleTooltip(node, clientX, clientY){
     const el = document.getElementById("tooltip");
     const ts = typeStyle(node.type);
     const meta = [];
-    if (node.owner) meta.push("Owner: " + node.owner);
-    if (node.lead) meta.push("Lead: " + node.lead);
-    if (node.platform) meta.push("Platform: " + node.platform);
+    const tipOwner = effectiveOwner(node);
+    const tipLead = effectiveLead(node);
+    const tipPlatform = effectivePlatform(node);
+    if (tipOwner) meta.push("Owner: " + tipOwner);
+    if (tipLead) meta.push("Lead: " + tipLead);
+    if (tipPlatform) meta.push("Platform: " + tipPlatform);
     el.innerHTML = `<div class="tooltip-title">${escapeHtml(node.label)}</div>
       <div class="tooltip-type"><i class="fa-solid" style="color:${ts.color}">${ts.icon||""}</i> ${escapeHtml(node.type)}</div>
       ${node.description ? `<div class="tooltip-meta">${escapeHtml(node.description.slice(0,120))}${node.description.length>120?"…":""}</div>`:""}
@@ -3716,6 +3719,45 @@ const PROFILE_SECTIONS = [
   { title:"Dependencies",               icon:"fa-link",            test:(n,r)=>r.edge.type==="DEPENDS_ON" },
   { title:"Integrations & Connections", icon:"fa-arrows-left-right-to-line", test:(n,r)=>["INTEGRATES_WITH","CONNECTED_TO","SENDS_TO","RECEIVES_FROM"].includes(r.edge.type) }
 ];
+
+/* ---------- Effective-value helpers ----------
+   When a relationship is expressed only via an edge (Quick-Connect) and not
+   filled in the corresponding form field, the field value is empty but the
+   relationship still exists. These helpers return the "effective" value by
+   first checking the field, then falling back to resolving the relationship
+   via the relevant edge. Used in tooltip display and profile DETAILS section
+   so the two stay consistent with the People & Roles section. */
+function effectiveLead(node){
+  if (node.lead && String(node.lead).trim()) return node.lead;
+  // Lookup incoming RESPONSIBLE_FOR edge from a Person or Role
+  const e = state.graph.edges.find(ed =>
+    ed.type === "RESPONSIBLE_FOR" && ed.target === node.id);
+  if (e){
+    const src = findNode(e.source);
+    if (src && (src.type === "Person" || src.type === "Role")) return src.label;
+  }
+  return "";
+}
+function effectiveOwner(node){
+  if (node.owner && String(node.owner).trim()) return node.owner;
+  const e = state.graph.edges.find(ed =>
+    ed.type === "OWNS" && ed.target === node.id);
+  if (e){
+    const src = findNode(e.source);
+    if (src) return src.label;
+  }
+  return "";
+}
+function effectivePlatform(node){
+  if (node.platform && String(node.platform).trim()) return node.platform;
+  const e = state.graph.edges.find(ed =>
+    ed.type === "HOSTED_ON" && ed.source === node.id);
+  if (e){
+    const t = findNode(e.target);
+    if (t) return t.label;
+  }
+  return "";
+}
 
 /* ---------- Edge deduplication ----------
    Multiple edges with the same (source, target, type) are always meaningless
@@ -3876,12 +3918,12 @@ function renderNodeProfile(el, node){
 
   const kv = [];
   const addKv = (k,v,html=false)=>{ if (v && String(v).trim()) kv.push(`<div class="k">${escapeHtml(k)}</div><div class="v">${html?v:escapeHtml(v)}</div>`); };
-  addKv("Owner", node.owner);
-  addKv("Lead", node.lead);
+  addKv("Owner", effectiveOwner(node));
+  addKv("Lead", effectiveLead(node));
   addKv("Parent", node.parent);
   addKv("Directorate", node.directorate);
   addKv("Office", node.office);
-  addKv("Platform", node.platform);
+  addKv("Platform", effectivePlatform(node));
   if (node.url && node.url.trim()){
     addKv("URL", `<a href="${escapeHtml(node.url)}" target="_blank" rel="noopener">${escapeHtml(node.url)}</a>`, true);
   }
@@ -4354,13 +4396,37 @@ function openNodeModal(existing){
       const merged = Object.assign({}, existing, data, { id: existing.id });
       if (idx>=0) state.graph.nodes[idx] = merged;
       syncResult = syncStructuralEdges(merged);
-      let msg = "Node updated";
-      if (syncResult.added || syncResult.removed){
-        const bits = [];
-        if (syncResult.added) bits.push("+"+syncResult.added+" edge"+(syncResult.added>1?"s":""));
-        if (syncResult.removed) bits.push("−"+syncResult.removed+" stale");
-        msg += " · " + bits.join(", ");
+      // CASCADE RENAME: if the label changed, find other nodes whose reference
+      // fields contain the OLD label and update them to the new label. Without
+      // this, the next time those nodes are saved, syncStructuralEdges can't
+      // find the old name in the catalog and silently removes their auto-edge.
+      let renameUpdates = 0;
+      if (existing.label && data.label && existing.label !== data.label){
+        const oldLabel = existing.label.trim();
+        const newLabel = data.label.trim();
+        const FIELDS = ["lead","owner","parent","reportsTo","directorate","office","team","platform"];
+        for (const otherNode of state.graph.nodes){
+          if (otherNode.id === merged.id) continue;
+          let changed = false;
+          for (const f of FIELDS){
+            const v = otherNode[f];
+            if (v && String(v).trim().toLowerCase() === oldLabel.toLowerCase()){
+              otherNode[f] = newLabel;
+              changed = true;
+            }
+          }
+          if (changed){
+            renameUpdates++;
+            syncStructuralEdges(otherNode);
+          }
+        }
       }
+      let msg = "Node updated";
+      const bits = [];
+      if (syncResult.added) bits.push("+"+syncResult.added+" edge"+(syncResult.added>1?"s":""));
+      if (syncResult.removed) bits.push("−"+syncResult.removed+" stale");
+      if (renameUpdates) bits.push(renameUpdates+" reference"+(renameUpdates>1?"s":"")+" updated");
+      if (bits.length) msg += " · " + bits.join(", ");
       showToast(msg, "ok");
     }
     afterMutate(); closeModal();
