@@ -401,9 +401,12 @@
     z-index:5; box-shadow:var(--shadow-2);
   }
   .legend h4{
-    margin:0 0 8px 0; font-size:11px;
+    margin:0 0 8px 0; font-size:11px; padding-right:42px;
     text-transform:uppercase; letter-spacing:0.8px; color:var(--text-2);
   }
+  /* When collapsed, only the title shows; keep its bottom margin from adding
+     dead space below the lone heading. */
+  .legend.collapsed h4{ margin-bottom:0; }
   .legend-tabs{display:flex; gap:4px; margin-bottom:8px}
   .legend-tab{
     background:transparent; border:1px solid var(--border); color:var(--muted);
@@ -1581,6 +1584,7 @@
       <button class="tool-btn" id="tb-unpin" title="Release all pinned positions" aria-label="Release all pinned nodes"><i class="fa-solid fa-thumbtack" aria-hidden="true" style="transform:rotate(45deg)"></i></button>
       <div class="tool-divider"></div>
       <button class="tool-btn" id="tb-heatmap" title="Staleness heatmap (H): tint nodes by time since last edit" aria-label="Toggle staleness heatmap"><i class="fa-solid fa-temperature-half" aria-hidden="true"></i></button>
+      <button class="tool-btn" id="tb-dim-edges" title="Dim relationships: shade edges darker so the base view is less busy" aria-label="Toggle dimmed relationships"><i class="fa-solid fa-circle-half-stroke" aria-hidden="true"></i></button>
     </div>
     <div class="canvas-banner" id="connect-banner" style="display:none">
       <i class="fa-solid fa-arrows-turn-to-dots" aria-hidden="true"></i>
@@ -1764,7 +1768,7 @@ const TYPE_STYLE = {
   "SharePoint Site":       { color:"#22D3EE", size:15, shape:"diamond", icon:"" }, // share
   "Microsoft Team":        { color:"#C084FC", size:15, shape:"diamond", icon:"" }, // users
   "O365 Group":            { color:"#DDD6FE", size:14, shape:"diamond", icon:"" }, // user-friends
-  "Distribution List":     { color:"#F0ABFC", size:13, shape:"diamond", icon:"" }, // paper-plane
+  "Distribution List":     { color:"#F0ABFC", size:13, shape:"diamond", icon:"" }, // envelopes-bulk
   "Mailbox":               { color:"#FDE68A", size:12, shape:"diamond", icon:"" }, // envelope
   "Microsoft Form":        { color:"#8B5CF6", size:13, shape:"diamond", icon:"" }, // clipboard-list
   "Workflow":              { color:"#A3E635", size:13, shape:"tri",     icon:"" }, // diagram-project
@@ -2169,6 +2173,7 @@ const SAMPLE_DATA = (function(){
   n("sys-snow","ServiceNow","System",{description:"Enterprise IT service management.",owner:"IT Operations Office",icon:"servicenow"});
   n("sys-sf","Salesforce","System",{description:"CRM platform.",owner:"Customer Engagement Office",icon:"salesforce"});
   n("sys-arcgis","ArcGIS","System",{description:"Geospatial information system.",owner:"Operations Support Directorate",icon:"arcgis"});
+  n("sys-jira","Jira","System",{description:"Issue tracking and agile project management.",owner:"IT Operations Office",icon:"jira"});
 
   n("app-intake","Intake Portal","Application",{description:"Customer-facing intake portal.",owner:"Intake & Demand Office",platform:"Microsoft 365"});
   n("app-demand","Demand Management Dashboard","Application",{description:"Demand triage dashboard.",owner:"Intake & Demand Office",platform:"Power BI"});
@@ -2243,7 +2248,7 @@ const SAMPLE_DATA = (function(){
   e("off-collab","plat-m365","OWNS"); e("off-collab","plat-spo","MANAGES");
   e("off-collab","plat-teams","MANAGES"); e("dir-platform","plat-pa","OWNS");
   e("off-bi","plat-pbi","OWNS"); e("off-itops","sys-snow","OWNS");
-  e("off-ce","sys-sf","OWNS"); e("dir-ops","sys-arcgis","OWNS");
+  e("off-ce","sys-sf","OWNS"); e("dir-ops","sys-arcgis","OWNS"); e("off-itops","sys-jira","OWNS");
   e("plat-spo","plat-m365","PART_OF"); e("plat-teams","plat-m365","PART_OF"); e("plat-pa","plat-m365","PART_OF");
   e("app-intake","plat-spo","HOSTED_ON"); e("app-arb","plat-spo","HOSTED_ON");
   e("app-portfolio","plat-spo","HOSTED_ON"); e("app-demand","plat-pbi","HOSTED_ON");
@@ -2394,6 +2399,7 @@ const state = {
   multiSelect: new Set(),     // node ids in the multi-selection
   selectBox: null,            // {x0,y0,x1,y1} during a lasso drag (screen coords)
   heatmap: false,             // staleness heatmap on/off
+  dimEdges: localStorage.getItem("erg.dimEdges") === "1",  // shade relationships darker to calm the base view
   whatif: { active:false, disabled:new Set(), affected:new Set(), orphaned:new Set() },
   spof: new Set(),            // articulation-point node ids currently highlighted
   present: { active:false, steps:[], idx:0 }
@@ -3349,7 +3355,7 @@ function render(){
     }
     const es = edgeStyle(e.type);
 
-    let color = es.color, width = es.width;
+    let color = (state.dimEdges && !inv) ? muteEdgeColor(es.color) : es.color, width = es.width;
     if (inv){ color = CANVAS_COLORS.edgeHighlight; width = es.width + 1; }
     if (isHov){ color = CANVAS_COLORS.edgeHover; width = es.width + 1.2; }
     if (isSel){ color = CANVAS_COLORS.edgeSelected; width = es.width + 1.6; }
@@ -8389,6 +8395,8 @@ function wireUp(){
   // ----- v1.1 feature wiring -----
   document.getElementById("tb-heatmap").onclick = toggleHeatmap;
   document.getElementById("btn-heatmap").onclick = toggleHeatmap;
+  document.getElementById("tb-dim-edges").onclick = toggleDimEdges;
+  setBtnActive("tb-dim-edges", state.dimEdges);
   document.getElementById("btn-whatif").onclick  = ()=> state.whatif.active ? exitWhatif() : startWhatif();
   document.getElementById("btn-spof").onclick    = ()=> state.spof.size ? clearSpof() : runSpof();
   document.getElementById("btn-bulk-edit").onclick = openBulkEditModal;
@@ -8647,6 +8655,18 @@ function buildHeatmapLegend(ln, le){
 function setBtnActive(id, on){
   const el = document.getElementById(id);
   if (el) el.classList.toggle("active", !!on);
+}
+// Lower an rgba edge color's alpha so relationships recede into the dark
+// background — keeps the category hue but stops bright lines dominating.
+function muteEdgeColor(c){
+  return /rgba?\(/.test(c) ? c.replace(/[\d.]+\)$/, "0.18)") : c;
+}
+function toggleDimEdges(){
+  state.dimEdges = !state.dimEdges;
+  localStorage.setItem("erg.dimEdges", state.dimEdges ? "1" : "0");
+  setBtnActive("tb-dim-edges", state.dimEdges);
+  requestRedraw();
+  showToast(state.dimEdges ? "Relationships dimmed — hover or select a node to light its connections" : "Relationships at full brightness", "ok");
 }
 function toggleHeatmap(){
   state.heatmap = !state.heatmap;
