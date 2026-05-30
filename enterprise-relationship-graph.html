@@ -2394,7 +2394,7 @@ const state = {
   multiSelect: new Set(),     // node ids in the multi-selection
   selectBox: null,            // {x0,y0,x1,y1} during a lasso drag (screen coords)
   heatmap: false,             // staleness heatmap on/off
-  whatif: { active:false, disabled:new Set(), affected:new Set() },
+  whatif: { active:false, disabled:new Set(), affected:new Set(), orphaned:new Set() },
   spof: new Set(),            // articulation-point node ids currently highlighted
   present: { active:false, steps:[], idx:0 }
 };
@@ -3439,6 +3439,7 @@ function render(){
       if (state.heatmap) color = heatColor(n);
       if (state.whatif.active){
         if (state.whatif.disabled.has(n.id)) color = "#475569";
+        else if (state.whatif.orphaned.has(n.id)) color = "#F59E0B";
         else if (state.whatif.affected.has(n.id)) color = "#EF4444";
       }
     }
@@ -8662,15 +8663,17 @@ function startWhatif(){
   state.whatif.active = true;
   state.whatif.disabled.clear();
   state.whatif.affected.clear();
+  state.whatif.orphaned.clear();
   setBtnActive("btn-whatif", true);
   document.getElementById("whatif-banner").style.display = "";
-  showToast("What-if mode: click nodes to disable them. The cascade of dependents turns red. Nothing is saved.", "ok");
+  showToast("What-if mode: click nodes to disable them. Broken dependents turn red; orphaned children turn amber. Nothing is saved.", "ok");
   requestRedraw();
 }
 function exitWhatif(){
   state.whatif.active = false;
   state.whatif.disabled.clear();
   state.whatif.affected.clear();
+  state.whatif.orphaned.clear();
   setBtnActive("btn-whatif", false);
   const ban = document.getElementById("whatif-banner");
   if (ban) ban.style.display = "none";
@@ -8682,18 +8685,48 @@ function toggleWhatifNode(id){
   recomputeWhatifAffected();
   const ban = document.getElementById("whatif-banner-text");
   if (ban){
-    const d = state.whatif.disabled.size, a = state.whatif.affected.size;
+    const d = state.whatif.disabled.size, a = state.whatif.affected.size, o = state.whatif.orphaned.size;
     ban.textContent = d === 0
       ? "What-if mode: click nodes to disable them and see the impact cascade"
-      : `${d} disabled · ${a} dependent${a===1?"":"s"} would break`;
+      : `${d} disabled · ${a} broken (red) · ${o} orphaned (amber)`;
   }
   requestRedraw();
 }
+// Edges that mean "this node belongs to / sits under" another node. Disabling
+// a parent orphans everything reachable down these, recursively.
+const WHATIF_ORPHAN_DOWN = ["CONTAINS","OWNS","MANAGES","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM"];
 function recomputeWhatifAffected(){
   const disabled = state.whatif.disabled;
-  const affected = new Set();
+
+  // 1) ORPHAN cascade (amber): everything structurally under the disabled
+  //    nodes, traced all the way down the tree. Two link shapes count:
+  //    - parent CONTAINS/OWNS/MANAGES/HAS_* child   (disabled is the source)
+  //    - child REPORTS_TO parent                     (disabled is the target)
+  const orphaned = new Set();
   let frontier = new Set(disabled);
-  const seen = new Set(disabled);
+  let seen = new Set(disabled);
+  while (frontier.size){
+    const next = new Set();
+    for (const cur of frontier){
+      for (const e of state.graph.edges){
+        if (e.source === cur && WHATIF_ORPHAN_DOWN.includes(e.type) && !seen.has(e.target)){
+          seen.add(e.target); next.add(e.target); orphaned.add(e.target);
+        }
+        if (e.target === cur && e.type === "REPORTS_TO" && !seen.has(e.source)){
+          seen.add(e.source); next.add(e.source); orphaned.add(e.source);
+        }
+      }
+    }
+    frontier = next;
+  }
+
+  // 2) DEPENDENCY breakage (red): anything that depends on something now gone
+  //    — seeded from the disabled nodes AND their orphaned descendants, so a
+  //    break propagates all the way up the chain. Transitive.
+  const gone = new Set([...disabled, ...orphaned]);
+  const affected = new Set();
+  frontier = new Set(gone);
+  seen = new Set(gone);
   while (frontier.size){
     const next = new Set();
     for (const cur of frontier){
@@ -8705,8 +8738,11 @@ function recomputeWhatifAffected(){
     }
     frontier = next;
   }
-  disabled.forEach(d=>affected.delete(d));
+
+  disabled.forEach(d=>{ affected.delete(d); orphaned.delete(d); });
+  orphaned.forEach(id=>affected.delete(id)); // orphaned (structural) wins over broken for color
   state.whatif.affected = affected;
+  state.whatif.orphaned = orphaned;
 }
 
 /* ----- Single point of failure detection (articulation points, undirected) ----- */
