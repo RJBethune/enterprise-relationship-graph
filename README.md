@@ -51,6 +51,19 @@ When you're ready to build your own graph: click **Open** to load a JSON file as
 - Neighborhood-only view to hide everything except a selected node's direct connections
 - Filters for node types and relationship types
 
+**Analysis**
+- What-if scenario mode: non-destructively disable nodes and watch the dependency cascade light up in red, without touching the saved graph
+- Single-point-of-failure detection: finds articulation points — nodes whose removal would split the graph — and rings them in amber
+- Staleness heatmap: tints nodes by time since last edit (press `H`), so you can see at a glance what needs re-validation
+
+**Bulk curation**
+- Multi-select with Ctrl/Cmd+click or Shift+drag a lasso box
+- Bulk-edit the selection: set type, status, owner, lead, directorate, office, platform, or append tags across many nodes at once (auto-edges re-sync)
+
+**Views & briefing**
+- Saved views capture filters + layout + zoom + selection as named perspectives ("Data flows only", "Exec org chart") — distinct from data snapshots, and stored in the file so they travel with it
+- Presentation walkthroughs: build an ordered tour of nodes with a sentence of narration each, then play it fullscreen and step through with the arrow keys
+
 **Auto-sync**
 - Setting *Parent*, *Reports to*, *Directorate*, *Office*, *Platform*, *Owner*, or *Lead* on a node automatically creates or updates the corresponding edge in the graph. Renaming or clearing the field updates the edge cleanly.
 
@@ -85,6 +98,10 @@ When you're ready to build your own graph: click **Open** to load a JSON file as
 | `E` | Edit selected |
 | `L` | Toggle always-on edge labels |
 | `M` | Toggle Layout mode (drag without selecting) |
+| `H` | Toggle staleness heatmap |
+| `Ctrl+click` | Add/remove a node from the multi-selection |
+| `Shift+drag` | Lasso-select nodes inside a box |
+| `←` / `→` | Step through a presentation walkthrough (when playing) |
 | `Ctrl+F` | Focus search |
 | `Esc` | Cancel any active mode |
 
@@ -145,7 +162,7 @@ The File System Access API (in-place save) is Chromium-only; in Firefox and Safa
 
 ## Architecture
 
-Single HTML file, ~4,200 lines, three layers in one document:
+Single HTML file, three layers in one document:
 
 - **CSS** — design tokens via CSS custom properties, dark theme tuned for command-center / architecture-dashboard use, layout via CSS Grid.
 - **HTML** — semantic landmarks (`<header>`, `<aside>`, `<main>`, `<footer>`), real `<button>` elements with ARIA where needed, hidden dialogs for modals and overlays.

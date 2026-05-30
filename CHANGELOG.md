@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-05-30
+
+Adds analysis, bulk curation, and briefing tools on top of the 1.0 feature set.
+
+### Analysis
+- What-if scenario mode: click nodes to non-destructively disable them and
+  see the transitive dependency cascade highlighted in red. Nothing is saved;
+  exit restores the normal view.
+- Single-point-of-failure detection: computes articulation points (undirected
+  DFS, Tarjan-style low-link) and rings them in amber, with a clickable list.
+  Verified against the sample graph: 16 cut-points, each confirmed to truly
+  disconnect the graph, zero false positives.
+- Staleness heatmap (`H`): tints nodes by time since last edit, with a bucketed
+  legend (under a week through 6 months+). Nodes with no edit date yet show
+  neutral until first touched.
+
+### Bulk curation
+- Multi-select via Ctrl/Cmd+click or Shift+drag lasso box.
+- Bulk edit: change type, status, owner, lead, directorate, office, platform,
+  or append tags across the whole selection at once. Ownership/lead/structural
+  fields re-sync their auto-edges per node.
+
+### Views & briefing
+- Saved views capture filters + layout + zoom + selection as named perspectives,
+  stored in the graph bundle so they travel with the file. Distinct from
+  snapshots, which capture data.
+- Presentation walkthroughs: build an ordered list of nodes each with a line of
+  narration, then play fullscreen and advance with the arrow keys. Also stored
+  in the bundle.
+
+### Data model
+- Nodes now carry an optional `updatedAt` ISO timestamp, stamped on every edit
+  and bulk edit going forward (powers the staleness heatmap).
+- Graph bundle gains optional `views` and `walkthroughs` arrays.
+
 ## [1.0.0] - 2026-05-24
 
 Initial public release. Stable feature set for enterprise architecture review,

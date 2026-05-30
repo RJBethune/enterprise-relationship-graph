@@ -1355,6 +1355,24 @@
       background:#EEE !important;
     }
   }
+  /* ===== v1.1 feature styles ===== */
+  #present-overlay{position:fixed; inset:0; background:rgba(4,12,24,0.82); backdrop-filter:blur(4px); z-index:60; display:none; align-items:flex-end; justify-content:center;}
+  #present-overlay.active{display:flex;}
+  #present-stage{width:100%; max-width:900px; margin:0 auto 5vh; background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px 24px; box-shadow:0 20px 60px rgba(0,0,0,0.5);}
+  #present-note .pn-title{font-size:20px; font-weight:700; color:var(--text); margin-bottom:6px;}
+  #present-note .pn-body{font-size:15px; line-height:1.55; color:var(--text-2); white-space:pre-wrap;}
+  #present-note .pn-empty{font-size:14px; color:var(--muted); font-style:italic;}
+  #present-controls{display:flex; align-items:center; gap:10px; margin-top:16px;}
+  #present-controls #present-progress{font-size:12px; color:var(--muted); margin:0 auto;}
+  .be-row{display:flex; align-items:flex-start; gap:8px; margin-bottom:9px;}
+  .be-row input[type=checkbox]{flex:none; margin-top:7px;}
+  .be-row .be-field{flex:1; display:flex; flex-direction:column; gap:2px;}
+  .be-row label.be-name{font-size:11px; color:var(--muted);}
+  .step-row{display:flex; align-items:center; gap:6px; margin-bottom:6px;}
+  .step-row .step-note{flex:1;}
+  .step-row .step-num{width:22px; text-align:center; color:var(--muted); font-size:12px; flex:none;}
+  .step-row select.step-node{flex:1; min-width:0;}
+  .heat-note{font-size:11px; color:var(--muted); margin:2px 0 6px;}
 </style>
 </head>
 <body>
@@ -1487,7 +1505,33 @@
           <button class="btn" id="btn-redo"><i class="fa-solid fa-rotate-right"></i> Redo</button>
         </div>
         <button class="btn danger block" id="btn-delete-sel" style="margin-top:6px"><i class="fa-solid fa-trash"></i> Delete selected</button>
+        <button class="btn block" id="btn-bulk-edit" style="margin-top:6px" disabled><i class="fa-solid fa-layer-group"></i> Bulk edit selection</button>
         <button class="btn block" id="btn-manage-types" style="margin-top:6px"><i class="fa-solid fa-palette"></i> Manage node types</button>
+      </div>
+    </div>
+
+    <div class="section" data-section="analysis">
+      <button class="section-head" type="button" aria-expanded="true"><span><i class="fa-solid fa-flask icon" aria-hidden="true"></i>&nbsp; Analysis</span><i class="fa-solid fa-chevron-down chev" aria-hidden="true"></i></button>
+      <div class="section-body">
+        <button class="btn block" id="btn-whatif"><i class="fa-solid fa-flask-vial"></i> What-if scenario mode</button>
+        <button class="btn block" id="btn-spof" style="margin-top:6px"><i class="fa-solid fa-triangle-exclamation"></i> Find single points of failure</button>
+        <button class="btn block" id="btn-heatmap" style="margin-top:6px"><i class="fa-solid fa-temperature-half"></i> Staleness heatmap</button>
+      </div>
+    </div>
+
+    <div class="section" data-section="views">
+      <button class="section-head" type="button" aria-expanded="true"><span><i class="fa-solid fa-bookmark icon" aria-hidden="true"></i>&nbsp; Saved Views</span><i class="fa-solid fa-chevron-down chev" aria-hidden="true"></i></button>
+      <div class="section-body">
+        <button class="btn primary block" id="btn-view-save" style="margin-bottom:6px"><i class="fa-solid fa-bookmark"></i> Save current view</button>
+        <div id="view-list-container"></div>
+      </div>
+    </div>
+
+    <div class="section" data-section="presentation">
+      <button class="section-head" type="button" aria-expanded="true"><span><i class="fa-solid fa-chalkboard-user icon" aria-hidden="true"></i>&nbsp; Presentation</span><i class="fa-solid fa-chevron-down chev" aria-hidden="true"></i></button>
+      <div class="section-body">
+        <button class="btn primary block" id="btn-present-manage" style="margin-bottom:6px"><i class="fa-solid fa-chalkboard-user"></i> Build / play walkthrough</button>
+        <div id="walkthrough-list-container"></div>
       </div>
     </div>
 
@@ -1535,6 +1579,8 @@
       <button class="tool-btn" id="tb-edge-labels" title="Toggle edge labels (L)" aria-label="Toggle edge labels"><i class="fa-solid fa-tag" aria-hidden="true"></i></button>
       <button class="tool-btn" id="tb-layout-mode" title="Layout mode: drag nodes without selecting (M)" aria-label="Toggle layout mode"><i class="fa-solid fa-up-down-left-right" aria-hidden="true"></i></button>
       <button class="tool-btn" id="tb-unpin" title="Release all pinned positions" aria-label="Release all pinned nodes"><i class="fa-solid fa-thumbtack" aria-hidden="true" style="transform:rotate(45deg)"></i></button>
+      <div class="tool-divider"></div>
+      <button class="tool-btn" id="tb-heatmap" title="Staleness heatmap (H): tint nodes by time since last edit" aria-label="Toggle staleness heatmap"><i class="fa-solid fa-temperature-half" aria-hidden="true"></i></button>
     </div>
     <div class="canvas-banner" id="connect-banner" style="display:none">
       <i class="fa-solid fa-arrows-turn-to-dots" aria-hidden="true"></i>
@@ -1550,6 +1596,16 @@
       <i class="fa-solid fa-route" aria-hidden="true"></i>
       <span id="path-banner-text">Path-finder: click source node, then click target</span>
       <button class="ban-close" id="path-banner-close"><i class="fa-solid fa-xmark" aria-hidden="true"></i> Cancel (Esc)</button>
+    </div>
+    <div class="canvas-banner" id="whatif-banner" style="display:none">
+      <i class="fa-solid fa-flask-vial" aria-hidden="true"></i>
+      <span id="whatif-banner-text">What-if mode: click nodes to disable them and see the impact cascade</span>
+      <button class="ban-close" id="whatif-banner-close"><i class="fa-solid fa-xmark" aria-hidden="true"></i> Exit (Esc)</button>
+    </div>
+    <div class="canvas-banner" id="spof-banner" style="display:none">
+      <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+      <span id="spof-banner-text">Single points of failure highlighted</span>
+      <button class="ban-close" id="spof-banner-close"><i class="fa-solid fa-xmark" aria-hidden="true"></i> Clear (Esc)</button>
     </div>
     <div class="legend" id="legend">
       <button class="legend-toggle" id="legend-toggle">hide</button>
@@ -1587,6 +1643,17 @@
   </footer>
 </div>
 
+<div id="present-overlay" aria-hidden="true">
+  <div id="present-stage">
+    <div id="present-note"></div>
+    <div id="present-controls">
+      <button class="btn" id="present-prev"><i class="fa-solid fa-arrow-left"></i> Prev</button>
+      <span id="present-progress">1 / 1</span>
+      <button class="btn" id="present-next">Next <i class="fa-solid fa-arrow-right"></i></button>
+      <button class="btn ghost" id="present-exit"><i class="fa-solid fa-xmark"></i> Exit</button>
+    </div>
+  </div>
+</div>
 <div class="modal-backdrop" id="modal-backdrop">
   <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-head">
@@ -2322,7 +2389,14 @@ const state = {
   orgChartMode: false,
   orgChartSnapshot: null,
   recentNodes: [],
-  collapseCounts: new Map()
+  collapseCounts: new Map(),
+  // ----- v1.1 feature state -----
+  multiSelect: new Set(),     // node ids in the multi-selection
+  selectBox: null,            // {x0,y0,x1,y1} during a lasso drag (screen coords)
+  heatmap: false,             // staleness heatmap on/off
+  whatif: { active:false, disabled:new Set(), affected:new Set() },
+  spof: new Set(),            // articulation-point node ids currently highlighted
+  present: { active:false, steps:[], idx:0 }
 };
 
 function loadInitial(){
@@ -2718,7 +2792,7 @@ function subtreeLeaves(id, childrenOf, memo){
   return w;
 }
 
-function applyLayout(name){
+function applyLayout(name, skipFit){
   // Mode entry/exit for Org Chart — snapshot the filter set on entry,
   // restore it when the user picks any other layout.
   if (name === "org-chart" && !state.orgChartMode){
@@ -2801,7 +2875,7 @@ function applyLayout(name){
   // Auto-fit after layout change so the user sees the result immediately
   // without having to click Fit. Skip for force since it self-animates from
   // current positions and would jump on every recompute otherwise.
-  if (name !== "force"){
+  if (name !== "force" && !skipFit){
     setTimeout(() => { if (typeof fitGraph === "function") fitGraph(); }, 80);
   }
 }
@@ -3361,6 +3435,13 @@ function render(){
     const isHit = searchHits.has(n.id);
 
     let color = dim ? CANVAS_COLORS.nodeDim : ts.color;
+    if (!dim){
+      if (state.heatmap) color = heatColor(n);
+      if (state.whatif.active){
+        if (state.whatif.disabled.has(n.id)) color = "#475569";
+        else if (state.whatif.affected.has(n.id)) color = "#EF4444";
+      }
+    }
     let size = ts.size;
     if (isSel) size *= 1.18;
     if (isHov) size *= 1.1;
@@ -3405,6 +3486,29 @@ function render(){
       ctx.strokeStyle = CANVAS_COLORS.ringHover;
       ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(p.x, p.y, size+4, 0, Math.PI*2); ctx.stroke();
+    }
+    // Multi-selection ring (cyan dashed)
+    if (state.multiSelect.has(n.id)){
+      ctx.save();
+      ctx.strokeStyle = "#22D3EE"; ctx.lineWidth = 2.5; ctx.setLineDash([5,3]);
+      ctx.beginPath(); ctx.arc(p.x, p.y, size+7, 0, Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
+    // Single-point-of-failure marker (amber double ring)
+    if (state.spof.has(n.id)){
+      ctx.save();
+      ctx.strokeStyle = "#FBBF24"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(p.x, p.y, size+10, 0, Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
+    // What-if disabled marker (red X)
+    if (state.whatif.active && state.whatif.disabled.has(n.id)){
+      ctx.save();
+      ctx.strokeStyle = "#F87171"; ctx.lineWidth = 2.5;
+      const rr = size*0.7;
+      ctx.beginPath(); ctx.moveTo(p.x-rr,p.y-rr); ctx.lineTo(p.x+rr,p.y+rr);
+      ctx.moveTo(p.x+rr,p.y-rr); ctx.lineTo(p.x-rr,p.y+rr); ctx.stroke();
+      ctx.restore();
     }
 
     // Collapsed-branch badge: small amber pill with the hidden count
@@ -3461,6 +3565,18 @@ function render(){
   });
 
   ctx.restore();
+
+  // Lasso selection rectangle (screen space, after transform restore)
+  if (state.dragMode === "lasso" && state.selectBox){
+    const b = state.selectBox;
+    const x = Math.min(b.x0,b.x1), y = Math.min(b.y0,b.y1);
+    const bw = Math.abs(b.x1-b.x0), bh = Math.abs(b.y1-b.y0);
+    ctx.save();
+    ctx.fillStyle = "rgba(34,211,238,0.12)";
+    ctx.strokeStyle = "#22D3EE"; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
+    ctx.fillRect(x,y,bw,bh); ctx.strokeRect(x,y,bw,bh);
+    ctx.restore();
+  }
 }
 
 function tick(){
@@ -3536,6 +3652,16 @@ canvas.addEventListener("mousedown", ev=>{
   state.lastMouse = { x:sx, y:sy };
 
   const hit = pickNode(sx, sy);
+  // What-if scenario mode: clicking a node toggles its disabled state
+  if (state.whatif.active){
+    if (hit) toggleWhatifNode(hit.id);
+    return;
+  }
+  // Ctrl/Cmd+click toggles a node's membership in the multi-selection
+  if ((ev.ctrlKey || ev.metaKey) && hit){
+    toggleMultiSelect(hit.id);
+    return;
+  }
   if (state.connectingFrom){
     if (hit && hit.id !== state.connectingFrom){
       openConnectModal(state.connectingFrom, hit.id);
@@ -3588,6 +3714,7 @@ canvas.addEventListener("mousedown", ev=>{
   } else {
     const e = pickEdge(sx, sy);
     if (e) selectEdge(e.id);
+    else if (ev.shiftKey){ state.dragMode = "lasso"; state.selectBox = { x0:sx, y0:sy, x1:sx, y1:sy }; }
     else { state.dragMode = "pan"; canvas.classList.add("dragging"); }
   }
 });
@@ -3601,6 +3728,10 @@ canvas.addEventListener("mousemove", ev=>{
 
   if (state.connectingFrom){ requestRedraw(); }
 
+  if (state.dragMode === "lasso" && state.selectBox){
+    state.selectBox.x1 = sx; state.selectBox.y1 = sy;
+    requestRedraw(); return;
+  }
   if (state.dragMode === "pan"){
     state.transform.x += dx; state.transform.y += dy;
     requestRedraw(); return;
@@ -3635,6 +3766,11 @@ canvas.addEventListener("mousemove", ev=>{
   }
 });
 canvas.addEventListener("mouseup", ()=>{
+  if (state.dragMode === "lasso" && state.selectBox){
+    commitLassoSelection();
+    state.selectBox = null; state.dragMode = null;
+    return;
+  }
   if (state.draggedNode){
     const p = state.positions.get(state.draggedNode);
     if (p && !p.pinned) p.fixed = false;  // pinned nodes stay anchored after release
@@ -3714,6 +3850,7 @@ function navigateNode(direction){
   if (best){ selectNode(best.id); centerOnNode(best.id); }
 }
 canvas.addEventListener("keydown", ev=>{
+  if (state.present.active) return;
   const key = ev.key;
   if (key === "ArrowUp")    { ev.preventDefault(); navigateNode("up"); }
   else if (key === "ArrowDown")  { ev.preventDefault(); navigateNode("down"); }
@@ -3769,11 +3906,12 @@ function centerOnNode(id){
 }
 
 /* ----- Selection ----- */
-function selectNode(id){ state.selectedNode = id; state.selectedEdge = null; renderDetails(); updateStats(); requestRedraw(); pushRecentNode(id); }
+function selectNode(id){ state.selectedNode = id; state.selectedEdge = null; state.multiSelect.clear(); renderDetails(); updateStats(); requestRedraw(); pushRecentNode(id); }
 function selectEdge(id){ state.selectedEdge = id; state.selectedNode = null; renderDetails(); updateStats(); requestRedraw(); }
 function clearSelection(){
   state.selectedNode = state.selectedEdge = null;
   state.showNeighborhoodOnly = false;
+  state.multiSelect.clear();
   renderDetails(); updateStats(); requestRedraw();
 }
 
@@ -4276,7 +4414,8 @@ function updateStats(){
   const vn = visibleNodes().length, vt = state.graph.nodes.length;
   setText("stat-vnodes", vn === vt ? vn : (vn + "/" + vt));
   const sel = state.selectedNode ? findNode(state.selectedNode) : null;
-  setText("stat-sel", sel ? sel.type : (state.selectedEdge ? "Relation" : "·"));
+  setText("stat-sel", state.multiSelect.size > 0 ? (state.multiSelect.size + " sel") : (sel ? sel.type : (state.selectedEdge ? "Relation" : "·")));
+  syncMultiUI();
 }
 
 function buildFilterUI(){
@@ -4320,6 +4459,7 @@ function buildLegend(){
   const ln = document.getElementById("legend-grid-nodes");
   const le = document.getElementById("legend-grid-edges");
   ln.innerHTML = ""; le.innerHTML = "";
+  if (state.heatmap){ buildHeatmapLegend(ln, le); return; }
   const presentTypes = new Set(state.graph.nodes.map(n=>n.type));
   allNodeTypes().filter(t => presentTypes.has(t)).forEach(t=>{
     const ts = typeStyle(t);
@@ -4525,7 +4665,8 @@ function readNodeForm(){
     email: document.getElementById("f-email").value.trim(),
     phone: document.getElementById("f-phone").value.trim(),
     tags: document.getElementById("f-tags").value.split(",").map(s=>s.trim()).filter(Boolean),
-    notes: document.getElementById("f-notes").value
+    notes: document.getElementById("f-notes").value,
+    updatedAt: new Date().toISOString()
   };
 }
 function openNodeModal(existing){
@@ -5014,6 +5155,7 @@ function applyLoadedBundle(bundle, fileName){
   updateModifiedChip();
   markClean();
   afterMutate(true); // skip dirty mark; we just synced from file
+  renderViewList(); renderWalkthroughList();
   fitGraph();
   const bits = [];
   if (added) bits.push("+" + added + " snapshot" + (added===1?"":"s"));
@@ -5168,7 +5310,7 @@ function loadSample(){
   resetFiltersFromGraph();
   ensurePositions();
   applyLayout(state.layout);
-  afterMutate(); fitGraph();
+  afterMutate(); renderViewList(); renderWalkthroughList(); fitGraph();
   showToast("Sample data loaded","ok");
 }
 
@@ -8243,6 +8385,21 @@ function wireUp(){
   document.getElementById("etf-all").onclick = ()=>{ state.filtersEdge = new Set(EDGE_TYPES); buildFilterUI(); updateStats(); requestRedraw(); };
   document.getElementById("etf-none").onclick = ()=>{ state.filtersEdge = new Set(); buildFilterUI(); updateStats(); requestRedraw(); };
 
+  // ----- v1.1 feature wiring -----
+  document.getElementById("tb-heatmap").onclick = toggleHeatmap;
+  document.getElementById("btn-heatmap").onclick = toggleHeatmap;
+  document.getElementById("btn-whatif").onclick  = ()=> state.whatif.active ? exitWhatif() : startWhatif();
+  document.getElementById("btn-spof").onclick    = ()=> state.spof.size ? clearSpof() : runSpof();
+  document.getElementById("btn-bulk-edit").onclick = openBulkEditModal;
+  document.getElementById("btn-view-save").onclick = saveView;
+  document.getElementById("btn-present-manage").onclick = openPresentManager;
+  document.getElementById("whatif-banner-close").onclick = exitWhatif;
+  document.getElementById("spof-banner-close").onclick    = clearSpof;
+  document.getElementById("present-prev").onclick = ()=>presentGoto(state.present.idx-1);
+  document.getElementById("present-next").onclick = ()=>presentGoto(state.present.idx+1);
+  document.getElementById("present-exit").onclick = exitPresent;
+  renderViewList(); renderWalkthroughList();
+
   // ----- Drag-and-drop JSON files onto the window to open them -----
   const dropOverlay = document.getElementById("drop-overlay");
   let dragDepth = 0;
@@ -8298,7 +8455,16 @@ function wireUp(){
       if (e.key === "Escape" && state.connectingFrom) cancelConnect();
       return;
     }
+    if (state.present.active){
+      if (e.key === "ArrowRight" || e.key === " "){ e.preventDefault(); presentGoto(state.present.idx+1); return; }
+      if (e.key === "ArrowLeft"){ e.preventDefault(); presentGoto(state.present.idx-1); return; }
+      if (e.key === "Escape"){ e.preventDefault(); exitPresent(); return; }
+      return;
+    }
     if (e.key === "Escape"){
+      if (state.whatif.active){ exitWhatif(); return; }
+      if (state.spof.size){ clearSpof(); return; }
+      if (state.multiSelect.size){ state.multiSelect.clear(); updateStats(); requestRedraw(); return; }
       if (state.connectingFrom){ cancelConnect(); return; }
       if (state.pathFinding.active){ cancelPathFinding(); requestRedraw(); return; }
       if (state.pathFinding.pathNodes.size > 0){ clearPath(); return; }
@@ -8311,6 +8477,7 @@ function wireUp(){
     else if (e.key === "r" || e.key === "R"){ resetView(); }
     else if (e.key === "l" || e.key === "L"){ document.getElementById("tb-edge-labels").click(); }
     else if (e.key === "m" || e.key === "M"){ document.getElementById("tb-layout-mode").click(); }
+    else if (e.key === "h" || e.key === "H"){ document.getElementById("tb-heatmap").click(); }
     else if (e.key === "c" || e.key === "C"){
       if (state.selectedNode) startConnect(state.selectedNode);
     } else if (e.key === "n" || e.key === "N"){
@@ -8337,6 +8504,533 @@ function wireUp(){
 /* ============================================================================
    BOOTSTRAP
    ============================================================================ */
+
+/* ============================================================================
+   v1.1 FEATURES: multi-select & bulk edit, staleness heatmap, what-if mode,
+   single-point-of-failure detection, saved views, presentation walkthroughs.
+   ========================================================================== */
+
+/* ----- Multi-selection & bulk edit ----- */
+function toggleMultiSelect(id){
+  if (state.multiSelect.has(id)) state.multiSelect.delete(id);
+  else state.multiSelect.add(id);
+  state.selectedNode = null; state.selectedEdge = null;
+  renderDetails(); updateStats(); requestRedraw();
+}
+function commitLassoSelection(){
+  const b = state.selectBox; if (!b) return;
+  const t = state.transform;
+  const toWorld = (sx,sy)=>({ x:(sx-t.x)/t.scale, y:(sy-t.y)/t.scale });
+  const a = toWorld(b.x0,b.y0), c = toWorld(b.x1,b.y1);
+  const minX=Math.min(a.x,c.x), maxX=Math.max(a.x,c.x);
+  const minY=Math.min(a.y,c.y), maxY=Math.max(a.y,c.y);
+  if (Math.abs(b.x1-b.x0) < 4 && Math.abs(b.y1-b.y0) < 4) return; // treat as click, not lasso
+  let added = 0;
+  visibleNodes().forEach(n=>{
+    const p = state.positions.get(n.id); if (!p) return;
+    if (p.x>=minX && p.x<=maxX && p.y>=minY && p.y<=maxY){ state.multiSelect.add(n.id); added++; }
+  });
+  if (added){ state.selectedNode = null; renderDetails(); }
+  updateStats(); requestRedraw();
+  if (added) showToast(added + " node" + (added===1?"":"s") + " added to selection (" + state.multiSelect.size + " total)", "ok");
+}
+function syncMultiUI(){
+  const btn = document.getElementById("btn-bulk-edit");
+  if (!btn) return;
+  const n = state.multiSelect.size;
+  btn.disabled = n === 0;
+  btn.innerHTML = n > 0
+    ? '<i class="fa-solid fa-layer-group"></i> Bulk edit ' + n + ' node' + (n===1?"":"s")
+    : '<i class="fa-solid fa-layer-group"></i> Bulk edit selection';
+}
+function openBulkEditModal(){
+  const ids = [...state.multiSelect];
+  if (!ids.length){ showToast("Select nodes first: Ctrl/Cmd+click, or Shift+drag a box", "err"); return; }
+  const typeOpts = allNodeTypes().map(t=>`<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("");
+  // [field, label, kind]  kind: "select-type" | "text"
+  const FIELDS = [
+    ["type","Type","select-type"],
+    ["status","Status","text"],
+    ["owner","Owner","text"],
+    ["lead","Lead","text"],
+    ["directorate","Directorate","text"],
+    ["office","Office","text"],
+    ["platform","Platform","text"]
+  ];
+  const rows = FIELDS.map(([f,label,kind])=>{
+    const ctrl = kind==="select-type"
+      ? `<select id="be-val-${f}" disabled>${typeOpts}</select>`
+      : `<input type="text" id="be-val-${f}" disabled placeholder="New ${label.toLowerCase()} value" />`;
+    return `<div class="be-row">
+      <input type="checkbox" id="be-chk-${f}" aria-label="Change ${label}" />
+      <div class="be-field"><label class="be-name" for="be-val-${f}">${label}</label>${ctrl}</div>
+    </div>`;
+  }).join("");
+  const html = `
+    <div class="form-callout"><i class="fa-solid fa-circle-info"></i> Editing <strong>${ids.length}</strong> selected node${ids.length===1?"":"s"}. Tick a field to change it; unticked fields are left untouched on every node. Owner / Lead / Directorate / Office / Platform also re-sync their auto-edges.</div>
+    ${rows}
+    <div class="be-row">
+      <input type="checkbox" id="be-chk-tags" aria-label="Add tags" />
+      <div class="be-field"><label class="be-name" for="be-val-tags">Add tags (comma-separated, appended)</label>
+      <input type="text" id="be-val-tags" disabled placeholder="e.g. reorg-2026, review" /></div>
+    </div>`;
+  openModal('<i class="fa-solid fa-layer-group"></i> Bulk edit ' + ids.length + ' nodes', html, ()=>{
+    const fields = FIELDS.map(x=>x[0]).concat(["tags"]);
+    const active = fields.filter(f => document.getElementById("be-chk-"+f).checked);
+    if (!active.length){ showToast("Tick at least one field to change", "err"); return; }
+    const SYNC_FIELDS = new Set(["owner","lead","directorate","office","platform"]);
+    let changed = 0;
+    ids.forEach(id=>{
+      const node = findNode(id); if (!node) return;
+      active.forEach(f=>{
+        if (f === "tags"){
+          const add = document.getElementById("be-val-tags").value.split(",").map(s=>s.trim()).filter(Boolean);
+          const cur = new Set(node.tags || []);
+          add.forEach(t=>cur.add(t));
+          node.tags = [...cur];
+        } else {
+          node[f] = document.getElementById("be-val-"+f).value;
+        }
+      });
+      node.updatedAt = new Date().toISOString();
+      if (active.some(f => SYNC_FIELDS.has(f))) syncStructuralEdges(node);
+      changed++;
+    });
+    afterMutate();
+    closeModal();
+    showToast("Updated " + changed + " node" + (changed===1?"":"s"), "ok");
+  });
+  // enable each control only when its checkbox is ticked
+  [...document.querySelectorAll('[id^="be-chk-"]')].forEach(chk=>{
+    const f = chk.id.replace("be-chk-","");
+    const val = document.getElementById("be-val-"+f);
+    chk.addEventListener("change", ()=>{ val.disabled = !chk.checked; if (chk.checked) val.focus(); });
+  });
+}
+
+/* ----- Staleness heatmap ----- */
+const HEAT_BUCKETS = [
+  { max:7,   color:"#22C55E", label:"< 1 week" },
+  { max:30,  color:"#84CC16", label:"< 1 month" },
+  { max:90,  color:"#EAB308", label:"< 3 months" },
+  { max:180, color:"#F97316", label:"< 6 months" },
+  { max:Infinity, color:"#EF4444", label:"6 months +" }
+];
+const HEAT_NODATA = "#3A4658";
+function heatColor(n){
+  if (!n.updatedAt) return HEAT_NODATA;
+  const days = (Date.now() - new Date(n.updatedAt).getTime()) / 86400000;
+  if (isNaN(days)) return HEAT_NODATA;
+  for (const b of HEAT_BUCKETS){ if (days < b.max) return b.color; }
+  return "#EF4444";
+}
+function buildHeatmapLegend(ln, le){
+  const add = (color,label)=>{
+    const item = document.createElement("div");
+    item.className = "legend-item";
+    item.innerHTML = `<span class="legend-icon" style="background:${color}"></span><span>${escapeHtml(label)}</span>`;
+    ln.appendChild(item);
+  };
+  HEAT_BUCKETS.forEach(b=>add(b.color, b.label));
+  add(HEAT_NODATA, "No edit date yet");
+  // keep edge legend populated so the Edge Styles tab still works
+  Object.keys(EDGE_STYLE).forEach(cat=>{
+    const es = EDGE_STYLE[cat];
+    const dashCss = es.dash.length ? es.dash.join(" ") : "none";
+    const item = document.createElement("div");
+    item.className = "legend-item";
+    item.innerHTML = `<svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="${es.color.replace(/[\d.]+\)$/,'0.95)')}" stroke-width="${es.width+0.5}" stroke-dasharray="${dashCss}"/></svg><span>${escapeHtml(es.label)}</span>`;
+    le.appendChild(item);
+  });
+}
+function setBtnActive(id, on){
+  const el = document.getElementById(id);
+  if (el) el.classList.toggle("active", !!on);
+}
+function toggleHeatmap(){
+  state.heatmap = !state.heatmap;
+  setBtnActive("tb-heatmap", state.heatmap);
+  setBtnActive("btn-heatmap", state.heatmap);
+  buildLegend();
+  requestRedraw();
+  showToast(state.heatmap ? "Staleness heatmap on — nodes tinted by time since last edit" : "Staleness heatmap off", "ok");
+}
+
+/* ----- What-if scenario mode ----- */
+function startWhatif(){
+  if (state.spof.size) clearSpof();
+  state.whatif.active = true;
+  state.whatif.disabled.clear();
+  state.whatif.affected.clear();
+  setBtnActive("btn-whatif", true);
+  document.getElementById("whatif-banner").style.display = "";
+  showToast("What-if mode: click nodes to disable them. The cascade of dependents turns red. Nothing is saved.", "ok");
+  requestRedraw();
+}
+function exitWhatif(){
+  state.whatif.active = false;
+  state.whatif.disabled.clear();
+  state.whatif.affected.clear();
+  setBtnActive("btn-whatif", false);
+  const ban = document.getElementById("whatif-banner");
+  if (ban) ban.style.display = "none";
+  requestRedraw();
+}
+function toggleWhatifNode(id){
+  if (state.whatif.disabled.has(id)) state.whatif.disabled.delete(id);
+  else state.whatif.disabled.add(id);
+  recomputeWhatifAffected();
+  const ban = document.getElementById("whatif-banner-text");
+  if (ban){
+    const d = state.whatif.disabled.size, a = state.whatif.affected.size;
+    ban.textContent = d === 0
+      ? "What-if mode: click nodes to disable them and see the impact cascade"
+      : `${d} disabled · ${a} dependent${a===1?"":"s"} would break`;
+  }
+  requestRedraw();
+}
+function recomputeWhatifAffected(){
+  const disabled = state.whatif.disabled;
+  const affected = new Set();
+  let frontier = new Set(disabled);
+  const seen = new Set(disabled);
+  while (frontier.size){
+    const next = new Set();
+    for (const cur of frontier){
+      for (const e of state.graph.edges){
+        if (e.target === cur && IMPACT_DEPENDENCY_EDGES.includes(e.type) && !seen.has(e.source)){
+          seen.add(e.source); next.add(e.source); affected.add(e.source);
+        }
+      }
+    }
+    frontier = next;
+  }
+  disabled.forEach(d=>affected.delete(d));
+  state.whatif.affected = affected;
+}
+
+/* ----- Single point of failure detection (articulation points, undirected) ----- */
+function computeArticulationPoints(){
+  const adj = new Map();
+  state.graph.nodes.forEach(n=>adj.set(n.id, []));
+  state.graph.edges.forEach(e=>{
+    if (adj.has(e.source) && adj.has(e.target)){
+      adj.get(e.source).push(e.target);
+      adj.get(e.target).push(e.source);
+    }
+  });
+  const disc = new Map(), low = new Map(), visited = new Set(), ap = new Set();
+  let timer = 0;
+  function dfs(u, parent){
+    visited.add(u); disc.set(u, timer); low.set(u, timer); timer++;
+    let children = 0;
+    for (const v of adj.get(u)){
+      if (v === parent) continue;
+      if (!visited.has(v)){
+        children++;
+        dfs(v, u);
+        low.set(u, Math.min(low.get(u), low.get(v)));
+        if (parent !== null && low.get(v) >= disc.get(u)) ap.add(u);
+      } else {
+        low.set(u, Math.min(low.get(u), disc.get(v)));
+      }
+    }
+    if (parent === null && children > 1) ap.add(u);
+  }
+  state.graph.nodes.forEach(n=>{ if (!visited.has(n.id)) dfs(n.id, null); });
+  return [...ap];
+}
+function runSpof(){
+  if (state.whatif.active) exitWhatif();
+  const aps = computeArticulationPoints();
+  state.spof = new Set(aps);
+  const ban = document.getElementById("spof-banner");
+  setBtnActive("btn-spof", aps.length > 0);
+  if (!aps.length){
+    if (ban) ban.style.display = "none";
+    showToast("No single points of failure — the graph has no articulation points", "ok");
+    requestRedraw();
+    return;
+  }
+  document.getElementById("spof-banner-text").textContent =
+    aps.length + " single point" + (aps.length===1?"":"s") + " of failure highlighted (amber rings)";
+  if (ban) ban.style.display = "";
+  requestRedraw();
+  // List them, clickable
+  const rows = aps.map(id=>{
+    const n = findNode(id); if (!n) return "";
+    const deg = state.graph.edges.filter(e=>e.source===id||e.target===id).length;
+    return `<tr><td>${mEntityLink(n,{includeType:true})}</td><td style="color:var(--muted); font-size:11px;">${deg} connection${deg===1?"":"s"}</td></tr>`;
+  }).join("");
+  const html = `
+    <p class="m-lede">These nodes are <strong>articulation points</strong>: removing any one of them splits the graph into disconnected pieces. They're structural chokepoints — worth extra resilience, documentation, and succession planning. Click any to jump to it.</p>
+    <table class="m-table"><thead><tr><th>Entity</th><th>Degree</th></tr></thead><tbody>${rows}</tbody></table>`;
+  openModal('<i class="fa-solid fa-triangle-exclamation"></i> ' + aps.length + ' single point' + (aps.length===1?"":"s") + ' of failure', html, null, true);
+  const saveBtn = document.getElementById("modal-save");
+  if (saveBtn) saveBtn.style.display = "none";
+  wireEntityLinks(document.getElementById("modal-body"));
+}
+function clearSpof(){
+  state.spof.clear();
+  setBtnActive("btn-spof", false);
+  const ban = document.getElementById("spof-banner");
+  if (ban) ban.style.display = "none";
+  requestRedraw();
+}
+
+/* Wire clickable entity links inside a freshly rendered modal body */
+function wireEntityLinks(root){
+  if (!root) return;
+  root.querySelectorAll(".m-entity-link").forEach(el=>{
+    const go = ()=>{
+      const id = el.getAttribute("data-node-id");
+      const n = findNode(id);
+      closeModal();
+      if (!n){ showToast("That entity no longer exists", "err"); return; }
+      selectNode(id); centerOnNode(id);
+    };
+    el.addEventListener("click", go);
+    el.addEventListener("keydown", e=>{ if (e.key==="Enter" || e.key===" "){ e.preventDefault(); go(); } });
+  });
+}
+
+/* ----- Saved views (filters + layout + camera; stored in the graph file) ----- */
+function getViews(){
+  if (!Array.isArray(state.graph.views)) state.graph.views = [];
+  return state.graph.views;
+}
+function captureView(name){
+  return {
+    id: uid("view"),
+    name,
+    ts: Date.now(),
+    filtersNode: [...state.filtersNode],
+    filtersEdge: [...state.filtersEdge],
+    layout: state.layout,
+    clusterAttr: state.clusterAttr,
+    transform: { x:state.transform.x, y:state.transform.y, scale:state.transform.scale },
+    selectedNode: state.selectedNode,
+    showNeighborhoodOnly: state.showNeighborhoodOnly,
+    showAllEdgeLabels: state.showAllEdgeLabels
+  };
+}
+function saveView(){
+  const name = (prompt("Name this view (e.g. \"Data flows only\", \"Exec org chart\"):", "") || "").trim();
+  if (!name) return;
+  getViews().push(captureView(name));
+  persist(); markDirty();
+  renderViewList();
+  showToast('View "' + name + '" saved', "ok");
+}
+function applyView(id){
+  const v = getViews().find(x=>x.id===id);
+  if (!v){ showToast("View not found", "err"); return; }
+  state.filtersNode = new Set(v.filtersNode || allNodeTypes());
+  state.filtersEdge = new Set(v.filtersEdge || EDGE_TYPES);
+  state.clusterAttr = v.clusterAttr || "type";
+  const clSel = document.getElementById("cluster-attr"); if (clSel) clSel.value = state.clusterAttr;
+  if (v.layout){
+    const sel = document.getElementById("layout-select"); if (sel) sel.value = v.layout;
+    // skipFit: the view restores its own camera below; don't let the layout's
+    // deferred auto-fit clobber the restored zoom/pan.
+    applyLayout(v.layout, true);
+  }
+  state.showAllEdgeLabels = !!v.showAllEdgeLabels;
+  setBtnActive("tb-edge-labels", state.showAllEdgeLabels);
+  state.showNeighborhoodOnly = !!v.showNeighborhoodOnly;
+  state.selectedNode = (v.selectedNode && findNode(v.selectedNode)) ? v.selectedNode : state.selectedNode;
+  if (v.transform){ state.transform = { x:v.transform.x, y:v.transform.y, scale:v.transform.scale }; }
+  buildFilterUI(); buildLegend(); updateStats(); renderDetails();
+  updateZoomLabel(); requestRedraw();
+  showToast('View "' + v.name + '" applied', "ok");
+}
+function deleteView(id){
+  const arr = getViews();
+  const idx = arr.findIndex(x=>x.id===id);
+  if (idx < 0) return;
+  const nm = arr[idx].name;
+  arr.splice(idx,1);
+  persist(); markDirty();
+  renderViewList();
+  showToast('View "' + nm + '" deleted', "ok");
+}
+function renderViewList(){
+  const container = document.getElementById("view-list-container");
+  if (!container) return;
+  const views = getViews();
+  if (!views.length){
+    container.innerHTML = `<div class="snap-empty">No saved views yet. Set your filters, layout and zoom, then save one.</div>`;
+    return;
+  }
+  container.innerHTML = `<div class="snap-list">${views.slice().sort((a,b)=>b.ts-a.ts).map(v=>`
+    <div class="snap-item" data-id="${v.id}">
+      <div style="flex:1; min-width:0; overflow:hidden">
+        <div class="snap-name">${escapeHtml(v.name)}</div>
+        <div class="snap-meta">${escapeHtml(v.layout||"force")} · ${(v.filtersNode||[]).length} node types</div>
+      </div>
+      <div class="snap-actions">
+        <button class="icon-btn" data-act="apply" title="Apply view"><i class="fa-solid fa-eye"></i></button>
+        <button class="icon-btn danger" data-act="del" title="Delete view"><i class="fa-solid fa-trash"></i></button>
+      </div>
+    </div>`).join("")}</div>`;
+  container.querySelectorAll(".snap-item").forEach(item=>{
+    const id = item.getAttribute("data-id");
+    item.querySelector('[data-act="apply"]').onclick = e=>{ e.stopPropagation(); applyView(id); };
+    item.querySelector('[data-act="del"]').onclick   = e=>{ e.stopPropagation(); if (confirm("Delete this view?")) deleteView(id); };
+    item.onclick = ()=>applyView(id);
+  });
+}
+
+/* ----- Presentation / walkthrough mode (stored in the graph file) ----- */
+function getWalkthroughs(){
+  if (!Array.isArray(state.graph.walkthroughs)) state.graph.walkthroughs = [];
+  return state.graph.walkthroughs;
+}
+function startPresent(steps){
+  const valid = (steps||[]).filter(s=>s && s.nodeId && findNode(s.nodeId));
+  if (!valid.length){ showToast("This walkthrough has no valid steps", "err"); return; }
+  state.present = { active:true, steps:valid, idx:0 };
+  const ov = document.getElementById("present-overlay");
+  ov.classList.add("active"); ov.setAttribute("aria-hidden","false");
+  presentGoto(0);
+}
+function presentGoto(i){
+  const steps = state.present.steps;
+  if (!steps || !steps.length) return;
+  i = Math.max(0, Math.min(steps.length-1, i));
+  state.present.idx = i;
+  const st = steps[i];
+  const node = findNode(st.nodeId);
+  if (node){ selectNode(st.nodeId); centerOnNode(st.nodeId); }
+  const noteEl = document.getElementById("present-note");
+  noteEl.innerHTML =
+    (node ? `<div class="pn-title">${escapeHtml(node.label)} <span style="font-size:13px; color:var(--muted); font-weight:500;">${escapeHtml(node.type)}</span></div>` : "")
+    + (st.note ? `<div class="pn-body">${escapeHtml(st.note)}</div>` : `<div class="pn-empty">No narration for this step.</div>`);
+  document.getElementById("present-progress").textContent = (i+1) + " / " + steps.length;
+  document.getElementById("present-prev").disabled = (i===0);
+  document.getElementById("present-next").disabled = (i===steps.length-1);
+}
+function exitPresent(){
+  state.present = { active:false, steps:[], idx:0 };
+  const ov = document.getElementById("present-overlay");
+  ov.classList.remove("active"); ov.setAttribute("aria-hidden","true");
+}
+function openPresentManager(){
+  const wts = getWalkthroughs();
+  const list = !wts.length
+    ? `<div class="snap-empty" style="margin-bottom:12px">No walkthroughs yet. Build one below.</div>`
+    : `<div class="snap-list" style="margin-bottom:12px">${wts.map(w=>`
+        <div class="snap-item" data-id="${w.id}">
+          <div style="flex:1; min-width:0; overflow:hidden">
+            <div class="snap-name">${escapeHtml(w.name)}</div>
+            <div class="snap-meta">${(w.steps||[]).length} step${(w.steps||[]).length===1?"":"s"}</div>
+          </div>
+          <div class="snap-actions">
+            <button class="icon-btn" data-act="play" title="Play"><i class="fa-solid fa-play"></i></button>
+            <button class="icon-btn" data-act="edit" title="Edit"><i class="fa-solid fa-pen"></i></button>
+            <button class="icon-btn danger" data-act="del" title="Delete"><i class="fa-solid fa-trash"></i></button>
+          </div>
+        </div>`).join("")}</div>`;
+  const html = `
+    <p class="m-lede">Walkthroughs are saved guided tours: an ordered list of nodes, each with a sentence of narration. Play one to step through it fullscreen with the arrow keys — ideal for briefings.</p>
+    ${list}
+    <button class="btn primary block" id="wt-new"><i class="fa-solid fa-plus"></i> New walkthrough</button>`;
+  openModal('<i class="fa-solid fa-chalkboard-user"></i> Walkthroughs', html, null, true);
+  const saveBtn = document.getElementById("modal-save");
+  if (saveBtn) saveBtn.style.display = "none";
+  document.getElementById("wt-new").onclick = ()=>openWalkthroughBuilder(null);
+  document.querySelectorAll("#modal-body .snap-item").forEach(item=>{
+    const id = item.getAttribute("data-id");
+    const w = wts.find(x=>x.id===id);
+    item.querySelector('[data-act="play"]').onclick = e=>{ e.stopPropagation(); closeModal(); startPresent(w.steps); };
+    item.querySelector('[data-act="edit"]').onclick = e=>{ e.stopPropagation(); openWalkthroughBuilder(id); };
+    item.querySelector('[data-act="del"]').onclick  = e=>{ e.stopPropagation(); if (confirm("Delete walkthrough \"" + w.name + "\"?")){ const arr=getWalkthroughs(); arr.splice(arr.findIndex(x=>x.id===id),1); persist(); markDirty(); renderWalkthroughList(); openPresentManager(); } };
+  });
+}
+function openWalkthroughBuilder(id){
+  const existing = id ? getWalkthroughs().find(w=>w.id===id) : null;
+  const draft = {
+    name: existing ? existing.name : "",
+    steps: existing ? existing.steps.map(s=>({ nodeId:s.nodeId, note:s.note||"" })) : []
+  };
+  const nodeOptions = sel => state.graph.nodes.slice()
+    .sort((a,b)=>a.label.localeCompare(b.label))
+    .map(n=>`<option value="${escapeHtml(n.id)}" ${n.id===sel?"selected":""}>${escapeHtml(n.label)} (${escapeHtml(n.type)})</option>`).join("");
+  function renderSteps(){
+    const wrap = document.getElementById("wt-steps");
+    if (!draft.steps.length){
+      wrap.innerHTML = `<div class="snap-empty">No steps yet. Add the first one below.</div>`;
+      return;
+    }
+    wrap.innerHTML = draft.steps.map((st,i)=>`
+      <div class="step-row" data-i="${i}">
+        <span class="step-num">${i+1}</span>
+        <select class="step-node">${nodeOptions(st.nodeId)}</select>
+        <input type="text" class="step-note" placeholder="Narration…" value="${escapeHtml(st.note||"")}" />
+        <button class="icon-btn" data-act="up" title="Move up"><i class="fa-solid fa-arrow-up"></i></button>
+        <button class="icon-btn" data-act="down" title="Move down"><i class="fa-solid fa-arrow-down"></i></button>
+        <button class="icon-btn danger" data-act="rm" title="Remove"><i class="fa-solid fa-xmark"></i></button>
+      </div>`).join("");
+    wrap.querySelectorAll(".step-row").forEach(row=>{
+      const i = +row.getAttribute("data-i");
+      row.querySelector(".step-node").onchange = e=>{ draft.steps[i].nodeId = e.target.value; };
+      row.querySelector(".step-note").oninput  = e=>{ draft.steps[i].note = e.target.value; };
+      row.querySelector('[data-act="rm"]').onclick   = ()=>{ draft.steps.splice(i,1); renderSteps(); };
+      row.querySelector('[data-act="up"]').onclick   = ()=>{ if (i>0){ [draft.steps[i-1],draft.steps[i]]=[draft.steps[i],draft.steps[i-1]]; renderSteps(); } };
+      row.querySelector('[data-act="down"]').onclick = ()=>{ if (i<draft.steps.length-1){ [draft.steps[i+1],draft.steps[i]]=[draft.steps[i],draft.steps[i+1]]; renderSteps(); } };
+    });
+  }
+  const html = `
+    <div class="field"><label for="wt-name">Walkthrough name</label>
+      <input type="text" id="wt-name" placeholder="e.g. New-hire orientation tour" value="${escapeHtml(draft.name)}" /></div>
+    <div id="wt-steps" style="margin:10px 0"></div>
+    <button class="btn block" id="wt-add"><i class="fa-solid fa-plus"></i> Add step</button>`;
+  openModal((existing?'<i class="fa-solid fa-pen"></i> Edit walkthrough':'<i class="fa-solid fa-plus"></i> New walkthrough'), html, ()=>{
+    const name = document.getElementById("wt-name").value.trim();
+    if (!name){ showToast("Name is required", "err"); return; }
+    if (!draft.steps.length){ showToast("Add at least one step", "err"); return; }
+    const arr = getWalkthroughs();
+    if (existing){ existing.name = name; existing.steps = draft.steps; }
+    else arr.push({ id: uid("wt"), name, steps: draft.steps });
+    persist(); markDirty();
+    renderWalkthroughList();
+    closeModal();
+    showToast('Walkthrough "' + name + '" saved', "ok");
+  }, true);
+  document.getElementById("wt-add").onclick = ()=>{
+    const def = state.selectedNode || (state.graph.nodes[0] && state.graph.nodes[0].id);
+    draft.steps.push({ nodeId: def, note: "" });
+    renderSteps();
+  };
+  renderSteps();
+}
+function renderWalkthroughList(){
+  const container = document.getElementById("walkthrough-list-container");
+  if (!container) return;
+  const wts = getWalkthroughs();
+  if (!wts.length){
+    container.innerHTML = `<div class="snap-empty">No walkthroughs yet.</div>`;
+    return;
+  }
+  container.innerHTML = `<div class="snap-list">${wts.map(w=>`
+    <div class="snap-item" data-id="${w.id}">
+      <div style="flex:1; min-width:0; overflow:hidden">
+        <div class="snap-name">${escapeHtml(w.name)}</div>
+        <div class="snap-meta">${(w.steps||[]).length} step${(w.steps||[]).length===1?"":"s"}</div>
+      </div>
+      <div class="snap-actions">
+        <button class="icon-btn" data-act="play" title="Play"><i class="fa-solid fa-play"></i></button>
+        <button class="icon-btn" data-act="edit" title="Edit"><i class="fa-solid fa-pen"></i></button>
+      </div>
+    </div>`).join("")}</div>`;
+  container.querySelectorAll(".snap-item").forEach(item=>{
+    const id = item.getAttribute("data-id");
+    const w = wts.find(x=>x.id===id);
+    item.querySelector('[data-act="play"]').onclick = e=>{ e.stopPropagation(); startPresent(w.steps); };
+    item.querySelector('[data-act="edit"]').onclick = e=>{ e.stopPropagation(); openWalkthroughBuilder(id); };
+  });
+}
+
 function boot(){
   loadInitial();
   wireUp();
