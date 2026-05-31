@@ -52,9 +52,10 @@ When you're ready to build your own graph: click **Open** to load a JSON file as
 - Filters for node types and relationship types
 
 **Analysis**
-- What-if scenario mode: non-destructively disable nodes and watch the dependency cascade light up in red, without touching the saved graph
+- What-if scenario mode: non-destructively disable nodes and watch the impact ripple out — broken dependents turn red, and structurally orphaned children (an office and its people under a disabled directorate) turn amber — all without touching the saved graph
 - Single-point-of-failure detection: finds articulation points — nodes whose removal would split the graph — and rings them in amber
 - Staleness heatmap: tints nodes by time since last edit (press `H`), so you can see at a glance what needs re-validation
+- Dim relationships toggle: shade edges back so a dense graph reads calmly; hover or select a node to light up just its connections
 
 **Bulk curation**
 - Multi-select with Ctrl/Cmd+click or Shift+drag a lasso box
@@ -166,7 +167,7 @@ Single HTML file, three layers in one document:
 
 - **CSS** — design tokens via CSS custom properties, dark theme tuned for command-center / architecture-dashboard use, layout via CSS Grid.
 - **HTML** — semantic landmarks (`<header>`, `<aside>`, `<main>`, `<footer>`), real `<button>` elements with ARIA where needed, hidden dialogs for modals and overlays.
-- **JavaScript** — vanilla JS, no framework, no build. A custom Canvas renderer (no graph library) handles ~80 nodes at 60fps. Force simulation is O(n²) which is fine up to a few hundred nodes.
+- **JavaScript** — vanilla JS, no framework, no build. A custom Canvas renderer (no graph library). The force simulation uses a Barnes-Hut quadtree for O(n log n) repulsion and freezes once the layout settles (zero CPU until you drag, edit, or change layout), and hit-testing uses a spatial hash — together these keep graphs into the low thousands of nodes interactive. Past that, the practical limit becomes legibility (a force-directed graph of thousands of nodes is hard to read regardless of speed), best handled with the built-in collapse, filter, and search tools rather than raw rendering throughput.
 
 Why one file? It's the simplest possible distribution: email it, drop it on a USB stick, host it on any static URL, double-click it. No `node_modules`, no transpilation, no dependencies you have to keep current. You can read every line of the application in one file with `Ctrl+F`.
 

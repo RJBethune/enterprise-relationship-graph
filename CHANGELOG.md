@@ -4,6 +4,48 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] - 2026-05-31
+
+Performance, scale, and a round of analysis/UX refinements.
+
+### Performance & scale
+- Force simulation rewritten with a Barnes-Hut quadtree: O(n log n) repulsion
+  instead of the previous O(n²) all-pairs loop. Validated against brute force
+  (exact as the opening angle approaches 0; ~5% average force error at the
+  shipped theta=0.75, imperceptible in an organic layout). ~1.8x faster at
+  1,000 nodes, ~7x at 2,000, scaling from there.
+- Freeze-when-settled: the simulation halts once movement stays below threshold
+  for 60 consecutive frames and wakes on drag, edit, layout change, or resize.
+  A settled graph of any size now costs zero CPU.
+- Hit-testing now uses a uniform spatial-hash grid (cursor cell + 8 neighbors)
+  instead of scanning every node. Validated identical to the prior linear scan
+  across 60,000 probes, including topmost-wins ordering.
+- Net effect: interactive graphs into the low thousands of nodes, up from a few
+  hundred. Node sizes are computed into a parallel array, so nothing leaks into
+  the saved JSON.
+
+### Analysis
+- What-if scenario mode now models organizational orphaning in addition to
+  dependency breakage: disabling a node that contains/owns others (e.g. a
+  directorate over its offices) cascades down CONTAINS / OWNS / MANAGES / HAS_*
+  and up REPORTS_TO, marking orphaned descendants amber. Broken dependents stay
+  red; the two impact kinds are shown distinctly.
+
+### UI / UX
+- Dim relationships toggle: shade edges darker so a busy graph reads calmly;
+  hovering or selecting a node still lights its connections. Toolbar button,
+  persisted in localStorage.
+- Fixed the legend collapse control overlapping the "Legend" title when the
+  legend box is collapsed.
+
+### Content & icons
+- Added Jira as a built-in sample node (System), consistent with how ServiceNow,
+  Salesforce, and ArcGIS are modeled; the Jira brand icon was already available
+  in the icon registry.
+- Distribution List nodes now use the envelopes-bulk icon (a centered envelope
+  stack) instead of the off-center paper-plane, better distinguishing them from
+  single-envelope Mailbox and people-icon O365 Group nodes.
+
 ## [1.1.0] - 2026-05-30
 
 Adds analysis, bulk curation, and briefing tools on top of the 1.0 feature set.

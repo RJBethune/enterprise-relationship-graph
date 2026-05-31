@@ -2714,7 +2714,7 @@ function resizeCanvas(){
   canvas.style.width = rect.width+"px";
   canvas.style.height = rect.height+"px";
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  requestRedraw();
+  wakeSim();
 }
 window.addEventListener("resize", resizeCanvas);
 
@@ -2877,7 +2877,7 @@ function applyLayout(name, skipFit){
   // Show/hide Org Chart mode banner based on state set earlier in this function
   const ocBanner = document.getElementById("org-chart-banner");
   if (ocBanner) ocBanner.style.display = state.orgChartMode ? "" : "none";
-  requestRedraw();
+  wakeSim();
   // Auto-fit after layout change so the user sees the result immediately
   // without having to click Fit. Skip for force since it self-animates from
   // current positions and would jump on every recompute otherwise.
@@ -3213,29 +3213,115 @@ function layoutCluster(w, h, attr){
 }
 
 /* ----- Force simulation ----- */
+/* ============================================================================
+   FORCE SIMULATION — Barnes-Hut O(n log n) repulsion + freeze-when-settled.
+   The repulsion law matches the original all-pairs version exactly:
+   force on A from B = repulsion*(sizeA+sizeB)/24 / dist^2, directed away from B.
+   Barnes-Hut approximates a distant cluster by its center of mass; validated
+   against brute force (exact as BH_THETA -> 0). Once the layout is calm for a
+   sustained run of frames the sim freezes, so a settled graph costs no CPU
+   until something wakes it (drag, edit, layout change, resize).
+   ========================================================================== */
+const BH_THETA = 0.75;          // opening angle; lower = more accurate, slower
+const BH_THETA2 = BH_THETA * BH_THETA;
+const SIM_SETTLE_EPS = 0.05;    // total per-frame movement below this = "calm"
+const SIM_SETTLE_FRAMES = 60;   // consecutive calm frames before freezing
+let simFrozen = false;
+let simCalmFrames = 0;
+// Wake physics + invalidate the hit-test grid after anything that moves nodes.
+function wakeSim(){ simFrozen = false; simCalmFrames = 0; bumpPos(); requestRedraw(); }
+
+// Quadtree over node positions. `sizes[i]` is node i's radius (its "mass").
+// Each cell carries body count, total mass, and mass-weighted center of mass.
+function buildForceQuad(nodes, P, sizes){
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for (let i=0;i<nodes.length;i++){ const p=P.get(nodes[i].id); if(!p) continue;
+    if(p.x<minX)minX=p.x; if(p.y<minY)minY=p.y; if(p.x>maxX)maxX=p.x; if(p.y>maxY)maxY=p.y; }
+  if (minX===Infinity) return null;
+  const span = Math.max(maxX-minX, maxY-minY, 1) + 1;
+  const MAXD=24, MINW=0.5;
+  const newCell=(x,y,w)=>({x,y,w,body:null,extra:null,kids:null,mass:0,cnt:0,comx:0,comy:0});
+  const quad=(c,x,y)=>(x>=c.x+c.w/2?1:0)+(y>=c.y+c.w/2?2:0);
+  const subdivide=c=>{const hw=c.w/2;c.kids=[newCell(c.x,c.y,hw),newCell(c.x+hw,c.y,hw),newCell(c.x,c.y+hw,hw),newCell(c.x+hw,c.y+hw,hw)];};
+  function insert(c,b,depth){
+    if (c.kids===null && c.body===null){ c.body=b; return; }
+    if (c.kids===null){
+      if (depth>=MAXD || c.w<MINW){ (c.extra||(c.extra=[])).push(b); return; }
+      subdivide(c); const old=c.body; c.body=null;
+      insert(c.kids[quad(c,old.x,old.y)], old, depth+1);
+    }
+    insert(c.kids[quad(c,b.x,b.y)], b, depth+1);
+  }
+  const root = newCell(minX, minY, span);
+  for (let i=0;i<nodes.length;i++){ const p=P.get(nodes[i].id); if(!p) continue;
+    insert(root, { id:nodes[i].id, x:p.x, y:p.y, m:sizes[i] }, 0); }
+  (function mass(c){
+    if (c.kids===null){
+      let m=0,cx=0,cy=0,cnt=0;
+      if (c.body){ m+=c.body.m; cx+=c.body.m*c.body.x; cy+=c.body.m*c.body.y; cnt++; }
+      if (c.extra) for (const b of c.extra){ m+=b.m; cx+=b.m*b.x; cy+=b.m*b.y; cnt++; }
+      c.mass=m; c.cnt=cnt; c.comx=m?cx/m:c.x; c.comy=m?cy/m:c.y; return;
+    }
+    let m=0,cx=0,cy=0,cnt=0;
+    for (const k of c.kids){ mass(k); m+=k.mass; cx+=k.comx*k.mass; cy+=k.comy*k.mass; cnt+=k.cnt; }
+    c.mass=m; c.cnt=cnt; c.comx=m?cx/m:c.x; c.comy=m?cy/m:c.y;
+  })(root);
+  return root;
+}
+// Repulsion on (ax,ay,asize) from the tree, skipping self. Iterative (no
+// recursion overhead) via an explicit stack.
+function bhForce(root, ax, ay, asize, selfId){
+  let fx=0, fy=0;
+  const stack=[root];
+  while (stack.length){
+    const c = stack.pop();
+    if (!c || c.mass===0) continue;
+    if (c.kids===null){
+      if (c.body && c.body.id!==selfId){
+        let dx=ax-c.body.x, dy=ay-c.body.y, d2=dx*dx+dy*dy;
+        if (d2<1){ d2=1; dx=Math.random()-0.5; dy=Math.random()-0.5; }
+        const d=Math.sqrt(d2), fac=(asize+c.body.m)/(d2*d);
+        fx+=dx*fac; fy+=dy*fac;
+      }
+      if (c.extra) for (const b of c.extra){ if (b.id===selfId) continue;
+        let dx=ax-b.x, dy=ay-b.y, d2=dx*dx+dy*dy;
+        if (d2<1){ d2=1; dx=Math.random()-0.5; dy=Math.random()-0.5; }
+        const d=Math.sqrt(d2), fac=(asize+b.m)/(d2*d);
+        fx+=dx*fac; fy+=dy*fac;
+      }
+      continue;
+    }
+    let dx=ax-c.comx, dy=ay-c.comy, d2=dx*dx+dy*dy;
+    if (c.w*c.w < BH_THETA2*d2){
+      if (d2<1) d2=1;
+      const d=Math.sqrt(d2), fac=(asize*c.cnt + c.mass)/(d2*d);
+      fx+=dx*fac; fy+=dy*fac;
+    } else {
+      for (let i=0;i<4;i++) stack.push(c.kids[i]);
+    }
+  }
+  return { fx, fy };
+}
 function simulateStep(){
   if (state.layout !== "force") return;
+  if (simFrozen) return;
   const w = canvas.clientWidth, h = canvas.clientHeight;
   const nodes = state.graph.nodes, edges = state.graph.edges;
   if (!nodes.length) return;
   const P = state.positions;
   const k = 165, repulsion = 11000, centerStrength = 0.00035, damping = 0.86;
+  const REP = repulsion / 24;
+
+  // Node sizes (masses) into a parallel array — never mutate node objects, so
+  // nothing leaks into the saved JSON.
+  const sizes = new Array(nodes.length);
+  for (let i=0;i<nodes.length;i++) sizes[i] = nodeRadius(nodes[i]);
+  const root = buildForceQuad(nodes, P, sizes);
 
   for (let i=0;i<nodes.length;i++){
     const a = P.get(nodes[i].id); if (!a || a.fixed) continue;
-    const sizeA = nodeRadius(nodes[i]);
-    let fx=0, fy=0;
-    for (let j=0;j<nodes.length;j++){
-      if (i===j) continue;
-      const b = P.get(nodes[j].id);
-      const sizeB = nodeRadius(nodes[j]);
-      let dx = a.x-b.x, dy = a.y-b.y, d2 = dx*dx+dy*dy;
-      if (d2 < 1){ d2=1; dx=Math.random()-0.5; dy=Math.random()-0.5; }
-      // bigger nodes push harder; small nodes near a hub still get pushed away
-      const sizeMult = (sizeA + sizeB) / 24;
-      const f = repulsion * sizeMult / d2, d = Math.sqrt(d2);
-      fx += (dx/d)*f; fy += (dy/d)*f;
-    }
+    const r = root ? bhForce(root, a.x, a.y, sizes[i], nodes[i].id) : { fx:0, fy:0 };
+    let fx = REP * r.fx, fy = REP * r.fy;
     fx += (w/2 - a.x) * centerStrength * 60;
     fy += (h/2 - a.y) * centerStrength * 60;
     a.vx = (a.vx + fx*0.01) * damping;
@@ -3260,7 +3346,13 @@ function simulateStep(){
     p.x += p.vx; p.y += p.vy;
     movement += Math.abs(p.vx) + Math.abs(p.vy);
   });
-  if (movement > 0.05) requestRedraw();
+  if (movement < SIM_SETTLE_EPS){
+    if (++simCalmFrames >= SIM_SETTLE_FRAMES) simFrozen = true;
+  } else {
+    simCalmFrames = 0;
+    bumpPos();         // positions changed -> hit-test grid is stale
+    requestRedraw();
+  }
 }
 
 /* ----- Drawing primitives ----- */
@@ -3591,7 +3683,7 @@ function tick(){
   simulateStep();
   // Continue redrawing while a node is selected so the connected-edge
   // marching-ants animation has frames. Also drives normal force/redraw paths.
-  if (needsRedraw || state.layout === "force" || state.selectedNode){
+  if (needsRedraw || (state.layout === "force" && !simFrozen) || state.selectedNode){
     render(); needsRedraw = false;
   }
   // Track stillness; pause rAF when nothing's happening to save battery
@@ -3617,18 +3709,54 @@ function tick(){
 function screenToWorld(x,y){
   return { x:(x-state.transform.x)/state.transform.scale, y:(y-state.transform.y)/state.transform.scale };
 }
+/* ----- Spatial hash for hit-testing -----
+   A uniform grid over node positions so pickNode searches only the cursor's
+   cell + 8 neighbors instead of every node. Rebuilt lazily, and only when
+   positions actually changed (tracked by posStamp), so a settled graph reuses
+   the cached grid while panning/zooming/hovering. Validated identical to the
+   old linear scan, including topmost-wins ordering. */
+const PICK_CELL = 80;
+let pickGrid = null, pickGridStamp = -1, pickGridN = -1;
+let posStamp = 0;
+function bumpPos(){ posStamp++; }
+function buildPickGrid(){
+  const nodes = state.graph.nodes;
+  pickGrid = new Map();
+  for (let i=0;i<nodes.length;i++){
+    const p = state.positions.get(nodes[i].id); if (!p) continue;
+    const key = Math.floor(p.x/PICK_CELL) + "," + Math.floor(p.y/PICK_CELL);
+    let arr = pickGrid.get(key); if (!arr){ arr=[]; pickGrid.set(key, arr); }
+    arr.push(i); // store node index so topmost (highest index) can win ties
+  }
+  pickGridN = nodes.length;
+}
+function ensurePickGrid(){
+  if (!pickGrid || pickGridStamp !== posStamp || pickGridN !== state.graph.nodes.length){
+    buildPickGrid();
+    pickGridStamp = posStamp;
+  }
+}
 function pickNode(sx,sy){
   const w = screenToWorld(sx,sy);
+  ensurePickGrid();
   const nodes = state.graph.nodes;
-  for (let i=nodes.length-1;i>=0;i--){
-    const n = nodes[i];
-    if (!isVisibleNode(n)) continue;
-    const p = state.positions.get(n.id); if (!p) continue;
-    const r = nodeRadius(n)+4;
-    const dx = w.x-p.x, dy = w.y-p.y;
-    if (dx*dx + dy*dy <= r*r) return n;
+  const cx = Math.floor(w.x/PICK_CELL), cy = Math.floor(w.y/PICK_CELL);
+  let best = null, bestIdx = -1;
+  for (let gx=cx-1; gx<=cx+1; gx++){
+    for (let gy=cy-1; gy<=cy+1; gy++){
+      const arr = pickGrid.get(gx+","+gy); if (!arr) continue;
+      for (let a=0;a<arr.length;a++){
+        const i = arr[a]; const n = nodes[i];
+        if (i <= bestIdx) continue;            // a lower node can't win
+        if (!isVisibleNode(n)) continue;
+        const p = state.positions.get(n.id); if (!p) continue;
+        const r = nodeRadius(n)+4;
+        const dx = w.x-p.x, dy = w.y-p.y;
+        if (dx*dx + dy*dy <= r*r){ best = n; bestIdx = i; }
+      }
+    }
   }
-  return null;
+  return best;
 }
 function pickEdge(sx,sy){
   const w = screenToWorld(sx,sy);
@@ -3746,7 +3874,7 @@ canvas.addEventListener("mousemove", ev=>{
   if (state.dragMode === "node" && state.draggedNode){
     const p = state.positions.get(state.draggedNode);
     if (p){ p.x += dx/state.transform.scale; p.y += dy/state.transform.scale; p.vx = p.vy = 0; }
-    requestRedraw(); return;
+    wakeSim(); return;
   }
   const hit = pickNode(sx,sy);
   if (hit){
@@ -4861,7 +4989,7 @@ function afterMutate(skipDirty, skipHistory){
   buildFilterUI(); buildLegend();
   updateStats(); renderDetails();
   updateUndoRedo();
-  requestRedraw();
+  wakeSim();
 }
 
 /* ----- Structural-field → edge sync -----
