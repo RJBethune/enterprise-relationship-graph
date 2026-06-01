@@ -1740,6 +1740,7 @@
 
 /* ---------- TYPE METADATA ---------- */
 const NODE_TYPES = [
+  "Under Secretary","Bureau",
   "Executive Office","Front Office","Directorate","Office","Team","Person","Role",
   "System","Platform","Application","SharePoint Site","Microsoft Team","O365 Group",
   "Distribution List","Mailbox","Microsoft Form","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset",
@@ -1755,6 +1756,8 @@ const EDGE_TYPES = [
 
 // Per-type style: color, size, shape, FA icon unicode
 const TYPE_STYLE = {
+  "Under Secretary":       { color:"#E11D48", size:34, shape:"hex",     icon:"" }, // landmark-dome
+  "Bureau":                { color:"#D946EF", size:31, shape:"hex",     icon:"" }, // building-columns
   "Executive Office":      { color:"#FBBF24", size:30, shape:"hex",     icon:"" }, // crown
   "Front Office":          { color:"#A78BFA", size:25, shape:"hex",     icon:"" }, // building
   "Directorate":           { color:"#38BDF8", size:23, shape:"hex",     icon:"" }, // sitemap
@@ -1895,7 +1898,7 @@ function collapseAllParents(){
   if (!state.graph.collapsedNodes) state.graph.collapsedNodes = [];
   // Collapse only the topmost parents in each branch so we get a clean
   // single-level view rather than double-counting nested collapses.
-  const parentCandidates = ["Executive Office","Front Office","Directorate","Office","Team"];
+  const parentCandidates = ["Under Secretary","Bureau","Executive Office","Front Office","Directorate","Office","Team"];
   let added = 0;
   state.graph.nodes.forEach(n => {
     if (!parentCandidates.includes(n.type)) return;
@@ -2760,6 +2763,8 @@ function buildHierarchy(){
   const rootRank = id => {
     const n = state.graph.nodes.find(x => x.id === id);
     if (!n) return 9;
+    if (n.type === "Under Secretary") return -2;
+    if (n.type === "Bureau") return -1;
     if (n.type === "Executive Office") return 0;
     if (n.type === "Front Office") return 1;
     if (n.type === "Directorate") return 2;
@@ -2772,7 +2777,7 @@ function buildHierarchy(){
 
 // Sort each child list so siblings render in a stable, sensible order.
 function sortChildrenStable(childrenOf){
-  const typeOrder = ["Directorate","Front Office","Office","System","Platform","Application","SharePoint Site","Microsoft Team","O365 Group","Mailbox","Person","Role","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset","Document","Requirement","Decision","Vendor","Service","Environment","Other"];
+  const typeOrder = ["Under Secretary","Bureau","Directorate","Front Office","Office","System","Platform","Application","SharePoint Site","Microsoft Team","O365 Group","Mailbox","Person","Role","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset","Document","Requirement","Decision","Vendor","Service","Environment","Other"];
   childrenOf.forEach(arr => {
     arr.sort((a,b) => {
       const na = state.graph.nodes.find(n=>n.id===a);
@@ -2807,7 +2812,7 @@ function applyLayout(name, skipFit){
       layout: state.layout || "force"
     };
     state.orgChartMode = true;
-    state.filtersNode = new Set(["Person","Role","Executive Office","Front Office","Directorate","Office","Team"]);
+    state.filtersNode = new Set(["Under Secretary","Bureau","Person","Role","Executive Office","Front Office","Directorate","Office","Team"]);
     if (typeof buildFilterUI === "function") buildFilterUI();
     showToast("Org chart view — REPORTS_TO chains drive the layout. Pick another layout to exit.", "ok");
   } else if (name !== "org-chart" && state.orgChartMode){
@@ -2838,7 +2843,7 @@ function applyLayout(name, skipFit){
     layoutCluster(w, h, state.clusterAttr || "type");
   } else if (name === "concentric"){
     const ringOrder = [
-      ["Executive Office"],["Front Office"],["Directorate"],["Office"],
+      ["Under Secretary"],["Bureau"],["Executive Office"],["Front Office"],["Directorate"],["Office"],
       ["Platform","System"],["Application"],
       ["SharePoint Site","Microsoft Team","O365 Group","Mailbox","Workflow","Power Automate Flow","Power BI Dashboard"],
       ["Person","Role","API","Dataset","Document","Requirement","Decision","Vendor","Service","Environment","Other"]
@@ -2850,12 +2855,19 @@ function applyLayout(name, skipFit){
       if (!ring.has(r)) ring.set(r,[]);
       ring.get(r).push(n);
     });
+    // Compact populated tiers to consecutive ranks so the layout conforms to
+    // what is actually present: the highest tier in the graph centers at rank 0
+    // and absent tiers (e.g. no Under Secretary / Bureau) leave no empty rings.
+    const populated = [...ring.keys()].sort((a,b)=>a-b);
+    const rankOf = new Map(populated.map((tier,idx)=>[tier,idx]));
+    const ringCount = populated.length;
     const maxR = Math.min(w,h)/2 - 40;
     ring.forEach((arr, r)=>{
-      const radius = r===0 ? 0 : (maxR * r / (ringOrder.length-1));
+      const rank = rankOf.get(r);
+      const radius = ringCount<=1 ? maxR*0.5 : (maxR * rank / (ringCount-1));
       arr.forEach((n,i)=>{
         const p = state.positions.get(n.id);
-        const angle = (i/arr.length)*Math.PI*2 + r*0.2;
+        const angle = (i/arr.length)*Math.PI*2 + rank*0.2;
         p.x = cx + Math.cos(angle)*radius;
         p.y = cy + Math.sin(angle)*radius;
         p.vx = p.vy = 0;
@@ -4738,7 +4750,7 @@ function nodeFormHtml(n){
   const filt = pred => allNodes.filter(pred);
   const dlAll        = opt(allNodes);
   const dlDirectorate= opt(filt(x=>x.type==="Directorate"));
-  const dlOffice     = opt(filt(x=>x.type==="Office"||x.type==="Front Office"||x.type==="Executive Office"||x.type==="Directorate"));
+  const dlOffice     = opt(filt(x=>x.type==="Office"||x.type==="Front Office"||x.type==="Executive Office"||x.type==="Directorate"||x.type==="Bureau"||x.type==="Under Secretary"));
   const dlPlatform   = opt(filt(x=>x.type==="Platform"||x.type==="System"));
   const dlTeam       = opt(filt(x=>x.type==="Team"));
   const dlPerson     = opt(filt(x=>x.type==="Person"));
@@ -4947,6 +4959,8 @@ function guessEdgeType(s, t){
   if (t.type === "System" && s.type === "Application") return "HOSTED_ON";
   if (s.type === "Directorate" && t.type === "Office") return "CONTAINS";
   if (s.type === "Front Office" && t.type === "Directorate") return "CONTAINS";
+  if (s.type === "Under Secretary") return "CONTAINS";
+  if (s.type === "Bureau") return "CONTAINS";
   if (s.type === "Executive Office") return "CONTAINS";
   return null;
 }
@@ -6316,7 +6330,7 @@ function openHelp(){
    no persistence, no edits.
    ============================================================================ */
 const METRICS_DEPENDENCY_EDGES = ["DEPENDS_ON","USES","HOSTED_ON","INTEGRATES_WITH","CONNECTED_TO"];
-const METRICS_ORG_TYPES    = ["Executive Office","Front Office","Directorate","Office","Team"];
+const METRICS_ORG_TYPES    = ["Under Secretary","Bureau","Executive Office","Front Office","Directorate","Office","Team"];
 const METRICS_PEOPLE_TYPES = ["Person","Role"];
 const METRICS_TECH_TYPES   = ["System","Platform","Application","API","Service"];
 const METRICS_COLLAB_TYPES = ["SharePoint Site","Microsoft Team","O365 Group","Mailbox"];
@@ -7547,6 +7561,8 @@ function generateMermaid(){
   //   rect [..], rounded (..), stadium ([..]), subroutine [[..]],
   //   cylindrical [(..)], parallelogram [/../], hexagon {{..}}, diamond {..}
   const SHAPES = {
+    "Under Secretary":   (id,l) => `${id}[["${l}"]]:::execOffice`,
+    "Bureau":            (id,l) => `${id}[["${l}"]]:::execOffice`,
     "Executive Office":  (id,l) => `${id}[["${l}"]]:::execOffice`,
     "Front Office":      (id,l) => `${id}["${l}"]:::orgUnit`,
     "Directorate":       (id,l) => `${id}["${l}"]:::orgUnit`,
@@ -8174,7 +8190,7 @@ function computeOrgIntelligence(){
   const bridges = nodes
     .map(n => ({ node: n, dirCount: (dirReach.get(n.id) || new Set()).size }))
     .filter(b => b.dirCount >= 2)
-    .filter(b => b.node.type !== "Executive Office" && b.node.type !== "Front Office")
+    .filter(b => b.node.type !== "Under Secretary" && b.node.type !== "Bureau" && b.node.type !== "Executive Office" && b.node.type !== "Front Office")
     .sort((a,b) => b.dirCount - a.dirCount)
     .slice(0, 10);
 
