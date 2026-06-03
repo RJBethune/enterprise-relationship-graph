@@ -792,14 +792,16 @@
   .snap-item .snap-name{font-size:12.5px; color:var(--text); flex:1; min-width:0}
   .snap-item .snap-meta{font-size:10.5px; color:var(--muted); white-space:nowrap}
   .snap-item .snap-actions{display:flex; gap:4px}
-  .snap-item .icon-btn{
+  .snap-item.wt-item{flex-direction:column; align-items:stretch; gap:7px}
+  .snap-item.wt-item .snap-actions{justify-content:flex-end}
+  .icon-btn{
     width:32px; height:32px; border:none; background:transparent;
     color:var(--muted); cursor:pointer; border-radius:4px; font-size:12px;
     position:relative;
   }
-  .snap-item .icon-btn::before{content:""; position:absolute; inset:-6px; border-radius:8px}
-  .snap-item .icon-btn:hover{background:var(--card); color:var(--text)}
-  .snap-item .icon-btn.danger:hover{color:var(--crit)}
+  .icon-btn::before{content:""; position:absolute; inset:-6px; border-radius:8px}
+  .icon-btn:hover{background:var(--card); color:var(--text)}
+  .icon-btn.danger:hover{color:var(--crit)}
   .snap-empty{
     padding:14px; text-align:center; color:var(--muted); font-size:12px;
   }
@@ -1380,7 +1382,7 @@
     }
   }
   /* ===== v1.1 feature styles ===== */
-  #present-overlay{position:fixed; inset:0; background:rgba(4,12,24,0.82); backdrop-filter:blur(4px); z-index:60; display:none; align-items:flex-end; justify-content:center;}
+  #present-overlay{position:fixed; inset:0; background:transparent; z-index:60; display:none; align-items:flex-end; justify-content:center;}
   #present-overlay.active{display:flex;}
   #present-stage{width:100%; max-width:900px; margin:0 auto 5vh; background:var(--card); border:1px solid var(--border); border-radius:14px; padding:20px 24px; box-shadow:0 20px 60px rgba(0,0,0,0.5);}
   #present-note .pn-title{font-size:20px; font-weight:700; color:var(--text); margin-bottom:6px;}
@@ -1597,6 +1599,7 @@
           <button class="btn primary" id="btn-file-save"><i class="fa-solid fa-floppy-disk" aria-hidden="true"></i> Save</button>
         </div>
         <button class="btn block" id="btn-file-save-as" style="margin-top:6px"><i class="fa-solid fa-file-arrow-down" aria-hidden="true"></i> Save As...</button>
+        <button class="btn block" id="btn-reopen-last" style="display:none; margin-top:6px"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i> Reopen <span id="reopen-last-name"></span></button>
         <div style="font-size:10.5px; color:var(--muted); margin:10px 0 4px; letter-spacing:0.3px">Export a copy as</div>
         <div class="btn-row" style="grid-template-columns:repeat(4,1fr); gap:4px">
           <button class="btn" id="btn-export-csv" title="CSV (nodes.csv + edges.csv)" aria-label="Export CSV"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></button>
@@ -1696,6 +1699,8 @@
       <button class="btn" id="present-prev"><i class="fa-solid fa-arrow-left"></i> Prev</button>
       <span id="present-progress">1 / 1</span>
       <button class="btn" id="present-next">Next <i class="fa-solid fa-arrow-right"></i></button>
+      <button class="btn" id="present-play"><i class="fa-solid fa-play"></i> Auto</button>
+      <button class="btn" id="present-isolate" title="Show only the nodes in this walkthrough"><i class="fa-solid fa-eye"></i> Isolate</button>
       <button class="btn ghost" id="present-exit"><i class="fa-solid fa-xmark"></i> Exit</button>
     </div>
   </div>
@@ -1784,8 +1789,8 @@
 const NODE_TYPES = [
   "Under Secretary","Bureau",
   "Executive Office","Front Office","Directorate","Office","Team","Person","Role",
-  "System","Platform","Application","Site Collection","SharePoint Site","Microsoft Team","O365 Group",
-  "Distribution List","Mailbox","Microsoft Form","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset",
+  "System","Platform","Application","Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group",
+  "Distribution List","Mailbox","Microsoft Form","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset","Dataverse Table",
   "Document","Requirement","Decision","Vendor","Service","Environment","Other"
 ];
 const EDGE_TYPES = [
@@ -1812,6 +1817,7 @@ const TYPE_STYLE = {
   "Application":           { color:"#F472B6", size:20, shape:"square",  icon:"" }, // window
   "Site Collection":       { color:"#06B6D4", size:18, shape:"square",  icon:"" }, // folder-tree
   "SharePoint Site":       { color:"#22D3EE", size:15, shape:"diamond", icon:"" }, // share
+  "SharePoint List":       { color:"#14B8A6", size:13, shape:"diamond", icon:"" }, // list
   "Microsoft Team":        { color:"#C084FC", size:15, shape:"diamond", icon:"" }, // users
   "O365 Group":            { color:"#DDD6FE", size:14, shape:"diamond", icon:"" }, // user-friends
   "Distribution List":     { color:"#F0ABFC", size:13, shape:"diamond", icon:"" }, // envelopes-bulk
@@ -1822,6 +1828,7 @@ const TYPE_STYLE = {
   "Power BI Dashboard":    { color:"#FACC15", size:14, shape:"tri",     icon:"" }, // chart-bar
   "API":                   { color:"#FB7185", size:13, shape:"tri",     icon:"" }, // plug
   "Dataset":               { color:"#10B981", size:13, shape:"tri",     icon:"" }, // database
+  "Dataverse Table":       { color:"#9333EA", size:13, shape:"tri",     icon:"" }, // table
   "Document":              { color:"#94A3B8", size:12, shape:"square",  icon:"" }, // file-lines
   "Requirement":           { color:"#FCD34D", size:13, shape:"square",  icon:"" }, // clipboard-list
   "Decision":              { color:"#F59E0B", size:13, shape:"square",  icon:"" }, // gavel
@@ -2463,7 +2470,7 @@ const state = {
   dimEdges: localStorage.getItem("erg.dimEdges") === "1",  // shade relationships darker to calm the base view
   whatif: { active:false, disabled:new Set(), affected:new Set(), orphaned:new Set() },
   spof: new Set(),            // articulation-point node ids currently highlighted
-  present: { active:false, steps:[], idx:0 }
+  present: { active:false, steps:[], idx:0, playing:false, timer:null, isolate:true, focusIds:null }
 };
 
 function loadInitial(){
@@ -2508,6 +2515,7 @@ function neighborsOf(id){
   };
 }
 function isVisibleNode(n){
+  if (state.present.active && state.present.isolate && state.present.focusIds && !state.present.focusIds.has(n.id)) return false;
   if (!state.filtersNode.has(n.type)) return false;
   // Hidden by an ancestor's collapse — the parent stays visible to act as the proxy
   if (isHiddenByCollapse(n.id)) return false;
@@ -2851,7 +2859,7 @@ function buildHierarchy(opts){
 
 // Sort each child list so siblings render in a stable, sensible order.
 function sortChildrenStable(childrenOf){
-  const typeOrder = ["Under Secretary","Bureau","Directorate","Front Office","Office","System","Platform","Application","Site Collection","SharePoint Site","Microsoft Team","O365 Group","Mailbox","Person","Role","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset","Document","Requirement","Decision","Vendor","Service","Environment","Other"];
+  const typeOrder = ["Under Secretary","Bureau","Directorate","Front Office","Office","System","Platform","Application","Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox","Person","Role","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset","Dataverse Table","Document","Requirement","Decision","Vendor","Service","Environment","Other"];
   childrenOf.forEach(arr => {
     arr.sort((a,b) => {
       const na = state.graph.nodes.find(n=>n.id===a);
@@ -2919,8 +2927,8 @@ function applyLayout(name, skipFit){
     const ringOrder = [
       ["Under Secretary"],["Bureau"],["Executive Office"],["Front Office"],["Directorate"],["Office"],
       ["Platform","System"],["Application","Site Collection"],
-      ["SharePoint Site","Microsoft Team","O365 Group","Mailbox","Workflow","Power Automate Flow","Power BI Dashboard"],
-      ["Person","Role","API","Dataset","Document","Requirement","Decision","Vendor","Service","Environment","Other"]
+      ["SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox","Workflow","Power Automate Flow","Power BI Dashboard"],
+      ["Person","Role","API","Dataset","Dataverse Table","Document","Requirement","Decision","Vendor","Service","Environment","Other"]
     ];
     const ring = new Map();
     state.graph.nodes.forEach(n=>{
@@ -4190,6 +4198,8 @@ const PROFILE_SECTIONS = [
   { title:"Applications",               icon:"fa-window-maximize", test:(n,r)=>r.other.type==="Application" },
   { title:"Site Collections",          icon:"fa-folder-tree",      test:(n,r)=>r.other.type==="Site Collection" },
   { title:"SharePoint Sites",           icon:"fa-share-from-square", test:(n,r)=>r.other.type==="SharePoint Site" },
+  { title:"SharePoint Lists",           icon:"fa-list",             test:(n,r)=>r.other.type==="SharePoint List" },
+  { title:"Dataverse Tables",           icon:"fa-table",            test:(n,r)=>r.other.type==="Dataverse Table" },
   { title:"Microsoft Teams",            icon:"fa-users-rectangle", test:(n,r)=>r.other.type==="Microsoft Team" },
   { title:"O365 Groups",                icon:"fa-user-group",      test:(n,r)=>r.other.type==="O365 Group" },
   { title:"Mailboxes",                  icon:"fa-envelope",        test:(n,r)=>r.other.type==="Mailbox" },
@@ -4508,6 +4518,7 @@ function renderNodeProfile(el, node){
         <button class="btn" id="profile-focus"><i class="fa-solid fa-circle-nodes"></i> Neighborhood</button>
         <button class="btn" id="profile-center"><i class="fa-solid fa-crosshairs"></i> Center</button>
       </div>
+      <button class="btn block" id="profile-walk" style="margin-top:6px"><i class="fa-solid fa-person-walking"></i> Walk relationships</button>
       <button class="btn danger block" id="profile-delete" style="margin-top:6px"><i class="fa-solid fa-trash"></i> Delete</button>
     </div>
   `;
@@ -4523,6 +4534,7 @@ function renderNodeProfile(el, node){
     showToast(state.showNeighborhoodOnly ? "Neighborhood-only ON" : "Neighborhood-only OFF", "ok");
   };
   document.getElementById("profile-center").onclick = ()=>centerOnNode(node.id);
+  document.getElementById("profile-walk").onclick = ()=>walkRelationships(node.id);
   document.getElementById("profile-delete").onclick = ()=>{
     if (confirm("Delete '"+node.label+"' and its relationships?")) deleteNode(node.id);
   };
@@ -4763,6 +4775,11 @@ function openModal(title, html, onSave, wide){
   modalTitle.innerHTML = title;
   modalBody.innerHTML = html;
   modalSaveHandler = onSave;
+  // Reset footer each open: show Save only when a save handler is provided, so a
+  // prior info/list modal (which hid Save) doesn't leave it hidden for a form modal.
+  const _sb = document.getElementById("modal-save"), _cb = document.getElementById("modal-cancel");
+  if (_sb) _sb.style.display = onSave ? "" : "none";
+  if (_cb) _cb.innerHTML = "Cancel";
   document.getElementById("modal").classList.toggle("wide", !!wide);
   document.getElementById("modal").classList.remove("xl");
   modal.classList.add("open");
@@ -5067,7 +5084,10 @@ function guessEdgeType(s, t){
   if (s.type === "Office" && t.type === "Application") return "OWNS";
   if (s.type === "Office" && t.type === "SharePoint Site") return "HAS_SITE";
   if (s.type === "Site Collection" && t.type === "SharePoint Site") return "HAS_SITE";
+  if (s.type === "SharePoint Site" && t.type === "SharePoint List") return "CONTAINS";
   if (s.type === "Platform" && t.type === "Site Collection") return "CONTAINS";
+  if (s.type === "Platform" && t.type === "Dataverse Table") return "CONTAINS";
+  if (s.type === "Application" && t.type === "Dataverse Table") return "STORES_DATA_IN";
   if (s.type === "Office" && t.type === "Microsoft Team") return "HAS_TEAM";
   if (s.type === "Office" && t.type === "O365 Group") return "HAS_O365_GROUP";
   if (s.type === "Office" && t.type === "Mailbox") return "HAS_MAILBOX";
@@ -5328,7 +5348,8 @@ function showNodeContextMenu(x, y, node){
     { label:"Edit node",          icon:"fa-pen",                  action:()=>openNodeModal(node) },
     { label:"Connect from here",  icon:"fa-arrows-turn-to-dots",  action:()=>startConnect(node.id) },
     { label:"Center on graph",    icon:"fa-crosshairs",           action:()=>centerOnNode(node.id) },
-    { label:"Focus neighborhood", icon:"fa-circle-nodes",         action:()=>{ state.showNeighborhoodOnly=!state.showNeighborhoodOnly; updateStats(); requestRedraw(); } }
+    { label:"Focus neighborhood", icon:"fa-circle-nodes",         action:()=>{ state.showNeighborhoodOnly=!state.showNeighborhoodOnly; updateStats(); requestRedraw(); } },
+    { label:"Walk relationships", icon:"fa-person-walking",       action:()=>walkRelationships(node.id) }
   ];
   // Collapse/expand affordance shows only when meaningful
   if (isCollapsed(node.id)){
@@ -5525,13 +5546,90 @@ function applyLoadedBundle(bundle, fileName){
   showToast("Opened " + (fileName || "graph") + (bits.length ? " · " + bits.join(", ") : ""), "ok");
 }
 
+/* ----- Remember last file across sessions (FSA handle persisted in IndexedDB) -----
+   The browser will not auto-read an arbitrary path, but it will reopen a file the
+   user picked before. We stash the FileSystemFileHandle in IndexedDB (handles are
+   not serialisable to localStorage) and reopen it on launch: silently if permission
+   is still granted, otherwise behind a one-click Reopen button. Works for files on
+   mapped network drives or synced OneDrive / SharePoint folders. */
+function _idbOpen(){
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("erg-fs", 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore("handles"); };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function rememberHandle(handle){
+  if (!handle || !window.indexedDB) return;
+  try {
+    const db = await _idbOpen();
+    await new Promise((res, rej) => {
+      const tx = db.transaction("handles", "readwrite");
+      tx.objectStore("handles").put(handle, "lastFile");
+      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    });
+    db.close();
+  } catch(e){ /* non-fatal */ }
+}
+async function getRememberedHandle(){
+  if (!window.indexedDB) return null;
+  try {
+    const db = await _idbOpen();
+    const h = await new Promise((res) => {
+      const tx = db.transaction("handles", "readonly");
+      const g = tx.objectStore("handles").get("lastFile");
+      g.onsuccess = () => res(g.result || null);
+      g.onerror = () => res(null);
+    });
+    db.close();
+    return h;
+  } catch(e){ return null; }
+}
+async function loadFromHandle(handle, silent){
+  try {
+    const file = await handle.getFile();
+    const bundle = parseBundle(await file.text());
+    state.fileHandle = handle;
+    applyLoadedBundle(bundle, file.name);
+    if (!silent) showToast("Reopened " + file.name, "ok");
+    return true;
+  } catch(err){
+    showToast("Could not reopen the remembered file: " + err.message, "err");
+    return false;
+  }
+}
+async function tryReopenLast(){
+  if (!FSA_SUPPORTED) return;
+  const handle = await getRememberedHandle();
+  if (!handle) return;
+  let perm = "prompt";
+  try { perm = await handle.queryPermission({ mode:"readwrite" }); } catch(e){ perm = "prompt"; }
+  if (perm === "granted"){
+    await loadFromHandle(handle, true);
+    showToast("Reopened " + (state.fileName || "last file"), "ok");
+    return;
+  }
+  const btn = document.getElementById("btn-reopen-last");
+  const nm = document.getElementById("reopen-last-name");
+  if (!btn) return;
+  if (nm) nm.textContent = handle.name || "last file";
+  btn.style.display = "";
+  btn.onclick = async () => {
+    let p = "denied";
+    try { p = await handle.requestPermission({ mode:"readwrite" }); } catch(e){}
+    if (p === "granted"){ if (await loadFromHandle(handle, false)) btn.style.display = "none"; }
+    else showToast("Permission was denied for that file", "err");
+  };
+}
+
 async function openFile(){
   try {
     if (FSA_SUPPORTED){
       const [handle] = await window.showOpenFilePicker(FILE_PICKER_OPTIONS);
       const file = await handle.getFile();
       const bundle = parseBundle(await file.text());
-      state.fileHandle = handle;
+      state.fileHandle = handle; rememberHandle(handle);
       applyLoadedBundle(bundle, file.name);
     } else {
       // Fallback to <input type="file">
@@ -5583,7 +5681,7 @@ async function saveFile(){
       const writable = await handle.createWritable();
       await writable.write(text);
       await writable.close();
-      state.fileHandle = handle;
+      state.fileHandle = handle; rememberHandle(handle);
       state.fileName = handle.name;
       applyStampFromBundle(bundle);
       markClean();
@@ -5616,7 +5714,7 @@ async function saveFileAs(){
       const writable = await handle.createWritable();
       await writable.write(text);
       await writable.close();
-      state.fileHandle = handle;
+      state.fileHandle = handle; rememberHandle(handle);
       state.fileName = handle.name;
       applyStampFromBundle(bundle);
       markClean();
@@ -6546,7 +6644,7 @@ const METRICS_DEPENDENCY_EDGES = ["DEPENDS_ON","USES","HOSTED_ON","INTEGRATES_WI
 const METRICS_ORG_TYPES    = ["Under Secretary","Bureau","Executive Office","Front Office","Directorate","Office","Team"];
 const METRICS_PEOPLE_TYPES = ["Person","Role"];
 const METRICS_TECH_TYPES   = ["System","Platform","Application","API","Service"];
-const METRICS_COLLAB_TYPES = ["Site Collection","SharePoint Site","Microsoft Team","O365 Group","Mailbox"];
+const METRICS_COLLAB_TYPES = ["Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox"];
 const METRICS_PROCESS_TYPES= ["Workflow","Power Automate Flow","Power BI Dashboard","Dataset","Document","Requirement","Decision"];
 
 function computeLeadershipMetrics(){
@@ -7788,6 +7886,8 @@ function generateMermaid(){
     "Application":       (id,l) => `${id}[/"${l}"/]`,
     "Site Collection":   (id,l) => `${id}[("${l}")]:::collab`,
     "SharePoint Site":   (id,l) => `${id}[("${l}")]:::collab`,
+    "SharePoint List":   (id,l) => `${id}[("${l}")]:::collab`,
+    "Dataverse Table":   (id,l) => `${id}[("${l}")]:::collab`,
     "Microsoft Team":    (id,l) => `${id}[("${l}")]:::collab`,
     "Mailbox":           (id,l) => `${id}[("${l}")]:::collab`,
     "O365 Group":        (id,l) => `${id}[("${l}")]:::collab`,
@@ -8832,6 +8932,8 @@ function wireUp(){
   document.getElementById("present-prev").onclick = ()=>presentGoto(state.present.idx-1);
   document.getElementById("present-next").onclick = ()=>presentGoto(state.present.idx+1);
   document.getElementById("present-exit").onclick = exitPresent;
+  document.getElementById("present-play").onclick = presentTogglePlay;
+  document.getElementById("present-isolate").onclick = presentToggleIsolate;
   renderViewList(); renderWalkthroughList();
 
   // ----- Drag-and-drop JSON files onto the window to open them -----
@@ -8892,6 +8994,7 @@ function wireUp(){
     if (state.present.active){
       if (e.key === "ArrowRight" || e.key === " "){ e.preventDefault(); presentGoto(state.present.idx+1); return; }
       if (e.key === "ArrowLeft"){ e.preventDefault(); presentGoto(state.present.idx-1); return; }
+      if (e.key === "p" || e.key === "P"){ e.preventDefault(); presentTogglePlay(); return; }
       if (e.key === "Escape"){ e.preventDefault(); exitPresent(); return; }
       return;
     }
@@ -9373,12 +9476,90 @@ function getWalkthroughs(){
   if (!Array.isArray(state.graph.walkthroughs)) state.graph.walkthroughs = [];
   return state.graph.walkthroughs;
 }
+/* Smooth camera keyframe tween for presentation / relationship walks. */
+let _camAnim = null;
+function animateCameraTo(px, py, dur){
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  const fromX = state.transform.x, fromY = state.transform.y, fromS = state.transform.scale;
+  const toS = Math.max(fromS, 1.05);
+  const toX = w/2 - px*toS, toY = h/2 - py*toS;
+  if (_camAnim) cancelAnimationFrame(_camAnim);
+  const t0 = performance.now(); dur = dur || 650;
+  const ease = t => 1 - Math.pow(1 - t, 4);
+  (function step(now){
+    const t = Math.min(1, (now - t0) / dur), e = ease(t);
+    state.transform.x = fromX + (toX - fromX) * e;
+    state.transform.y = fromY + (toY - fromY) * e;
+    state.transform.scale = fromS + (toS - fromS) * e;
+    updateZoomLabel(); requestRedraw();
+    _camAnim = (t < 1) ? requestAnimationFrame(step) : null;
+  })(performance.now());
+}
+function centerOnNodeAnimated(id){
+  const p = state.positions.get(id);
+  if (!p){ centerOnNode(id); return; }
+  animateCameraTo(p.x, p.y, 650);
+}
+/* Build an on-the-fly walkthrough of a node and each of its relationships. */
+function walkRelationships(nodeId){
+  const node = findNode(nodeId);
+  if (!node){ showToast("Pick a node first", "err"); return; }
+  const rels = state.graph.edges.filter(e => e.source === nodeId || e.target === nodeId);
+  if (!rels.length){ showToast(node.label + " has no relationships to walk", "err"); return; }
+  const steps = [{ nodeId, note: node.type + (node.description ? " — " + node.description : "")
+    + "\n\nWalking " + rels.length + " relationship" + (rels.length === 1 ? "" : "s") + ". Arrow keys to step, or press Auto." }];
+  rels.forEach(e => {
+    const out = e.source === nodeId;
+    const otherId = out ? e.target : e.source;
+    const other = findNode(otherId);
+    if (!other) return;
+    const line = out ? (node.label + " —" + e.type + "→ " + other.label)
+                     : (other.label + " —" + e.type + "→ " + node.label);
+    steps.push({ nodeId: otherId, note: line + (e.description ? "\n" + e.description : "")
+      + (other.description ? "\n\n" + other.label + ": " + other.description : "") });
+  });
+  startPresent(steps);
+}
+/* Auto-advance for presentation. */
+function presentScheduleNext(){
+  clearTimeout(state.present.timer);
+  if (!state.present.playing || !state.present.active) return;
+  state.present.timer = setTimeout(() => {
+    if (state.present.idx < state.present.steps.length - 1){ presentGoto(state.present.idx + 1); }
+    else { state.present.playing = false; updatePresentPlayBtn(); }
+  }, 3800);
+}
+function updatePresentPlayBtn(){
+  const b = document.getElementById("present-play");
+  if (!b) return;
+  b.innerHTML = state.present.playing ? '<i class="fa-solid fa-pause"></i> Pause' : '<i class="fa-solid fa-play"></i> Auto';
+}
+function presentTogglePlay(){
+  state.present.playing = !state.present.playing;
+  updatePresentPlayBtn();
+  presentScheduleNext();
+}
+function updatePresentIsolateBtn(){
+  const b = document.getElementById("present-isolate");
+  if (!b) return;
+  const on = state.present.isolate;
+  b.innerHTML = (on ? '<i class="fa-solid fa-eye"></i>' : '<i class="fa-solid fa-eye-slash"></i>') + " Isolate";
+  b.classList.toggle("active", on);
+}
+function presentToggleIsolate(){
+  state.present.isolate = !state.present.isolate;
+  updatePresentIsolateBtn();
+  updateStats(); requestRedraw();
+}
+
 function startPresent(steps){
   const valid = (steps||[]).filter(s=>s && s.nodeId && findNode(s.nodeId));
   if (!valid.length){ showToast("This walkthrough has no valid steps", "err"); return; }
-  state.present = { active:true, steps:valid, idx:0 };
+  state.present = { active:true, steps:valid, idx:0, playing:false, timer:null, isolate:true, focusIds:new Set(valid.map(s=>s.nodeId)) };
   const ov = document.getElementById("present-overlay");
   ov.classList.add("active"); ov.setAttribute("aria-hidden","false");
+  updatePresentPlayBtn();
+  updatePresentIsolateBtn();
   presentGoto(0);
 }
 function presentGoto(i){
@@ -9388,7 +9569,7 @@ function presentGoto(i){
   state.present.idx = i;
   const st = steps[i];
   const node = findNode(st.nodeId);
-  if (node){ selectNode(st.nodeId); centerOnNode(st.nodeId); }
+  if (node){ selectNode(st.nodeId); centerOnNodeAnimated(st.nodeId); }
   const noteEl = document.getElementById("present-note");
   noteEl.innerHTML =
     (node ? `<div class="pn-title">${escapeHtml(node.label)} <span style="font-size:13px; color:var(--muted); font-weight:500;">${escapeHtml(node.type)}</span></div>` : "")
@@ -9396,18 +9577,21 @@ function presentGoto(i){
   document.getElementById("present-progress").textContent = (i+1) + " / " + steps.length;
   document.getElementById("present-prev").disabled = (i===0);
   document.getElementById("present-next").disabled = (i===steps.length-1);
+  presentScheduleNext();
 }
 function exitPresent(){
-  state.present = { active:false, steps:[], idx:0 };
+  clearTimeout(state.present.timer);
+  state.present = { active:false, steps:[], idx:0, playing:false, timer:null, isolate:true, focusIds:null };
   const ov = document.getElementById("present-overlay");
   ov.classList.remove("active"); ov.setAttribute("aria-hidden","true");
+  updateStats(); requestRedraw();
 }
 function openPresentManager(){
   const wts = getWalkthroughs();
   const list = !wts.length
     ? `<div class="snap-empty" style="margin-bottom:12px">No walkthroughs yet. Build one below.</div>`
     : `<div class="snap-list" style="margin-bottom:12px">${wts.map(w=>`
-        <div class="snap-item" data-id="${w.id}">
+        <div class="snap-item wt-item" data-id="${w.id}">
           <div style="flex:1; min-width:0; overflow:hidden">
             <div class="snap-name">${escapeHtml(w.name)}</div>
             <div class="snap-meta">${(w.steps||[]).length} step${(w.steps||[]).length===1?"":"s"}</div>
@@ -9500,7 +9684,7 @@ function renderWalkthroughList(){
     return;
   }
   container.innerHTML = `<div class="snap-list">${wts.map(w=>`
-    <div class="snap-item" data-id="${w.id}">
+    <div class="snap-item wt-item" data-id="${w.id}">
       <div style="flex:1; min-width:0; overflow:hidden">
         <div class="snap-name">${escapeHtml(w.name)}</div>
         <div class="snap-meta">${(w.steps||[]).length} step${(w.steps||[]).length===1?"":"s"}</div>
@@ -9508,6 +9692,7 @@ function renderWalkthroughList(){
       <div class="snap-actions">
         <button class="icon-btn" data-act="play" title="Play"><i class="fa-solid fa-play"></i></button>
         <button class="icon-btn" data-act="edit" title="Edit"><i class="fa-solid fa-pen"></i></button>
+        <button class="icon-btn danger" data-act="del" title="Delete"><i class="fa-solid fa-trash"></i></button>
       </div>
     </div>`).join("")}</div>`;
   container.querySelectorAll(".snap-item").forEach(item=>{
@@ -9515,6 +9700,7 @@ function renderWalkthroughList(){
     const w = wts.find(x=>x.id===id);
     item.querySelector('[data-act="play"]').onclick = e=>{ e.stopPropagation(); startPresent(w.steps); };
     item.querySelector('[data-act="edit"]').onclick = e=>{ e.stopPropagation(); openWalkthroughBuilder(id); };
+    item.querySelector('[data-act="del"]').onclick  = e=>{ e.stopPropagation(); if (confirm('Delete walkthrough "' + w.name + '"?')){ const arr=getWalkthroughs(); arr.splice(arr.findIndex(x=>x.id===id),1); persist(); markDirty(); renderWalkthroughList(); } };
   });
 }
 
@@ -9583,6 +9769,7 @@ function boot(){
   }
   // Apply persisted UI prefs (sidebar section + legend collapse states)
   restoreUIState();
+  tryReopenLast();
 }
 
 boot();
