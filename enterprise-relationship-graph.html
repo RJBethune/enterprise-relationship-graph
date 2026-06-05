@@ -1498,6 +1498,10 @@
             <option value="platform">Platform</option>
           </select>
         </div>
+        <div class="field">
+          <label>Scope to branch</label>
+          <select id="scope-select"><option value="">Whole graph</option></select>
+        </div>
         <div class="btn-row">
           <button class="btn" id="btn-fit"><i class="fa-solid fa-expand"></i> Fit</button>
           <button class="btn" id="btn-reset-view"><i class="fa-solid fa-rotate-left"></i> Reset</button>
@@ -1655,6 +1659,11 @@
       <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
       <span id="spof-banner-text">Single points of failure highlighted</span>
       <button class="ban-close" id="spof-banner-close"><i class="fa-solid fa-xmark" aria-hidden="true"></i> Clear (Esc)</button>
+    </div>
+    <div class="canvas-banner" id="scope-banner" style="display:none">
+      <i class="fa-solid fa-filter" aria-hidden="true"></i>
+      <span id="scope-banner-text">Scoped to a branch</span>
+      <button class="ban-close" id="scope-banner-close"><i class="fa-solid fa-xmark" aria-hidden="true"></i> Show whole graph</button>
     </div>
     <div class="legend" id="legend">
       <button class="legend-toggle" id="legend-toggle">hide</button>
@@ -2516,6 +2525,7 @@ function neighborsOf(id){
 }
 function isVisibleNode(n){
   if (state.present.active && state.present.isolate && state.present.focusIds && !state.present.focusIds.has(n.id)) return false;
+  if (state.scopeIds && !state.scopeIds.has(n.id)) return false;
   if (!state.filtersNode.has(n.type)) return false;
   // Hidden by an ancestor's collapse — the parent stays visible to act as the proxy
   if (isHiddenByCollapse(n.id)) return false;
@@ -2545,6 +2555,62 @@ function isVisibleEdge(e){
 }
 const visibleNodes = () => state.graph.nodes.filter(isVisibleNode);
 const visibleEdges = () => state.graph.edges.filter(isVisibleEdge);
+/* ----- Scope to a branch: isolate the view to a node and everything it
+   owns/contains (walks down-hierarchy + ownership edges). ----- */
+function computeBranchScope(rootId){
+  const scope = new Set([rootId]);
+  const queue = [rootId];
+  while (queue.length){
+    const id = queue.shift();
+    for (const e of state.graph.edges){
+      if (e.source === id && HIER_DOWN_TYPES.includes(e.type) && !scope.has(e.target)){
+        scope.add(e.target); queue.push(e.target);
+      }
+    }
+  }
+  return scope;
+}
+function scopeToBranch(rootId){
+  const root = findNode(rootId);
+  if (!root){ clearScope(); return; }
+  state.scopeRoot = rootId;
+  state.scopeIds = computeBranchScope(rootId);
+  updateScopeBanner();
+  buildLegend(); updateStats(); requestRedraw();
+  setTimeout(() => { if (typeof fitGraph === "function") fitGraph(); }, 60);
+  showToast("Scoped to " + root.label + " — " + state.scopeIds.size + " node" + (state.scopeIds.size === 1 ? "" : "s"), "ok");
+}
+function clearScope(){
+  if (!state.scopeRoot) return;
+  state.scopeRoot = null; state.scopeIds = null;
+  updateScopeBanner();
+  buildLegend(); updateStats(); requestRedraw();
+  setTimeout(() => { if (typeof fitGraph === "function") fitGraph(); }, 60);
+}
+function updateScopeBanner(){
+  const b = document.getElementById("scope-banner");
+  if (!b) return;
+  if (state.scopeRoot){
+    const n = findNode(state.scopeRoot);
+    const txt = document.getElementById("scope-banner-text");
+    if (txt) txt.textContent = "Scoped to " + (n ? n.label : "branch");
+    b.style.display = "flex";
+  } else {
+    b.style.display = "none";
+  }
+}
+function buildScopePicker(){
+  const sel = document.getElementById("scope-select");
+  if (!sel) return;
+  if (state.scopeRoot && !findNode(state.scopeRoot)){ state.scopeRoot = null; state.scopeIds = null; updateScopeBanner(); }
+  const hasChildren = new Set();
+  for (const e of state.graph.edges){ if (HIER_DOWN_TYPES.includes(e.type)) hasChildren.add(e.source); }
+  const tr = t => { const i = NODE_TYPES.indexOf(t); return i < 0 ? 99 : i; };
+  const roots = state.graph.nodes.filter(n => hasChildren.has(n.id))
+    .sort((a,b) => (tr(a.type) - tr(b.type)) || a.label.localeCompare(b.label));
+  sel.innerHTML = '<option value="">Whole graph</option>' +
+    roots.map(n => '<option value="' + escapeHtml(n.id) + '"' + (n.id === state.scopeRoot ? " selected" : "") + '>' + escapeHtml(n.label) + " (" + escapeHtml(n.type) + ")</option>").join("");
+}
 
 function showToast(msg, kind){
   const el = document.getElementById("toast");
@@ -4519,6 +4585,7 @@ function renderNodeProfile(el, node){
         <button class="btn" id="profile-center"><i class="fa-solid fa-crosshairs"></i> Center</button>
       </div>
       <button class="btn block" id="profile-walk" style="margin-top:6px"><i class="fa-solid fa-person-walking"></i> Walk relationships</button>
+      <button class="btn block" id="profile-scope" style="margin-top:6px"><i class="fa-solid fa-filter"></i> Scope to this branch</button>
       <button class="btn danger block" id="profile-delete" style="margin-top:6px"><i class="fa-solid fa-trash"></i> Delete</button>
     </div>
   `;
@@ -4535,6 +4602,7 @@ function renderNodeProfile(el, node){
   };
   document.getElementById("profile-center").onclick = ()=>centerOnNode(node.id);
   document.getElementById("profile-walk").onclick = ()=>walkRelationships(node.id);
+  document.getElementById("profile-scope").onclick = ()=>scopeToBranch(node.id);
   document.getElementById("profile-delete").onclick = ()=>{
     if (confirm("Delete '"+node.label+"' and its relationships?")) deleteNode(node.id);
   };
@@ -4714,6 +4782,7 @@ function buildA11yMirror(){
 function buildLegend(){
   state.flaggedEdges = computeFlaggedEdges();
   buildA11yMirror();
+  buildScopePicker();
   const ln = document.getElementById("legend-grid-nodes");
   const le = document.getElementById("legend-grid-edges");
   ln.innerHTML = ""; le.innerHTML = "";
@@ -5349,7 +5418,8 @@ function showNodeContextMenu(x, y, node){
     { label:"Connect from here",  icon:"fa-arrows-turn-to-dots",  action:()=>startConnect(node.id) },
     { label:"Center on graph",    icon:"fa-crosshairs",           action:()=>centerOnNode(node.id) },
     { label:"Focus neighborhood", icon:"fa-circle-nodes",         action:()=>{ state.showNeighborhoodOnly=!state.showNeighborhoodOnly; updateStats(); requestRedraw(); } },
-    { label:"Walk relationships", icon:"fa-person-walking",       action:()=>walkRelationships(node.id) }
+    { label:"Walk relationships", icon:"fa-person-walking",       action:()=>walkRelationships(node.id) },
+    { label:"Scope to this branch", icon:"fa-filter",             action:()=>scopeToBranch(node.id) }
   ];
   // Collapse/expand affordance shows only when meaningful
   if (isCollapsed(node.id)){
@@ -8929,6 +8999,8 @@ function wireUp(){
   document.getElementById("btn-present-manage").onclick = openPresentManager;
   document.getElementById("whatif-banner-close").onclick = exitWhatif;
   document.getElementById("spof-banner-close").onclick    = clearSpof;
+  document.getElementById("scope-banner-close").onclick = clearScope;
+  document.getElementById("scope-select").onchange = e => { const v = e.target.value; if (v) scopeToBranch(v); else clearScope(); };
   document.getElementById("present-prev").onclick = ()=>presentGoto(state.present.idx-1);
   document.getElementById("present-next").onclick = ()=>presentGoto(state.present.idx+1);
   document.getElementById("present-exit").onclick = exitPresent;
