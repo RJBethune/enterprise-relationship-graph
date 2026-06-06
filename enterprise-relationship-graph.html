@@ -1798,7 +1798,7 @@
 const NODE_TYPES = [
   "Under Secretary","Bureau",
   "Executive Office","Front Office","Directorate","Office","Team","Person","Role",
-  "System","Platform","Application","Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group",
+  "System","Platform","Application","SPFx Application","Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group",
   "Distribution List","Mailbox","Microsoft Form","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset","Dataverse Table",
   "Document","Requirement","Decision","Vendor","Service","Environment","Other"
 ];
@@ -1824,6 +1824,7 @@ const TYPE_STYLE = {
   "System":                { color:"#FB923C", size:19, shape:"square",  icon:"" }, // server
   "Platform":              { color:"#818CF8", size:23, shape:"square",  icon:"" }, // cubes
   "Application":           { color:"#F472B6", size:20, shape:"square",  icon:"" }, // window
+  "SPFx Application":       { color:"#2563EB", size:18, shape:"square",  icon:"" }, // puzzle-piece
   "Site Collection":       { color:"#06B6D4", size:18, shape:"square",  icon:"" }, // folder-tree
   "SharePoint Site":       { color:"#22D3EE", size:15, shape:"diamond", icon:"" }, // share
   "SharePoint List":       { color:"#14B8A6", size:13, shape:"diamond", icon:"" }, // list
@@ -2181,14 +2182,25 @@ function drawIconSvg(ctx, spec, x, y, iconSize, color){
   // Multi-color and brand-color icons render on a white circular badge so
   // brand colors read against any node background — M365 app launcher style.
   if (useBadge){
+    // Rounded-square "app tile" badge (matches the square node shape) instead of
+    // a circle, sized to read clearly against the node's brand color.
     ctx.save();
-    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.fillStyle = "rgba(255,255,255,0.96)";
+    const h = iconSize * 0.74, rad = iconSize * 0.3, x0 = x - h, y0 = y - h, w = h * 2;
     ctx.beginPath();
-    ctx.arc(x, y, iconSize * 0.62, 0, Math.PI * 2);
+    if (ctx.roundRect){ ctx.roundRect(x0, y0, w, w, rad); }
+    else {
+      ctx.moveTo(x0 + rad, y0);
+      ctx.arcTo(x0 + w, y0, x0 + w, y0 + w, rad);
+      ctx.arcTo(x0 + w, y0 + w, x0, y0 + w, rad);
+      ctx.arcTo(x0, y0 + w, x0, y0, rad);
+      ctx.arcTo(x0, y0, x0 + w, y0, rad);
+      ctx.closePath();
+    }
     ctx.fill();
     ctx.restore();
   }
-  const drawSize = useBadge ? iconSize * 0.85 : iconSize;
+  const drawSize = useBadge ? iconSize * 1.05 : iconSize;
   const drawScale = drawSize / Math.max(vbW, vbH);
   ctx.save();
   ctx.translate(x, y);
@@ -2925,7 +2937,7 @@ function buildHierarchy(opts){
 
 // Sort each child list so siblings render in a stable, sensible order.
 function sortChildrenStable(childrenOf){
-  const typeOrder = ["Under Secretary","Bureau","Directorate","Front Office","Office","System","Platform","Application","Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox","Person","Role","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset","Dataverse Table","Document","Requirement","Decision","Vendor","Service","Environment","Other"];
+  const typeOrder = ["Under Secretary","Bureau","Directorate","Front Office","Office","System","Platform","Application","SPFx Application","Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox","Person","Role","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset","Dataverse Table","Document","Requirement","Decision","Vendor","Service","Environment","Other"];
   childrenOf.forEach(arr => {
     arr.sort((a,b) => {
       const na = state.graph.nodes.find(n=>n.id===a);
@@ -2992,7 +3004,7 @@ function applyLayout(name, skipFit){
   } else if (name === "concentric"){
     const ringOrder = [
       ["Under Secretary"],["Bureau"],["Executive Office"],["Front Office"],["Directorate"],["Office"],
-      ["Platform","System"],["Application","Site Collection"],
+      ["Platform","System"],["Application","SPFx Application","Site Collection"],
       ["SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox","Workflow","Power Automate Flow","Power BI Dashboard"],
       ["Person","Role","API","Dataset","Dataverse Table","Document","Requirement","Decision","Vendor","Service","Environment","Other"]
     ];
@@ -4262,6 +4274,7 @@ const PROFILE_SECTIONS = [
   { title:"Systems",                    icon:"fa-server",          test:(n,r)=>r.other.type==="System" },
   { title:"Platforms",                  icon:"fa-cubes",           test:(n,r)=>r.other.type==="Platform" },
   { title:"Applications",               icon:"fa-window-maximize", test:(n,r)=>r.other.type==="Application" },
+  { title:"SPFx Apps",                  icon:"fa-puzzle-piece",    test:(n,r)=>r.other.type==="SPFx Application" },
   { title:"Site Collections",          icon:"fa-folder-tree",      test:(n,r)=>r.other.type==="Site Collection" },
   { title:"SharePoint Sites",           icon:"fa-share-from-square", test:(n,r)=>r.other.type==="SharePoint Site" },
   { title:"SharePoint Lists",           icon:"fa-list",             test:(n,r)=>r.other.type==="SharePoint List" },
@@ -5151,6 +5164,7 @@ function openConnectModal(sourceId, targetId){
 }
 function guessEdgeType(s, t){
   if (s.type === "Office" && t.type === "Application") return "OWNS";
+  if (s.type === "Office" && t.type === "SPFx Application") return "OWNS";
   if (s.type === "Office" && t.type === "SharePoint Site") return "HAS_SITE";
   if (s.type === "Site Collection" && t.type === "SharePoint Site") return "HAS_SITE";
   if (s.type === "SharePoint Site" && t.type === "SharePoint List") return "CONTAINS";
@@ -5167,6 +5181,7 @@ function guessEdgeType(s, t){
   if (s.type === "Team" && t.type === "Person") return "CONTAINS";
   if (s.type === "Team" && t.type === "Role") return "CONTAINS";
   if (t.type === "Platform" && s.type === "Application") return "HOSTED_ON";
+  if (t.type === "Platform" && s.type === "SPFx Application") return "HOSTED_ON";
   if (t.type === "System" && s.type === "Application") return "HOSTED_ON";
   if (s.type === "Directorate" && t.type === "Office") return "CONTAINS";
   if (s.type === "Front Office" && t.type === "Directorate") return "CONTAINS";
@@ -6713,7 +6728,7 @@ function openHelp(){
 const METRICS_DEPENDENCY_EDGES = ["DEPENDS_ON","USES","HOSTED_ON","INTEGRATES_WITH","CONNECTED_TO"];
 const METRICS_ORG_TYPES    = ["Under Secretary","Bureau","Executive Office","Front Office","Directorate","Office","Team"];
 const METRICS_PEOPLE_TYPES = ["Person","Role"];
-const METRICS_TECH_TYPES   = ["System","Platform","Application","API","Service"];
+const METRICS_TECH_TYPES   = ["System","Platform","Application","SPFx Application","API","Service"];
 const METRICS_COLLAB_TYPES = ["Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox"];
 const METRICS_PROCESS_TYPES= ["Workflow","Power Automate Flow","Power BI Dashboard","Dataset","Document","Requirement","Decision"];
 
@@ -7954,6 +7969,7 @@ function generateMermaid(){
     "System":            (id,l) => `${id}[/"${l}"/]`,
     "Platform":          (id,l) => `${id}[/"${l}"/]:::platform`,
     "Application":       (id,l) => `${id}[/"${l}"/]`,
+    "SPFx Application":  (id,l) => `${id}[/"${l}"/]`,
     "Site Collection":   (id,l) => `${id}[("${l}")]:::collab`,
     "SharePoint Site":   (id,l) => `${id}[("${l}")]:::collab`,
     "SharePoint List":   (id,l) => `${id}[("${l}")]:::collab`,
@@ -8143,7 +8159,7 @@ function computeValidationViolations(){
       check: n => n.type === "Platform" && !has(n.owner) && !hasIncoming(n.id, "OWNS") },
     { id:"info-site-no-platform", title:"SharePoint Site missing Platform (HOSTED_ON)", severity:"info",
       fix:"Edit the Site and fill Platform = SharePoint Online (create the platform node first if needed).",
-      check: n => n.type === "SharePoint Site" && !has(n.platform) && !hasOutgoing(n.id, "HOSTED_ON") && !hasContainmentParentOfType(n.id, "Site Collection") },
+      check: n => n.type === "SharePoint Site" && !has(n.platform) && !hasOutgoing(n.id, "HOSTED_ON") && !hasContainmentParentOfType(n.id, "Site Collection") && !hasContainmentParentOfType(n.id, "SharePoint Site") },
     { id:"info-msteam-no-platform", title:"Microsoft Team missing Platform (HOSTED_ON)", severity:"info",
       fix:"Edit the Team and fill Platform = Microsoft Teams.",
       check: n => n.type === "Microsoft Team" && !has(n.platform) && !hasOutgoing(n.id, "HOSTED_ON") },
@@ -8170,7 +8186,7 @@ function computeValidationViolations(){
     // LOW — polish, not urgent
     { id:"low-no-description", title:"Node without description", severity:"low",
       fix:"Add a one-line description so others know what this is.",
-      check: n => !has(n.description) },
+      check: n => n.type !== "Person" && !has(n.description) },
 
     // STRUCTURAL INTEGRITY — relationship correctness (not just missing fields)
     { id:"warn-sitecoll-no-tenant", title:"Site Collection not contained by SharePoint Online", severity:"warn",
