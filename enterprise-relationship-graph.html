@@ -2522,6 +2522,22 @@ function loadInitial(){
 function resetFiltersFromGraph(){
   state.filtersNode = new Set(allNodeTypes());
   state.filtersEdge = new Set(EDGE_TYPES);
+  applyStoredFilters();
+}
+/* Filter selections persist in localStorage. We store the DESELECTED types so
+   any node/edge type added later still shows by default (only explicitly hidden
+   types stay hidden across reloads). */
+function persistFilters(){
+  const hiddenNodeTypes = allNodeTypes().filter(t => !state.filtersNode.has(t));
+  const hiddenEdgeTypes = EDGE_TYPES.filter(t => !state.filtersEdge.has(t));
+  saveUIState({ hiddenNodeTypes, hiddenEdgeTypes });
+}
+function applyStoredFilters(){
+  try {
+    const ui = loadUIState();
+    if (Array.isArray(ui.hiddenNodeTypes)) ui.hiddenNodeTypes.forEach(t => state.filtersNode.delete(t));
+    if (Array.isArray(ui.hiddenEdgeTypes)) ui.hiddenEdgeTypes.forEach(t => state.filtersEdge.delete(t));
+  } catch(_){}
 }
 function persist(){ try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)); } catch(_){} }
 
@@ -4761,7 +4777,7 @@ function buildFilterUI(){
                      <span>${escapeHtml(t)}</span>`;
     row.querySelector("input").addEventListener("change", e=>{
       if (e.target.checked) state.filtersNode.add(t); else state.filtersNode.delete(t);
-      updateStats(); requestRedraw();
+      persistFilters(); updateStats(); requestRedraw();
     });
     nf.appendChild(row);
   });
@@ -4775,7 +4791,7 @@ function buildFilterUI(){
                      <span>${escapeHtml(t)}</span>`;
     row.querySelector("input").addEventListener("change", e=>{
       if (e.target.checked) state.filtersEdge.add(t); else state.filtersEdge.delete(t);
-      updateStats(); requestRedraw();
+      persistFilters(); updateStats(); requestRedraw();
     });
     ef.appendChild(row);
   });
@@ -8998,10 +9014,10 @@ function wireUp(){
     };
   });
   // Filter all/none
-  document.getElementById("ntf-all").onclick = ()=>{ state.filtersNode = new Set(allNodeTypes()); buildFilterUI(); updateStats(); requestRedraw(); };
-  document.getElementById("ntf-none").onclick = ()=>{ state.filtersNode = new Set(); buildFilterUI(); updateStats(); requestRedraw(); };
-  document.getElementById("etf-all").onclick = ()=>{ state.filtersEdge = new Set(EDGE_TYPES); buildFilterUI(); updateStats(); requestRedraw(); };
-  document.getElementById("etf-none").onclick = ()=>{ state.filtersEdge = new Set(); buildFilterUI(); updateStats(); requestRedraw(); };
+  document.getElementById("ntf-all").onclick = ()=>{ state.filtersNode = new Set(allNodeTypes()); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
+  document.getElementById("ntf-none").onclick = ()=>{ state.filtersNode = new Set(); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
+  document.getElementById("etf-all").onclick = ()=>{ state.filtersEdge = new Set(EDGE_TYPES); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
+  document.getElementById("etf-none").onclick = ()=>{ state.filtersEdge = new Set(); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
 
   // ----- v1.1 feature wiring -----
   document.getElementById("tb-heatmap").onclick = toggleHeatmap;
