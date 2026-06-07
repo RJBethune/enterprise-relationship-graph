@@ -1450,6 +1450,7 @@
       <button class="header-btn" id="btn-recent" title="Recently viewed entities"><i class="fa-solid fa-clock-rotate-left"></i></button>
       <button class="header-btn" id="btn-data-quality" title="Data quality checks"><i class="fa-solid fa-clipboard-check"></i></button>
       <button class="header-btn" id="btn-metrics" title="Leadership metrics"><i class="fa-solid fa-chart-line"></i></button>
+      <button class="header-btn" id="btn-value-brief" title="Value brief: why this tool" aria-label="Value brief: why this tool"><i class="fa-solid fa-award"></i></button>
       <button class="header-btn" id="btn-theme" title="Switch to light mode" aria-label="Switch to light mode"><i class="fa-solid fa-sun"></i></button>
       <button class="header-btn" id="btn-help" title="Help (?)"><i class="fa-solid fa-circle-question"></i></button>
     </div>
@@ -6371,6 +6372,61 @@ function renderSnapList(){
 /* ============================================================================
    HELP SYSTEM
    ============================================================================ */
+function openValueBrief(){
+  const html = `
+    <div class="help-pane active" style="max-width:760px">
+      <p class="m-lede">For leadership, stakeholders, and anyone asking why this tool exists. Two minutes.</p>
+
+      <h4>The problem</h4>
+      <p>Knowledge about who owns what, what depends on what, and what breaks when something
+      changes lives in people's heads, in org charts that are stale a week after publication,
+      and in scattered lists. Every reorg, departure, audit, and incident pays the same tax:
+      reconstructing that picture from scratch, slowly, by interview.</p>
+
+      <h4>What this is</h4>
+      <p>A living map of the organization: org units, people, roles, systems, platforms,
+      applications, sites, teams, groups, data, and vendors, plus the relationships between
+      them. It runs from a single offline file. No server, no license, no procurement, and
+      the data never leaves your network.</p>
+
+      <h4>What it answers</h4>
+      <ul>
+        <li><strong>Continuity.</strong> Who is carrying three or more leadership assignments?
+        Which systems have multiple dependents and no backup? What does one person's departure
+        actually touch? Single points of failure become visible before they fail.</li>
+        <li><strong>Accountability.</strong> Every asset gets a named owner. More than two
+        dozen built-in validation rules flag ownership gaps, orphans, and contradictions
+        automatically, so the map stays trustworthy.</li>
+        <li><strong>Change planning.</strong> Before a reorg or migration, isolate any office
+        and see its full footprint: systems, sites, flows, vendors. The blast radius of a
+        decision, on screen, before the decision.</li>
+        <li><strong>Governance.</strong> Messaging sprawl per org unit, deprecated assets
+        still in use, unowned technology: surfaced internally before an audit surfaces them.</li>
+        <li><strong>Speed.</strong> New staff and incoming leadership absorb the landscape in
+        minutes instead of months. Presentation walkthroughs turn the map into a guided
+        briefing.</li>
+      </ul>
+
+      <h4>Why it is worth doing</h4>
+      <p>The only recurring cost is curation: a named data steward and a refresh cadence
+      (monthly, or after each org change). There is no infrastructure or licensing spend.
+      Weigh that against the cost of one bungled transition, one failed audit finding, or one
+      orphaned system discovered mid-incident. The map pays for itself the first time it
+      answers "what does this departure touch?" before HR does.</p>
+      <p>The deeper value: decisions about structure, systems, and people stop relying on
+      hallway memory and start relying on a shared, inspectable picture.</p>
+
+      <h4>What it is not</h4>
+      <p>It is not a live directory sync. It is a curated model: the validation engine keeps
+      it honest, the steward keeps it current. That is a feature. A curated map answers
+      "why" and "who", not just "what".</p>
+    </div>
+  `;
+  openModal('<i class="fa-solid fa-award"></i> Value Brief: Why This Tool', html, ()=>closeModal(), true);
+  document.getElementById("modal-foot").style.display = "none";
+  setTimeout(()=>{ document.getElementById("modal-foot").style.display = ""; }, 0);
+}
+
 function openHelp(){
   const html = `
     <div class="help-tabs">
@@ -8939,6 +8995,7 @@ function wireUp(){
 
   document.getElementById("btn-snap-save").onclick = saveCurrentSnapshot;
   document.getElementById("btn-help").onclick = openHelp;
+  document.getElementById("btn-value-brief").onclick = openValueBrief;
   document.getElementById("btn-metrics").onclick = openMetricsModal;
   document.getElementById("btn-data-quality").onclick = openDataQualityModal;
   document.getElementById("btn-export-mermaid").onclick = exportMermaid;
