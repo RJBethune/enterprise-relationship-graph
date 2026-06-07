@@ -6615,7 +6615,7 @@ function openHelp(){
       <p>Every entity in the modal is clickable and drills back to the graph. Useful when leadership asks "if we retire ServiceNow, what breaks first?" or "if this person leaves, what's homeless?"</p>
 
       <h4>Data Quality (the <i class="fa-solid fa-clipboard-check"></i> button in the header)</h4>
-      <p>Opens a modal showing every node that violates one of 16 catalog-hygiene rules, grouped by severity:</p>
+      <p>Opens a modal showing every node that violates one of 26 catalog-hygiene rules, grouped by severity:</p>
       <ul>
         <li><strong>Critical</strong> &mdash; distorts the Metrics dashboard (deprecated entities still in use).</li>
         <li><strong>Warning</strong> &mdash; structural gaps (Directorate missing Lead, Office missing Directorate, orphans, SharePoint Sites without HAS_SITE from an org unit, Mailboxes/Teams/Forms similarly).</li>
@@ -7044,6 +7044,27 @@ function computeLeadershipMetrics(){
     .filter(x => x.total >= 3)  // 3+ assignments is the leadership-relevant threshold
     .sort((a,b) => b.total - a.total);
 
+  // Messaging sprawl: O365 Groups / Mailboxes / Distribution Lists attached
+  // DIRECTLY to each org unit (children's objects are not rolled up). High
+  // counts are a long-term maintenance risk: every object is an access
+  // boundary to own, review, and re-home at each reorg.
+  const SPRAWL_OBJ = { "O365 Group":"groups", "Mailbox":"mailboxes", "Distribution List":"dls" };
+  const SPRAWL_ATTACH = ["OWNS","CONTAINS","MANAGES","HAS_O365_GROUP","HAS_MAILBOX","HAS_DISTRIBUTION_LIST"];
+  const sprawlByOrg = new Map(); // org id -> { seen:Set, groups, mailboxes, dls }
+  for (const e of edges){
+    if (!SPRAWL_ATTACH.includes(e.type)) continue;
+    const src = byId.get(e.source), tgt = byId.get(e.target);
+    if (!src || !tgt || !METRICS_ORG_TYPES.includes(src.type) || !(tgt.type in SPRAWL_OBJ)) continue;
+    let rec = sprawlByOrg.get(src.id);
+    if (!rec){ rec = { seen:new Set(), groups:0, mailboxes:0, dls:0 }; sprawlByOrg.set(src.id, rec); }
+    if (rec.seen.has(tgt.id)) continue; // dedupe: OWNS + HAS_* to the same object counts once
+    rec.seen.add(tgt.id);
+    rec[SPRAWL_OBJ[tgt.type]] += 1;
+  }
+  const messagingSprawl = [...sprawlByOrg.entries()]
+    .map(([id, r]) => ({ n: byId.get(id), groups:r.groups, mailboxes:r.mailboxes, dls:r.dls, total:r.seen.size }))
+    .sort((a,b) => b.total - a.total);
+
   return {
     N, E,
     counts: {
@@ -7063,7 +7084,7 @@ function computeLeadershipMetrics(){
       tagPct:   pct(withTags, N),  withTags,
       lowQuality
     },
-    risk: { criticalHubs, orphans, unownedTech, deprecatedInUse, vendorExposure, busFactor },
+    risk: { criticalHubs, orphans, unownedTech, deprecatedInUse, vendorExposure, busFactor, messagingSprawl },
     org:  { dirStats, crossDirDeps },
     complexity: { byDeg, integrationCount, automationCount, longest, mostIntegrated },
     pipeline: {
@@ -7326,6 +7347,16 @@ function openMetricsModal(){
   const orphanList = risk.orphans.slice(0,8).map(n =>
     `<tr><td>${mEntityLink(n, {includeType:true})}</td></tr>`
   ).join("");
+  const sprawlFlagged = risk.messagingSprawl.filter(x => x.total >= 3);
+  const sprawlRows = risk.messagingSprawl.slice(0,10).map(x => `
+    <tr>
+      <td>${mEntityLink(x.n, {includeType:true})}</td>
+      <td class="num">${x.groups}</td>
+      <td class="num">${x.mailboxes}</td>
+      <td class="num">${x.dls}</td>
+      <td class="num">${x.total}</td>
+      <td>${x.total >= 5 ? '<span class="m-pill crit">high</span>' : x.total >= 3 ? '<span class="m-pill warn">elevated</span>' : '<span class="m-pill">ok</span>'}</td>
+    </tr>`).join("");
   const riskHtml = `
     <p class="m-lede">Where the graph reveals fragility: dependency concentrations, vendor exposure, ownership gaps, and entries that look obsolete but are still connected.</p>
     <div class="kpi-grid">
@@ -7333,6 +7364,7 @@ function openMetricsModal(){
       ${mKpi("Orphaned entities", risk.orphans.length, "0 connections", risk.orphans.length === 0 ? "ok" : "warn")}
       ${mKpi("Unowned tech assets", risk.unownedTech.length, "no Owner set", risk.unownedTech.length === 0 ? "ok" : "warn")}
       ${mKpi("Deprecated, still in use", risk.deprecatedInUse.length, "status retired/inactive + &ge;1 edge", risk.deprecatedInUse.length === 0 ? "ok" : "crit")}
+      ${mKpi("Messaging sprawl", sprawlFlagged.length, "orgs w/ &ge;3 groups/mailboxes/DLs", sprawlFlagged.length === 0 ? "ok" : (sprawlFlagged.some(x => x.total >= 5) ? "crit" : "warn"))}
     </div>
     <div class="m-section">
       <h4>Most depended-upon entities</h4>
@@ -7375,6 +7407,17 @@ function openMetricsModal(){
               </tr>`).join("")}
             </tbody>
            </table>`}
+    </div>
+    <div class="m-section">
+      <h4>Messaging objects by org unit <span class="m-pill ${sprawlFlagged.some(x => x.total >= 5) ? "crit" : sprawlFlagged.length ? "warn" : ""}">${sprawlFlagged.length} flagged</span></h4>
+      ${sprawlRows
+        ? `<table class="m-table">
+            <thead><tr><th>Org unit</th><th class="num">O365 Groups</th><th class="num">Mailboxes</th><th class="num">Dist. lists</th><th class="num">Total</th><th>Status</th></tr></thead>
+            <tbody>${sprawlRows}</tbody>
+           </table>
+           <div style="font-size:11px; color:var(--muted); margin-top:4px;">&ge;3 elevated, &ge;5 high. Counts objects attached directly to the org unit (OWNS / CONTAINS / HAS_*); children's objects are not rolled up.</div>
+           ${risk.messagingSprawl.length > 10 ? `<div style="font-size:11px; color:var(--muted); margin-top:4px;">Showing 10 of ${risk.messagingSprawl.length}.</div>` : ""}`
+        : '<div class="m-empty">No O365 Groups, Mailboxes, or Distribution Lists attached to org units yet.</div>'}
     </div>
     <div class="m-section">
       <h4>Orphaned entities <span class="m-pill">${risk.orphans.length}</span></h4>
@@ -8098,6 +8141,20 @@ function computeValidationViolations(){
     if (e.type === "CONTAINS") containsPairSet.add(e.source + ">" + e.target);
   }
   const containmentParentCount = id => (containersOf.get(id) || []).length;
+
+  // ---- Messaging sprawl (O365 Groups / Mailboxes / DLs per org unit) ----
+  const SPRAWL_OBJ_TYPES = ["O365 Group","Mailbox","Distribution List"];
+  const SPRAWL_ATTACH_TYPES = ["OWNS","CONTAINS","MANAGES","HAS_O365_GROUP","HAS_MAILBOX","HAS_DISTRIBUTION_LIST"];
+  const sprawlSets = new Map(); // org id -> Set of directly attached messaging-object ids
+  for (const e of edges){
+    if (!SPRAWL_ATTACH_TYPES.includes(e.type)) continue;
+    const src = nodeById.get(e.source), tgt = nodeById.get(e.target);
+    if (!src || !tgt) continue;
+    if (!METRICS_ORG_TYPES.includes(src.type) || !SPRAWL_OBJ_TYPES.includes(tgt.type)) continue;
+    if (!sprawlSets.has(src.id)) sprawlSets.set(src.id, new Set());
+    sprawlSets.get(src.id).add(tgt.id);
+  }
+  const sprawlCountOf = n => METRICS_ORG_TYPES.includes(n.type) ? (sprawlSets.get(n.id) || { size:0 }).size : 0;
   const hasContainmentParentOfType = (id, t) => (containersOf.get(id) || []).some(c => c.srcType === t);
   const SINGLE_HOME_EXCLUDE = new Set(["Mailbox","Distribution List","Microsoft Form","O365 Group","Document","Dataset"]);
   // Cardinality helpers — relationships that should occur at most once.
@@ -8150,6 +8207,12 @@ function computeValidationViolations(){
     { id:"warn-form-no-office", title:"Microsoft Form missing HAS_FORM from any org unit", severity:"warn",
       fix:"Quick-Connect from the owning Office to the Form.",
       check: n => n.type === "Microsoft Form" && !hasIncoming(n.id, "HAS_FORM") },
+    { id:"warn-messaging-sprawl", title:"Messaging sprawl: 5+ O365 Groups / Mailboxes / Distribution Lists", severity:"warn",
+      fix:"Long-term maintenance risk. Audit this org's messaging objects for overlapping audiences: consolidate duplicates into one O365 Group, retire stale distribution lists, and confirm each survivor has an owner.",
+      check: n => sprawlCountOf(n) >= 5 },
+    { id:"info-messaging-buildup", title:"Messaging buildup: 3\u20134 O365 Groups / Mailboxes / Distribution Lists", severity:"info",
+      fix:"Watch for audience overlap as this grows. Prefer one O365 Group per audience over a parallel group + shared mailbox + distribution list.",
+      check: n => { const c = sprawlCountOf(n); return c >= 3 && c < 5; } },
 
     // INFO — data completeness improvements
     { id:"info-person-no-email", title:"Person missing email", severity:"info",
