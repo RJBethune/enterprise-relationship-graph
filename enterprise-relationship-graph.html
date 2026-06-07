@@ -4997,7 +4997,7 @@ function nodeFormHtml(n){
     <div class="field"><label for="f-type">Type</label><select id="f-type">${typeOpts}</select></div>
     <div class="field"><label for="f-icon">Icon (overrides type default)</label><select id="f-icon">${iconOpts}</select></div>
     <div class="field"><label for="f-description">Description</label><textarea id="f-description" placeholder="What is this?">${escapeHtml(n.description||"")}</textarea></div>
-    <div class="field"><label for="f-status">Status</label><input id="f-status" type="text" list="dl-status" value="${escapeHtml(n.status||"Active")}"/></div>
+    <div class="field"><label for="f-status">Status <span class="field-hint">drives Pipeline metrics: Proposed / Planned / Pilot / Active / Inactive / Retired</span></label><input id="f-status" type="text" list="dl-status" value="${escapeHtml(n.status||"Active")}"/></div>
     <div class="field"><label for="f-owner">Owner <span class="field-hint">creates an OWNS edge if matches a node</span></label><input id="f-owner" type="text" list="dl-all" value="${escapeHtml(n.owner||"")}" placeholder="Pick or type…"/></div>
     <div class="field"><label for="f-lead">Lead <span class="field-hint">creates a RESPONSIBLE_FOR edge if matches a Person</span></label><input id="f-lead" type="text" list="dl-person" value="${escapeHtml(n.lead||"")}" placeholder="Pick a person or type a role…"/></div>
     <div class="field"><label for="f-parent">Parent <span class="field-hint">creates a CONTAINS edge if matches a node</span></label><input id="f-parent" type="text" list="dl-all" value="${escapeHtml(n.parent||"")}" placeholder="Pick or type…"/></div>
@@ -6801,8 +6801,8 @@ const METRICS_DEPENDENCY_EDGES = ["DEPENDS_ON","USES","HOSTED_ON","INTEGRATES_WI
 const METRICS_ORG_TYPES    = ["Under Secretary","Bureau","Executive Office","Front Office","Directorate","Office","Team"];
 const METRICS_PEOPLE_TYPES = ["Person","Role"];
 const METRICS_TECH_TYPES   = ["System","Platform","Application","SPFx Application","API","Service"];
-const METRICS_COLLAB_TYPES = ["Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox"];
-const METRICS_PROCESS_TYPES= ["Workflow","Power Automate Flow","Power BI Dashboard","Dataset","Document","Requirement","Decision"];
+const METRICS_COLLAB_TYPES = ["Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox","Distribution List","Microsoft Form"];
+const METRICS_PROCESS_TYPES= ["Workflow","Power Automate Flow","Power BI Dashboard","Dataset","Dataverse Table","Document","Requirement","Decision"];
 
 function computeLeadershipMetrics(){
   const nodes = state.graph.nodes;
@@ -6977,9 +6977,10 @@ function computeLeadershipMetrics(){
   const inFlightCount = lifecycle.proposed + lifecycle.planned + lifecycle.pilot;
 
   // Per-type lifecycle breakdown for the major delivery types
-  const PIPELINE_TYPES = ["System","Platform","Application","API","Service",
-                          "Workflow","Power Automate Flow","Power BI Dashboard",
-                          "SharePoint Site","Microsoft Team","Requirement","Decision"];
+  const PIPELINE_TYPES = ["System","Platform","Application","SPFx Application","API","Service",
+                          "Workflow","Power Automate Flow","Power BI Dashboard","Microsoft Form",
+                          "SharePoint Site","SharePoint List","Dataverse Table",
+                          "Microsoft Team","Requirement","Decision"];
   const perTypeLifecycle = PIPELINE_TYPES.map(t => {
     const ns = nodes.filter(n => n.type === t);
     const b = { proposed:0, planned:0, pilot:0, active:0, retired:0 };
@@ -7018,7 +7019,7 @@ function computeLeadershipMetrics(){
   const exPeopleCount    = exNodes.filter(n => inAny(n, METRICS_PEOPLE_TYPES)).length;
 
   // Client bureaus — Office / Directorate / Front Office nodes outside EX scope
-  const BUREAU_CANDIDATE_TYPES = ["Office","Directorate","Front Office"];
+  const BUREAU_CANDIDATE_TYPES = ["Bureau","Office","Directorate","Front Office"];
   const clientBureaus = nodes
     .filter(n => BUREAU_CANDIDATE_TYPES.includes(n.type) && !exScope.has(n.id))
     .map(b => {
@@ -7654,7 +7655,7 @@ function openMetricsModal(){
     { label:"Pilot",    value: lifecycle.pilot,    color:"#38BDF8" },
     { label:"Planned",  value: lifecycle.planned,  color:"#A78BFA" },
     { label:"Proposed", value: lifecycle.proposed, color:"#FBBF24" },
-    { label:"Retired",  value: lifecycle.retired,  color:"#94A3B8" }
+    { label:"Retired / Inactive",  value: lifecycle.retired,  color:"#94A3B8" }
   ].filter(s => s.value > 0);
   const pipelineHtml = `
     <p class="m-lede">What the team is actually working on, where things are in their lifecycle, and what's flowing through the delivery pipeline.</p>
@@ -7686,7 +7687,7 @@ function openMetricsModal(){
                 { name:"Pilot",    value: t.pilot,    color:"#38BDF8" },
                 { name:"Planned",  value: t.planned,  color:"#A78BFA" },
                 { name:"Proposed", value: t.proposed, color:"#FBBF24" },
-                { name:"Retired",  value: t.retired,  color:"#94A3B8" }
+                { name:"Retired / Inactive",  value: t.retired,  color:"#94A3B8" }
               ]
             })))}
            <div class="m-chart-legend">
@@ -7694,17 +7695,19 @@ function openMetricsModal(){
              <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#38BDF8"></span> Pilot</span>
              <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#A78BFA"></span> Planned</span>
              <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#FBBF24"></span> Proposed</span>
-             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#94A3B8"></span> Retired</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#94A3B8"></span> Retired / Inactive</span>
            </div>`}
     </div>
     <div class="m-section">
       <h4>Governance pipeline</h4>
-      <div class="kpi-grid">
+      ${(reqsByStage.proposed + reqsByStage.planned + reqsByStage.pilot + reqsByStage.active + reqsByStage.retired + decisionsCount) === 0
+        ? '<div class="m-empty">No Requirement or Decision nodes catalogued yet. Model formal asks as <strong>Requirement</strong> nodes (their Status field drives these stages) and record key <strong>Decision</strong> nodes to populate this pipeline.</div>'
+        : `<div class="kpi-grid">
         ${mKpi("Active requirements", reqsByStage.active, "delivered/in use")}
         ${mKpi("In-flight requirements", reqsByStage.pilot + reqsByStage.planned, "pilot + planned")}
         ${mKpi("Proposed requirements", reqsByStage.proposed, "awaiting approval", reqsByStage.proposed > 0 ? "accent" : null)}
         ${mKpi("Decisions recorded", decisionsCount, "in the graph")}
-      </div>
+      </div>`}
     </div>
     <div class="m-section">
       <h4>Active collaboration surfaces</h4>
