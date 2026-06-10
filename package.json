@@ -1,0 +1,15 @@
+{
+  "name": "enterprise-relationship-graph",
+  "version": "1.5.0",
+  "private": true,
+  "description": "Offline-capable, single-file enterprise relationship graph viewer/editor",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node scripts/smoke-test.js",
+    "test:browser": "node scripts/browser-test.mjs",
+    "test:all": "node scripts/smoke-test.js && node scripts/browser-test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}

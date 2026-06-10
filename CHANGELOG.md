@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.0] - 2026-06-10
+
+Leadership metrics: trends and a composite risk watchlist, plus a browser test.
+
+### Added
+- **Trend deltas vs. a baseline snapshot** — the Executive Summary now has a
+  "Compare to" picker (defaults to the most recent snapshot, choice persists).
+  Headline KPIs show ▲/▼ change chips colored by whether the direction is
+  good (more ownership coverage = green; more critical hubs = red), and a
+  "Trend across snapshots" table tracks entities, relations, owner %, critical
+  hubs, and deprecated-in-use across the last 8 snapshots. Powered by
+  `computeMetricsFor(graph)`, which runs the full metrics engine against any
+  graph object (e.g. a saved snapshot).
+- **Top Risks watchlist** — `computeTopRisks()` combines every risk signal
+  (dependency load, missing backups, articulation points / SPOFs,
+  deprecated-but-connected, ownership gaps, staleness compounding) into one
+  ranked, owner-attributed list. Top 3 on the Executive Summary, full top 10
+  with scores and reasons on the Risk & SPOFs tab, top 5 in the Copy-summary
+  markdown.
+- **Playwright browser test** (`npm run test:browser`) covering what the Node
+  harness can't: real boot, structured-search canvas filtering, clicking the
+  drawn edge curve, views surviving snapshot loads, delete+undo, pinned
+  positions surviving reload, modal keyboard behavior, metrics modal render,
+  and the no-keyboard-trap guarantee. Setup: `npm install`,
+  `npx playwright install chromium`.
+
+### Fixed
+- Restored pinned positions now also restore `fixed`, matching the force
+  sim's contract — without it, pins drifted after reload.
+
 ## [1.4.0] - 2026-06-09
 
 ### Added

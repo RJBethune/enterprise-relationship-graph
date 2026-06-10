@@ -16,6 +16,10 @@ desktop.ini
 *.bak
 *~
 
+# Node (browser-test tooling only — the app itself has no build)
+node_modules/
+package-lock.json
+
 # Local working files (don't commit personal graph data)
 my-*.json
 private-*.json

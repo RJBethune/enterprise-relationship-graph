@@ -1428,6 +1428,14 @@
 .rel-force{ display:flex; align-items:center; gap:6px; margin-top:8px; font-size:12px; color:var(--muted); cursor:pointer; }
 .rel-force input{ cursor:pointer; }
 .sr-only{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
+/* Metric trend chips (change vs. baseline snapshot) */
+.kpi .delta{ font-size:11px; font-weight:600; vertical-align:middle; margin-left:4px; padding:1px 5px; border-radius:5px; white-space:nowrap; }
+.delta.good{ color:var(--ok); background:rgba(52,211,153,0.12); }
+.delta.bad{ color:var(--crit); background:rgba(248,113,113,0.12); }
+.delta.flat{ color:var(--muted); background:rgba(148,163,184,0.12); }
+.m-baseline-row{ display:flex; align-items:center; gap:8px; margin:0 0 12px; font-size:11.5px; color:var(--text-2); flex-wrap:wrap; }
+.m-baseline-row select{ font-size:11.5px; padding:3px 6px; max-width:280px; }
+.m-baseline-hint{ color:var(--muted); font-size:11px; }
 @media (pointer: coarse){
   .btn, select, .legend-tab{ min-height:44px; }
 }
@@ -3048,7 +3056,10 @@ function restorePositionsFromGraph(){
   state.graph.nodes.forEach(n=>{
     const p = saved[n.id];
     if (p && isFinite(p.x) && isFinite(p.y)){
-      state.positions.set(n.id, { x:+p.x, y:+p.y, vx:0, vy:0, fixed:false, pinned:!!p.pinned });
+      // pinned implies fixed: the force sim only checks `fixed`, and the
+      // mouseup handler keeps fixed=true for pinned nodes — mirror that here
+      // or restored pins would drift as the sim settles.
+      state.positions.set(n.id, { x:+p.x, y:+p.y, vx:0, vy:0, fixed:!!p.pinned, pinned:!!p.pinned });
       restored++;
     }
   });
@@ -7041,6 +7052,8 @@ function openHelp(){
     <div class="help-pane" data-pane="metrics">
       <h4>What it is</h4>
       <p>Click the <i class="fa-solid fa-chart-line"></i> chart icon in the header (next to the help button) to open the <strong>Leadership Metrics</strong> dashboard. It computes a snapshot of metrics directly from the current graph state &mdash; no extra data is stored anywhere &mdash; so the numbers always reflect what's in the file right now.</p>
+      <h4>Trends &amp; the Top Risks watchlist</h4>
+      <p>The Executive Summary compares against a <strong>baseline snapshot</strong> (the "Compare to" picker; defaults to your most recent snapshot). Headline KPIs get &#9650;/&#9660; chips showing the change since the baseline, and a trend table tracks the headline numbers across your last 8 snapshots &mdash; save a snapshot at each milestone (monthly, pre/post reorg) and the dashboard shows direction, not just state. The <strong>Top risks</strong> list combines every risk signal &mdash; dependency load, missing backups, single points of failure, deprecated-but-connected, ownership gaps, staleness &mdash; into one ranked, owner-attributed watchlist: top 3 on the summary, the full ranked list on the Risk &amp; SPOFs tab, and the top 5 in the Copy summary export.</p>
       <h4>The eight tabs</h4>
       <ul>
         <li><strong>Executive Summary</strong> &mdash; ten headline KPIs and an entity-composition donut showing scale at a glance.</li>
@@ -7580,10 +7593,65 @@ function computeLeadershipMetrics(){
   };
 }
 
-function mKpi(lbl, val, sub, kind){
+// Run the leadership metrics against an arbitrary graph object (e.g. a saved
+// snapshot) by temporarily swapping it into state. computeLeadershipMetrics
+// is a pure read of state.graph, so the swap is side-effect free.
+function computeMetricsFor(graph){
+  const prev = state.graph;
+  state.graph = graph;
+  try { return computeLeadershipMetrics(); }
+  finally { state.graph = prev; }
+}
+
+// Delta chip vs a baseline value. goodWhen ("up" | "down" | "neutral") decides
+// the color; the arrow and signed number convey direction in text as well, so
+// the information is never color-only. Returns "" when there is no baseline.
+function deltaChip(cur, prev, goodWhen, suffix){
+  if (prev == null || isNaN(prev) || cur == null || isNaN(cur)) return "";
+  const d = Math.round((cur - prev) * 10) / 10;
+  if (d === 0) return '<span class="delta flat" title="No change since baseline snapshot">±0</span>';
+  const arrow = d > 0 ? "▲" : "▼";
+  const good = goodWhen === "neutral" ? null : (goodWhen === "up" ? d > 0 : d < 0);
+  const cls = good == null ? "flat" : (good ? "good" : "bad");
+  return `<span class="delta ${cls}" title="Change since baseline snapshot">${arrow} ${d > 0 ? "+" : ""}${d}${suffix || ""}</span>`;
+}
+
+/* Composite "Top risks" watchlist — aggregates the individual risk signals
+   (dependency hubs, missing backups, articulation points, deprecated-in-use,
+   ownership gaps, staleness) into one ranked, owner-attributed list. The
+   weights are heuristic; what matters is stable relative ordering. */
+function computeTopRisks(m){
+  m = m || computeLeadershipMetrics();
+  const byId = new Map();
+  const bump = (node, pts, reason) => {
+    if (!node) return;
+    let rec = byId.get(node.id);
+    if (!rec){ rec = { node, score: 0, reasons: [] }; byId.set(node.id, rec); }
+    rec.score += pts;
+    rec.reasons.push(reason);
+  };
+  m.risk.criticalHubs.forEach(x => {
+    bump(x.n, 3 + Math.min(x.dep, 5), x.dep + " dependents");
+    if (!x.hasBackup) bump(x.n, 2, "no backup");
+  });
+  computeArticulationPoints().forEach(id => {
+    bump(findNode(id), 3, "single point of failure");
+  });
+  m.risk.deprecatedInUse.forEach(n => bump(n, 4, "deprecated but still connected"));
+  m.risk.unownedTech.forEach(n => bump(n, 2, "no owner"));
+  // Staleness only compounds an existing risk — alone it isn't watchlist-worthy
+  state.graph.nodes.forEach(n => {
+    if (!n.updatedAt || !byId.has(n.id)) return;
+    const days = (Date.now() - new Date(n.updatedAt).getTime()) / 86400000;
+    if (isFinite(days) && days > 180) bump(n, 1, "not reviewed in 6+ months");
+  });
+  return [...byId.values()].sort((a,b) => b.score - a.score);
+}
+
+function mKpi(lbl, val, sub, kind, delta){
   const cls = kind ? " " + kind : "";
   const subHtml = sub ? `<div class="sub">${sub}</div>` : "";
-  return `<div class="kpi${cls}"><div class="lbl">${lbl}</div><div class="val">${val}</div>${subHtml}</div>`;
+  return `<div class="kpi${cls}"><div class="lbl">${lbl}</div><div class="val">${val}${delta ? " " + delta : ""}</div>${subHtml}</div>`;
 }
 function mEntityLink(node, opts){
   // Render a clickable entity name. opts.includeType adds a small type-cell below.
@@ -7748,6 +7816,57 @@ function openMetricsModal(){
   const org = m.org;
   const cx = m.complexity;
 
+  // ----- Baseline snapshot for trend deltas -----
+  // Default to the most recent snapshot; the user's pick persists. "none"
+  // disables deltas explicitly.
+  const snapsAll = loadSnapshots().sort((a,b)=>b.ts-a.ts);
+  let baselinePref = null;
+  try { baselinePref = localStorage.getItem("erg.metricsBaseline"); } catch(_){}
+  let baseline = null;
+  if (baselinePref !== "none"){
+    baseline = (baselinePref && snapsAll.find(s => s.id === baselinePref)) || snapsAll[0] || null;
+  }
+  let pm = null;
+  if (baseline && baseline.graph){
+    try { pm = computeMetricsFor(baseline.graph); }
+    catch(err){ console.error("Baseline metrics failed:", err); pm = null; }
+  }
+  const dc = (cur, prev, goodWhen, suffix) => pm ? deltaChip(cur, prev, goodWhen, suffix) : "";
+
+  // ----- Top risks (composite watchlist) -----
+  const topRisks = computeTopRisks(m);
+  const ownerCell = n => {
+    const own = (typeof effectiveOwner === "function" ? effectiveOwner(n) : n.owner) || "";
+    return own ? escapeHtml(own) : '<span class="m-pill warn">unowned</span>';
+  };
+
+  // ----- Trend table across snapshots (oldest -> newest -> current) -----
+  let trendTableHtml = "";
+  if (snapsAll.length >= 1){
+    const rows = [];
+    snapsAll.slice(0, 8).reverse().forEach(s => {
+      if (!s.graph) return;
+      try {
+        const sm = computeMetricsFor(s.graph);
+        rows.push({ name: s.name, ts: s.ts, N: sm.N, E: sm.E, owner: sm.coverage.ownerPct, hubs: sm.risk.criticalHubs.length, dep: sm.risk.deprecatedInUse.length });
+      } catch(err){ console.error("Trend metrics failed for snapshot", s.name, err); }
+    });
+    rows.push({ name: "Current", ts: null, N: m.N, E: m.E, owner: cov.ownerPct, hubs: risk.criticalHubs.length, dep: risk.deprecatedInUse.length });
+    if (rows.length >= 2){
+      trendTableHtml = `
+        <h4 style="margin:22px 0 10px; font-size:11px; letter-spacing:0.7px; color:var(--text-2); font-weight:600; text-transform:uppercase;">Trend across snapshots</h4>
+        <table class="m-table">
+          <thead><tr><th>Snapshot</th><th class="num">Entities</th><th class="num">Relations</th><th class="num">Owner %</th><th class="num">Critical hubs</th><th class="num">Deprecated in use</th></tr></thead>
+          <tbody>${rows.map(r=>`
+            <tr${r.ts === null ? ' style="font-weight:600"' : ''}>
+              <td>${escapeHtml(r.name)}${r.ts ? ` <span style="color:var(--muted); font-size:10.5px;">${new Date(r.ts).toLocaleDateString()}</span>` : ""}</td>
+              <td class="num">${r.N}</td><td class="num">${r.E}</td>
+              <td class="num">${r.owner}%</td><td class="num">${r.hubs}</td><td class="num">${r.dep}</td>
+            </tr>`).join("")}</tbody>
+        </table>`;
+    }
+  }
+
   // Data-freshness header
   function formatFreshness(){
     const parts = [];
@@ -7774,19 +7893,43 @@ function openMetricsModal(){
       <i class="fa-solid fa-clock-rotate-left" style="color:var(--muted); margin-right:4px;"></i> ${formatFreshness()}
     </div>
     <p class="m-lede">A live read of the graph from a leadership lens: scale, ownership coverage, structural risk, and operational complexity.</p>
+    <div class="m-baseline-row">
+      <label for="m-baseline">Compare to</label>
+      <select id="m-baseline">
+        <option value="none" ${!baseline ? "selected" : ""}>No baseline</option>
+        ${snapsAll.map(s=>`<option value="${escapeHtml(s.id)}" ${baseline && s.id===baseline.id ? "selected" : ""}>${escapeHtml(s.name)} (${new Date(s.ts).toLocaleDateString()})</option>`).join("")}
+      </select>
+      <span class="m-baseline-hint">${snapsAll.length === 0
+        ? "Save a snapshot (sidebar &rarr; Snapshots) to enable trend deltas."
+        : (pm ? "&#9650;&#9660; chips show change since the selected snapshot." : "")}</span>
+    </div>
     <div class="kpi-grid">
-      ${mKpi("Total entities", m.N, "nodes in the graph", "accent")}
-      ${mKpi("Relationships", m.E, "edges between entities")}
+      ${mKpi("Total entities", m.N, "nodes in the graph", "accent", dc(m.N, pm && pm.N, "neutral"))}
+      ${mKpi("Relationships", m.E, "edges between entities", null, dc(m.E, pm && pm.E, "neutral"))}
       ${mKpi("Org units", c.org, "Executive / Front / Directorate / Office")}
-      ${mKpi("People &amp; roles", c.people)}
-      ${mKpi("Tech (systems + platforms + apps)", c.tech)}
+      ${mKpi("People &amp; roles", c.people, "", null, dc(c.people, pm && pm.counts.people, "neutral"))}
+      ${mKpi("Tech (systems + platforms + apps)", c.tech, "", null, dc(c.tech, pm && pm.counts.tech, "neutral"))}
       ${mKpi("Collaboration spaces", c.collab, "SharePoint / Teams / O365 / Mailbox")}
       ${mKpi("Vendors", c.vendors, c.vendors > 0 ? "external dependencies" : "")}
-      ${mKpi("Ownership coverage", cov.ownerPct + "%", `${cov.withOwner} of ${m.N} have an owner`, cov.ownerPct >= 80 ? "ok" : (cov.ownerPct >= 50 ? "warn" : "crit"))}
-      ${mKpi("Critical hubs", risk.criticalHubs.length, "&ge;2 dependents", risk.criticalHubs.length === 0 ? "ok" : (risk.criticalHubs.length <= 3 ? "warn" : "crit"))}
+      ${mKpi("Ownership coverage", cov.ownerPct + "%", `${cov.withOwner} of ${m.N} have an owner`, cov.ownerPct >= 80 ? "ok" : (cov.ownerPct >= 50 ? "warn" : "crit"), dc(cov.ownerPct, pm && pm.coverage.ownerPct, "up", "%"))}
+      ${mKpi("Critical hubs", risk.criticalHubs.length, "&ge;2 dependents", risk.criticalHubs.length === 0 ? "ok" : (risk.criticalHubs.length <= 3 ? "warn" : "crit"), dc(risk.criticalHubs.length, pm && pm.risk.criticalHubs.length, "down"))}
       ${mKpi("Cross-directorate deps", org.crossDirDeps, "spans org boundaries")}
     </div>
     <p style="font-size:11px; color:var(--muted); margin-top:6px;">Switch tabs above for the underlying detail behind each headline.</p>
+    ${topRisks.length ? `
+    <h4 style="margin:22px 0 10px; font-size:11px; letter-spacing:0.7px; color:var(--text-2); font-weight:600; text-transform:uppercase;">Top risks</h4>
+    <table class="m-table">
+      <tbody>
+        ${topRisks.slice(0,3).map((r,i)=>`<tr>
+          <td style="width:18px; color:var(--muted);">${i+1}</td>
+          <td>${mEntityLink(r.node, {includeType:true})}</td>
+          <td style="font-size:11.5px;">${escapeHtml(r.reasons.join(" · "))}</td>
+          <td style="font-size:11.5px;">${ownerCell(r.node)}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>
+    <p style="font-size:11px; color:var(--muted); margin-top:6px;">Full ranked watchlist on the <strong>Risk &amp; SPOFs</strong> tab.</p>` : ""}
+    ${trendTableHtml}
     <h4 style="margin:22px 0 10px; font-size:11px; letter-spacing:0.7px; color:var(--text-2); font-weight:600; text-transform:uppercase;">Entity composition</h4>
     <div class="m-seg-donut-wrap">
       ${mSegmentedDonut([
@@ -7837,6 +7980,22 @@ function openMetricsModal(){
     </tr>`).join("");
   const riskHtml = `
     <p class="m-lede">Where the graph reveals fragility: dependency concentrations, vendor exposure, ownership gaps, and entries that look obsolete but are still connected.</p>
+    ${topRisks.length ? `
+    <div class="m-section">
+      <h4>Top risks watchlist</h4>
+      <p style="font-size:11.5px; color:var(--muted); margin:0 0 8px;">All risk signals combined into one ranked list — dependency load, missing backups, single points of failure, deprecated-in-use, ownership gaps, staleness. Click an entity to jump to it.</p>
+      <table class="m-table">
+        <thead><tr><th style="width:18px;">#</th><th>Entity</th><th>Why it's on the list</th><th>Owner</th><th class="num">Score</th></tr></thead>
+        <tbody>${topRisks.slice(0,10).map((r,i)=>`
+          <tr>
+            <td style="color:var(--muted);">${i+1}</td>
+            <td>${mEntityLink(r.node, {includeType:true})}</td>
+            <td style="font-size:11.5px;">${escapeHtml(r.reasons.join(" · "))}</td>
+            <td style="font-size:11.5px;">${ownerCell(r.node)}</td>
+            <td class="num">${r.score}</td>
+          </tr>`).join("")}</tbody>
+      </table>
+    </div>` : ""}
     <div class="kpi-grid">
       ${mKpi("Critical hubs", risk.criticalHubs.length, "&ge;2 dependents", risk.criticalHubs.length === 0 ? "ok" : (risk.criticalHubs.length <= 3 ? "warn" : "crit"))}
       ${mKpi("Orphaned entities", risk.orphans.length, "0 connections", risk.orphans.length === 0 ? "ok" : "warn")}
@@ -8248,6 +8407,12 @@ function openMetricsModal(){
 
   openModal('<i class="fa-solid fa-chart-line"></i> Leadership Metrics', html, ()=>closeModal(), true);
   document.getElementById("modal").classList.add("xl");
+  // Baseline picker: persist the choice and rebuild the modal with new deltas
+  const baseSel = document.getElementById("m-baseline");
+  if (baseSel) baseSel.onchange = () => {
+    try { localStorage.setItem("erg.metricsBaseline", baseSel.value); } catch(_){}
+    openMetricsModal();
+  };
   // Tab switching (with WAI-ARIA tab semantics)
   const mTablist = modalBody.querySelector(".m-tabs");
   if (mTablist) mTablist.setAttribute("role", "tablist");
@@ -8377,6 +8542,15 @@ function generateMetricsMarkdown(m){
   lines.push("");
 
   lines.push("## Risk");
+  const watchlist = computeTopRisks(m);
+  if (watchlist.length > 0){
+    lines.push("**Top risks watchlist** (composite of all risk signals):");
+    watchlist.slice(0,5).forEach((r,i) => {
+      const own = (typeof effectiveOwner === "function" ? effectiveOwner(r.node) : r.node.owner) || "UNOWNED";
+      lines.push(`${i+1}. ${r.node.label} (${r.node.type}) — ${r.reasons.join("; ")} — owner: ${own}`);
+    });
+    lines.push("");
+  }
   if (risk.criticalHubs.length > 0){
     lines.push("**Most depended-upon entities** (top 5):");
     risk.criticalHubs.slice(0,5).forEach((x,i) => {

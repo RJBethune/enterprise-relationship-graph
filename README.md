@@ -80,7 +80,7 @@ When you're ready to build your own graph: click **Open** to load a JSON file as
 
 **Accessibility & polish**
 - Real dialog semantics with focus trap and restoration
-- Keyboard-navigable canvas (Tab cycles nodes, arrows move cardinally)
+- Keyboard-navigable canvas (`[` / `]` or PageUp/PageDown cycle nodes, arrows move cardinally; Tab moves focus normally — no keyboard trap)
 - Status meaning carried by color + icon + text, not color alone
 - 44×44 touch targets, mobile breakpoint at 900 px
 - Smooth section collapse animations
@@ -104,8 +104,27 @@ When you're ready to build your own graph: click **Open** to load a JSON file as
 | `Ctrl+click` | Add/remove a node from the multi-selection |
 | `Shift+drag` | Lasso-select nodes inside a box |
 | `←` / `→` | Step through a presentation walkthrough (when playing) |
+| `[` / `]` | Cycle through nodes (canvas focused) |
+| `Shift+F10` | Open the context menu for the selected node/edge |
 | `Ctrl+F` | Focus search |
 | `Esc` | Cancel any active mode |
+
+**Leadership metrics**
+- Eight-tab dashboard (Executive Summary, Pipeline, Service, Risk & SPOFs, Coverage, Org Footprint, Org Intel, Complexity) with drill-down to any entity
+- Trend deltas vs. a baseline snapshot: ▲/▼ chips on the headline KPIs plus a trend table across snapshots — save a snapshot each month and the dashboard shows direction, not just state
+- Top Risks watchlist: every risk signal (dependency hubs, missing backups, single points of failure, deprecated-in-use, ownership gaps, staleness) combined into one ranked, owner-attributed list
+- Copy-summary markdown for pasting into email/Teams/Confluence, and a print stylesheet for PDF briefs
+
+## Testing
+
+```bash
+npm test                              # Node smoke tests (no install needed beyond Node)
+npm install                           # once, for the browser test
+npx playwright install chromium      # once, downloads the test browser
+npm run test:browser                  # Playwright: boot, canvas, persistence, dialogs, a11y
+```
+
+The smoke tests exercise the pure computation (metrics, validation, impact, search parsing, sanitization) in a Node VM. The browser test covers what that can't: real boot, edge-curve clicking, views surviving snapshot loads, pinned positions surviving reload, and modal keyboard behavior.
 
 ## Data model
 

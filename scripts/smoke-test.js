@@ -145,6 +145,9 @@ function loadMetricsAndAnalysis(sandbox) {
       .replace(/^function computeValidationViolations/m, 'globalThis.computeValidationViolations = function')
       .replace(/^function computeImpactTree/m,     'globalThis.computeImpactTree = function')
       .replace(/^function computeOrgIntelligence/m, 'globalThis.computeOrgIntelligence = function')
+      .replace(/^function computeMetricsFor/m,     'globalThis.computeMetricsFor = function')
+      .replace(/^function computeTopRisks/m,       'globalThis.computeTopRisks = function')
+      .replace(/^function deltaChip/m,             'globalThis.deltaChip = function')
       // The rest of the functions don't need to be exposed for testing
       .replace(/^function /gm, 'function _'),
     sandbox
@@ -379,11 +382,42 @@ test('Node positions round-trip through graph.positions', () => {
   const a = sb.state.positions.get('a');
   expect(a.x).toBe(100.3);
   expect(a.pinned).toBe(true);
+  expect(a.fixed).toBe(true, 'pinned implies fixed (sim only checks fixed)');
+  expect(sb.state.positions.get('b').fixed).toBe(false, 'unpinned restores unfixed');
   expect(a.vx).toBe(0, 'velocities reset on restore');
   expect(sb.state.positions.has('c')).toBe(false, 'node without saved position left for ensurePositions');
   // Garbage positions object must not throw
   sb.state.graph.positions = "corrupt";
   expect(sb.restorePositionsFromGraph()).toBe(0);
+});
+
+test('Top Risks watchlist + baseline metrics helpers', () => {
+  const sb = setupGraphSandbox();
+  loadMetricsAndAnalysis(sb);
+  // computeTopRisks calls these from outside the metrics block — stub them
+  sb.computeArticulationPoints = () => [];
+  sb.findNode = id => sb.state.graph.nodes.find(n => n.id === id);
+
+  const risks = sb.computeTopRisks();
+  expect(risks.length).toBeGt(0, 'sample data should produce a watchlist');
+  expect(risks[0].score >= risks[risks.length - 1].score).toBe(true, 'sorted by score desc');
+  expect(risks[0].reasons.length).toBeGt(0, 'top risk carries human-readable reasons');
+
+  // computeMetricsFor: runs against a different graph, restores state after
+  const base = JSON.parse(JSON.stringify(sb.SAMPLE_DATA));
+  base.nodes = base.nodes.slice(0, base.nodes.length - 5);
+  const keep = new Set(base.nodes.map(n => n.id));
+  base.edges = base.edges.filter(e => keep.has(e.source) && keep.has(e.target));
+  const pm = sb.computeMetricsFor(base);
+  expect(pm.N).toBe(sb.SAMPLE_DATA.nodes.length - 5, 'metrics reflect the swapped-in graph');
+  expect(sb.state.graph).toBe(sb.SAMPLE_DATA, 'state.graph restored after the swap');
+
+  // deltaChip: direction, polarity, no-baseline, flat
+  expect(sb.deltaChip(10, 7, 'up')).toContain('+3');
+  expect(sb.deltaChip(10, 7, 'up')).toContain('good');
+  expect(sb.deltaChip(10, 7, 'down')).toContain('bad');
+  expect(sb.deltaChip(5, 5, 'up')).toContain('flat');
+  expect(sb.deltaChip(5, null, 'up')).toBe('');
 });
 
 test('XSS regression guards present in source', () => {
