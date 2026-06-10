@@ -37,6 +37,7 @@ When you're ready to build your own graph: click **Open** to load a JSON file as
 - Font Awesome icons inside nodes; brand icons for Microsoft, Salesforce, etc.
 - Edge styles by category: hierarchy, ownership, dependency, integration, hosting, docs
 - Pan / zoom / drag with smooth interaction
+- Hand-arranged layouts persist — node positions and pins are saved into the JSON file and restored exactly on open
 
 **Editing**
 - Add, edit, delete nodes and relationships
@@ -46,7 +47,7 @@ When you're ready to build your own graph: click **Open** to load a JSON file as
 - User-defined custom node types stored with the graph
 
 **Discovery**
-- Search by name, type, or tag with pulse-glow highlighting
+- Search by name, type, or tag with pulse-glow highlighting, plus field operators: `type:Person owner:"jane smith" status:retired` (fields: type, tag, owner, lead, status, platform, office, directorate, id)
 - Path-finding between any two nodes (BFS, undirected)
 - Neighborhood-only view to hide everything except a selected node's direct connections
 - Filters for node types and relationship types

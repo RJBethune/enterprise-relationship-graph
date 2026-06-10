@@ -46,13 +46,20 @@
     state lives in one object + localStorage; mutations route through
     afterMutate() which persists, marks dirty, updates collapse set, and
     requests a redraw. Auto-edges from form fields are declared in SYNC_RULES.
-    Modals share a single open/close contract. JSON bundle format is v3
-    (envelope + graph) with backwards compatibility for v2 and legacy v1.
+    Modals share a single open/close contract. JSON bundle format is v4
+    (envelope + graph + persisted node positions) with backwards
+    compatibility for v3/v2 and legacy v1 graph-only files.
 
   Features: help system, quick-connect mode, right-click menus, undo/redo,
   hover tooltips, PNG export, named snapshots, edge styling by type,
   leadership metrics dashboard with drill-down, charts, and exports.
 -->
+<!-- Defense-in-depth CSP: inline script/styles are the app itself; the only
+     remote origins allowed are the three CDNs already in use (Font Awesome
+     CSS, Google Fonts, SheetJS for XLSX export). Everything else — including
+     any fetch/XHR a future injection might attempt — is blocked, so script
+     that slips past escaping cannot exfiltrate graph data. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdn.sheetjs.com; style-src 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; font-src https://cdnjs.cloudflare.com https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'" />
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" crossorigin="anonymous" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -90,6 +97,10 @@
   :root[data-theme="light"] .tool-btn:hover,
   :root[data-theme="light"] .tool-btn.active{ color:#FDF6EA; }
   :root[data-theme="light"] .canvas-toolbar{ background:rgba(252,251,248,0.90); }
+  /* The base .btn:hover / .rel-item:hover use hardcoded dark navies that
+     rendered almost-black-on-dark-text in light mode. */
+  :root[data-theme="light"] .btn:hover{ background:rgba(99,102,241,0.10); }
+  :root[data-theme="light"] .rel-item:hover{ background:rgba(99,102,241,0.08); }
   *{box-sizing:border-box}
   html,body{height:100%}
   body{
@@ -539,6 +550,7 @@
     transition:background 0.12s, border-color 0.12s;
   }
   .rel-item:hover{background:#19243B; border-color:var(--border-strong)}
+  .rel-item:focus-visible{outline:2px solid var(--accent); outline-offset:-1px}
   .rel-item .rel-left{display:flex; align-items:center; gap:8px; min-width:0; flex:1}
   .rel-item .ti{
     width:18px; height:18px; border-radius:5px; display:grid; place-items:center;
@@ -759,6 +771,7 @@
     border-radius:6px; cursor:pointer;
   }
   .ctx-item:hover{background:var(--card-2); color:var(--text)}
+  .ctx-item:focus-visible{background:var(--card-2); color:var(--text); outline:2px solid var(--accent); outline-offset:-2px}
   .ctx-item.danger{color:#FCA5A5}
   .ctx-item.danger:hover{background:#3a1414}
   .ctx-item .ci{width:14px; text-align:center; font-size:11px}
@@ -1059,6 +1072,12 @@
     background:var(--accent); color:#F5F3FF;
     border-color:var(--accent);
   }
+  /* Dark theme only: #6366F1 gives 4.07:1 against #F5F3FF text — just under
+     the WCAG 1.4.3 minimum of 4.5:1. #5156E5 reaches ~5:1. Light theme keeps
+     its own (passing) accent. */
+  :root:not([data-theme="light"]) .btn.primary{
+    background:#5156E5; border-color:#5156E5;
+  }
   .btn.primary:hover{
     background:var(--accent-2); border-color:var(--accent-2);
   }
@@ -1088,8 +1107,11 @@
     padding:6px 8px; border-radius:6px; cursor:pointer;
     transition:background 0.12s;
   }
-  .recent-item:hover, .recent-item:focus-visible{
-    background:var(--card); outline:none;
+  .recent-item:hover{
+    background:var(--card);
+  }
+  .recent-item:focus-visible{
+    background:var(--card); outline:2px solid var(--accent); outline-offset:-2px;
   }
   .recent-dot{
     width:8px; height:8px; border-radius:50%; flex-shrink:0;
@@ -1410,10 +1432,21 @@
   .btn, select, .legend-tab{ min-height:44px; }
 }
 #small-viewport-notice{ display:none; }
-@media (max-width:720px){
+/* Only block on genuinely small TOUCH devices. Width alone also matches a
+   desktop browser zoomed to 400% (320px CSS viewport), which WCAG 1.4.10
+   requires to stay usable — a low-vision user must not lose the whole app. */
+@media (max-width:720px) and (pointer:coarse){
   #small-viewport-notice{ display:flex; position:fixed; inset:0; z-index:9999; align-items:center; justify-content:center; background:var(--bg-0); padding:24px; box-sizing:border-box; text-align:center; }
   #small-viewport-notice strong{ color:var(--text); font-size:16px; }
   #small-viewport-notice p{ color:var(--muted); font-size:13px; margin-top:8px; max-width:40ch; line-height:1.5; }
+}
+/* WCAG 2.3.3 / 2.2.2: respect the OS-level reduced-motion preference */
+@media (prefers-reduced-motion: reduce){
+  *, *::before, *::after{
+    transition-duration:0.01ms !important;
+    animation-duration:0.01ms !important;
+    animation-iteration-count:1 !important;
+  }
 }
 </style>
 <script>(function(){try{var t=localStorage.getItem("erg.theme");if(!t)t=(window.matchMedia&&matchMedia("(prefers-color-scheme: light)").matches)?"light":"dark";if(t==="light")document.documentElement.setAttribute("data-theme","light");}catch(e){}})();</script>
@@ -1447,23 +1480,23 @@
         <div class="stat"><span class="val" id="stat-vnodes">0</span><span class="lbl">visible</span></div>
         <div class="stat accent"><span class="val" id="stat-sel">·</span><span class="lbl">selected</span></div>
       </div>
-      <button class="header-btn" id="btn-recent" title="Recently viewed entities"><i class="fa-solid fa-clock-rotate-left"></i></button>
-      <button class="header-btn" id="btn-data-quality" title="Data quality checks"><i class="fa-solid fa-clipboard-check"></i></button>
-      <button class="header-btn" id="btn-metrics" title="Leadership metrics"><i class="fa-solid fa-chart-line"></i></button>
+      <button class="header-btn" id="btn-recent" title="Recently viewed entities" aria-label="Recently viewed entities" aria-haspopup="dialog" aria-expanded="false"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i></button>
+      <button class="header-btn" id="btn-data-quality" title="Data quality checks" aria-label="Data quality checks"><i class="fa-solid fa-clipboard-check" aria-hidden="true"></i></button>
+      <button class="header-btn" id="btn-metrics" title="Leadership metrics" aria-label="Leadership metrics"><i class="fa-solid fa-chart-line" aria-hidden="true"></i></button>
       <button class="header-btn" id="btn-value-brief" title="Value brief: why this tool" aria-label="Value brief: why this tool"><i class="fa-solid fa-award"></i></button>
       <button class="header-btn" id="btn-theme" title="Switch to light mode" aria-label="Switch to light mode"><i class="fa-solid fa-sun"></i></button>
-      <button class="header-btn" id="btn-help" title="Help (?)"><i class="fa-solid fa-circle-question"></i></button>
+      <button class="header-btn" id="btn-help" title="Help (?)" aria-label="Help"><i class="fa-solid fa-circle-question" aria-hidden="true"></i></button>
     </div>
   </header>
   <div id="recent-popover" role="dialog" aria-label="Recently viewed entities"></div>
 
-  <aside class="sidebar">
+  <aside class="sidebar" aria-label="Graph controls and data tools">
     <div class="section" data-section="search">
       <button class="section-head" type="button" aria-expanded="true"><span><i class="fa-solid fa-magnifying-glass icon" aria-hidden="true"></i>&nbsp; Search</span><i class="fa-solid fa-chevron-down chev" aria-hidden="true"></i></button>
       <div class="section-body">
         <div class="field with-icon">
           <i class="fa-solid fa-magnifying-glass field-icon"></i>
-          <input type="text" id="search-input" placeholder="Search by name, type, or tag…" />
+          <input type="text" id="search-input" aria-label="Search by name, type, or tag. Supports field operators like type:Person or owner:name" placeholder="Search… (e.g. type:Person owner:smith)" title="Free text matches name/type/tags. Operators: type: tag: owner: lead: status: platform: office: directorate: id: — quote multi-word values" />
         </div>
         <div class="btn-row" style="margin-top:6px">
           <button class="btn ghost" id="btn-clear-search"><i class="fa-solid fa-xmark"></i> Clear</button>
@@ -1476,7 +1509,7 @@
       <button class="section-head" type="button" aria-expanded="true"><span><i class="fa-solid fa-sliders icon" aria-hidden="true"></i>&nbsp; View Controls</span><i class="fa-solid fa-chevron-down chev" aria-hidden="true"></i></button>
       <div class="section-body">
         <div class="field">
-          <label>Layout</label>
+          <label for="layout-select">Layout</label>
           <select id="layout-select">
             <option value="force">Force-directed</option>
             <option value="hierarchical">Hierarchical (top-down)</option>
@@ -1489,7 +1522,7 @@
           </select>
         </div>
         <div class="field" id="cluster-attr-field" style="display:none">
-          <label>Cluster by</label>
+          <label for="cluster-attr">Cluster by</label>
           <select id="cluster-attr">
             <option value="type">Type</option>
             <option value="directorate">Directorate</option>
@@ -1500,7 +1533,7 @@
           </select>
         </div>
         <div class="field">
-          <label>Scope to branch</label>
+          <label for="scope-select">Scope to branch</label>
           <select id="scope-select"><option value="">Whole graph</option></select>
         </div>
         <div class="btn-row">
@@ -1619,15 +1652,15 @@
   </aside>
 
   <main class="canvas-area">
-    <canvas id="graph-canvas" tabindex="0" role="application" aria-label="Relationship graph canvas. Use Tab or arrow keys to navigate nodes. Enter to view details."></canvas>
+    <canvas id="graph-canvas" tabindex="0" role="application" aria-label="Relationship graph canvas. Use arrow keys to navigate nodes spatially, left and right bracket keys to cycle through nodes, Enter to view details. Tab moves to the next control."></canvas>
     <div class="canvas-toolbar">
-      <button class="tool-btn" id="tb-zoom-in" title="Zoom in"><i class="fa-solid fa-plus"></i></button>
-      <button class="tool-btn" id="tb-zoom-out" title="Zoom out"><i class="fa-solid fa-minus"></i></button>
-      <button class="tool-btn" id="tb-fit" title="Fit"><i class="fa-solid fa-expand"></i></button>
-      <button class="tool-btn" id="tb-reset" title="Reset view"><i class="fa-solid fa-rotate-left"></i></button>
+      <button class="tool-btn" id="tb-zoom-in" title="Zoom in" aria-label="Zoom in"><i class="fa-solid fa-plus" aria-hidden="true"></i></button>
+      <button class="tool-btn" id="tb-zoom-out" title="Zoom out" aria-label="Zoom out"><i class="fa-solid fa-minus" aria-hidden="true"></i></button>
+      <button class="tool-btn" id="tb-fit" title="Fit" aria-label="Fit graph to view"><i class="fa-solid fa-expand" aria-hidden="true"></i></button>
+      <button class="tool-btn" id="tb-reset" title="Reset view" aria-label="Reset view"><i class="fa-solid fa-rotate-left" aria-hidden="true"></i></button>
       <div class="tool-divider"></div>
-      <button class="tool-btn" id="tb-undo" title="Undo (Ctrl+Z)"><i class="fa-solid fa-rotate-left" style="font-size:11px"></i><i class="fa-solid fa-arrow-left" style="font-size:8px; margin-left:-2px"></i></button>
-      <button class="tool-btn" id="tb-redo" title="Redo (Ctrl+Y)"><i class="fa-solid fa-arrow-right" style="font-size:8px; margin-right:-2px"></i><i class="fa-solid fa-rotate-right" style="font-size:11px"></i></button>
+      <button class="tool-btn" id="tb-undo" title="Undo (Ctrl+Z)" aria-label="Undo"><i class="fa-solid fa-rotate-left" style="font-size:11px" aria-hidden="true"></i><i class="fa-solid fa-arrow-left" style="font-size:8px; margin-left:-2px" aria-hidden="true"></i></button>
+      <button class="tool-btn" id="tb-redo" title="Redo (Ctrl+Y)" aria-label="Redo"><i class="fa-solid fa-arrow-right" style="font-size:8px; margin-right:-2px" aria-hidden="true"></i><i class="fa-solid fa-rotate-right" style="font-size:11px" aria-hidden="true"></i></button>
       <div class="tool-divider"></div>
       <button class="tool-btn" id="tb-edge-labels" title="Toggle edge labels (L)" aria-label="Toggle edge labels"><i class="fa-solid fa-tag" aria-hidden="true"></i></button>
       <button class="tool-btn" id="tb-layout-mode" title="Layout mode: drag nodes without selecting (M)" aria-label="Toggle layout mode"><i class="fa-solid fa-up-down-left-right" aria-hidden="true"></i></button>
@@ -1667,7 +1700,7 @@
       <button class="ban-close" id="scope-banner-close"><i class="fa-solid fa-xmark" aria-hidden="true"></i> Show whole graph</button>
     </div>
     <div class="legend" id="legend">
-      <button class="legend-toggle" id="legend-toggle">hide</button>
+      <button class="legend-toggle" id="legend-toggle" aria-label="Hide legend" aria-expanded="true">hide</button>
       <h4>Legend</h4>
       <div class="legend-tabs">
         <button class="legend-tab active" data-tab="nodes">Node Types</button>
@@ -1679,7 +1712,7 @@
     <div class="tooltip" id="tooltip" role="tooltip" aria-hidden="true"></div>
   </main>
 
-  <aside class="details" id="details-panel"></aside>
+  <aside class="details" id="details-panel" aria-label="Selection details"></aside>
 
   <footer class="status-bar">
     <div class="left">
@@ -1730,7 +1763,7 @@
 </div>
 
 <div class="ctx-menu" id="ctx-menu"></div>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 <div class="drop-overlay" id="drop-overlay">
   <div class="drop-card">
     <i class="fa-solid fa-file-arrow-down" aria-hidden="true"></i>
@@ -1854,11 +1887,17 @@ function typeStyle(name){
   if (TYPE_STYLE[name]) return TYPE_STYLE[name];
   const custom = (state.graph && state.graph.customNodeTypes || []).find(t => t.name === name);
   if (custom){
+    // Sanitize: custom types arrive verbatim from imported JSON and are
+    // interpolated into innerHTML/style attributes in several places, so
+    // reject anything that isn't a plain hex color or a short glyph.
+    const safeColor = (typeof custom.color === "string" && /^#[0-9a-fA-F]{3,8}$/.test(custom.color)) ? custom.color : TYPE_STYLE.Other.color;
+    const rawIcon = (typeof custom.icon === "string") ? custom.icon : "";
+    const safeIcon = (rawIcon.length <= 4 && !/[<>&"'`]/.test(rawIcon)) ? rawIcon : "";
     return {
-      color: custom.color,
+      color: safeColor,
       size:  custom.size  || 16,
       shape: custom.shape || "round",
-      icon:  custom.icon  || ""
+      icon:  safeIcon
     };
   }
   return TYPE_STYLE.Other;
@@ -1879,6 +1918,16 @@ function allNodeTypes(){
 }
 function countNodesOfType(name){
   return state.graph.nodes.filter(n => n.type === name).length;
+}
+// Built-in edge types plus any unrecognized types present in the loaded graph.
+// Without this, imported edges with custom types (e.g. "FUNDED_BY") were never
+// seeded into the filter set and could never be displayed or re-enabled.
+function allEdgeTypes(){
+  const extra = new Set();
+  (state.graph && state.graph.edges || []).forEach(e => {
+    if (e.type && !EDGE_TYPES.includes(e.type)) extra.add(e.type);
+  });
+  return [...EDGE_TYPES, ...extra];
 }
 
 /* ---------- Group/branch collapse ----------
@@ -2028,26 +2077,36 @@ const EDGE_CATEGORY = {
   "HAS_SITE":"composition", "HAS_TEAM":"composition", "HAS_O365_GROUP":"composition", "HAS_MAILBOX":"composition",
   "OTHER":"other"
 };
-// Per-category line style: [dash pattern, line width multiplier, color]
+// Per-category line style. `color` is the dark-theme stroke; `colorLight` is
+// the light-theme stroke (saturated darks — the dark theme's translucent
+// pastels were nearly invisible on the cream canvas). Dark alphas sit at
+// 0.55–0.75 so default edges clear the WCAG 1.4.11 3:1 minimum against the
+// canvas background.
 const EDGE_STYLE = {
-  hierarchy:   { dash:[],          width:1.6, color:"rgba(165,180,252,0.55)", label:"Hierarchy"   },
-  ownership:   { dash:[],          width:1.3, color:"rgba(167,139,250,0.55)", label:"Ownership"   },
-  composition: { dash:[],          width:1.2, color:"rgba(196,181,253,0.55)", label:"Composition" },
-  usage:       { dash:[],          width:1.0, color:"rgba(148,163,184,0.50)", label:"Usage"       },
-  dependency:  { dash:[6,4],       width:1.4, color:"rgba(248,113,113,0.65)", label:"Dependency"  },
-  integration: { dash:[2,3],       width:1.2, color:"rgba(94,234,212,0.55)",  label:"Integration" },
-  hosting:     { dash:[8,3,2,3],   width:1.2, color:"rgba(251,146,60,0.55)",  label:"Hosting"     },
-  docs:        { dash:[1,4],       width:1.0, color:"rgba(203,213,225,0.45)", label:"Docs/Decisions" },
-  other:       { dash:[3,3],       width:1.0, color:"rgba(148,163,184,0.40)", label:"Other"       }
+  hierarchy:   { dash:[],          width:1.6, color:"rgba(165,180,252,0.70)", colorLight:"rgba(67,56,202,0.75)",   label:"Hierarchy"   },
+  ownership:   { dash:[],          width:1.3, color:"rgba(167,139,250,0.70)", colorLight:"rgba(109,40,217,0.75)",  label:"Ownership"   },
+  composition: { dash:[],          width:1.2, color:"rgba(196,181,253,0.70)", colorLight:"rgba(124,58,237,0.70)",  label:"Composition" },
+  usage:       { dash:[],          width:1.0, color:"rgba(148,163,184,0.65)", colorLight:"rgba(71,85,105,0.70)",   label:"Usage"       },
+  dependency:  { dash:[6,4],       width:1.4, color:"rgba(248,113,113,0.75)", colorLight:"rgba(185,28,28,0.80)",   label:"Dependency"  },
+  integration: { dash:[2,3],       width:1.2, color:"rgba(94,234,212,0.70)",  colorLight:"rgba(15,118,110,0.75)",  label:"Integration" },
+  hosting:     { dash:[8,3,2,3],   width:1.2, color:"rgba(251,146,60,0.70)",  colorLight:"rgba(194,65,12,0.75)",   label:"Hosting"     },
+  docs:        { dash:[1,4],       width:1.0, color:"rgba(203,213,225,0.60)", colorLight:"rgba(100,116,139,0.70)", label:"Docs/Decisions" },
+  other:       { dash:[3,3],       width:1.0, color:"rgba(148,163,184,0.55)", colorLight:"rgba(100,116,139,0.60)", label:"Other"       }
 };
-const edgeStyle = t => EDGE_STYLE[EDGE_CATEGORY[t] || "other"];
+const edgeCategoryStyle = cat => {
+  const s = EDGE_STYLE[cat] || EDGE_STYLE.other;
+  if (s.colorLight && document.documentElement.getAttribute("data-theme") === "light"){
+    return { dash: s.dash, width: s.width, color: s.colorLight, label: s.label };
+  }
+  return s;
+};
+const edgeStyle = t => edgeCategoryStyle(EDGE_CATEGORY[t] || "other");
 
 /* ---------- CANVAS PAINT TOKENS ----------
    Color values used directly by the Canvas renderer (which can't read CSS vars).
    Keep these in sync with the CSS custom properties above. */
 const CANVAS_COLORS_DARK = {
   nodeBorder:        "rgba(15, 23, 42, 0.85)",
-  edgeDefault:       "rgba(148, 163, 184, 0.32)",
   edgeHighlight:     "rgba(165, 180, 252, 0.90)",
   edgeHover:         "rgba(165, 180, 252, 0.98)",
   edgeSelected:      "#FBBF24",
@@ -2067,7 +2126,6 @@ const CANVAS_COLORS_DARK = {
 };
 const CANVAS_COLORS_LIGHT = {
   nodeBorder:        "rgba(40, 36, 30, 0.45)",
-  edgeDefault:       "rgba(90, 86, 78, 0.42)",
   edgeHighlight:     "rgba(67, 56, 202, 0.95)",
   edgeHover:         "rgba(67, 56, 202, 1)",
   edgeSelected:      "#B45309",
@@ -2438,13 +2496,21 @@ function restoreLegendCollapse(){
   if (!lg) return;
   lg.classList.toggle("collapsed", ui.legendCollapsed);
   const btn = document.getElementById("legend-toggle");
-  if (btn) btn.textContent = ui.legendCollapsed ? "show" : "hide";
+  if (btn){
+    btn.textContent = ui.legendCollapsed ? "show" : "hide";
+    btn.setAttribute("aria-label", ui.legendCollapsed ? "Show legend" : "Hide legend");
+    btn.setAttribute("aria-expanded", ui.legendCollapsed ? "false" : "true");
+  }
 }
 function restoreUIState(){
   restoreSidebarCollapse();
   restoreLegendCollapse();
 }
 const HISTORY_LIMIT = 30;
+
+// WCAG 2.3.3 / 2.2.2: honor the OS reduced-motion preference for JS-driven
+// animation (canvas dash-march, camera tweens). CSS has a matching media block.
+const PREFERS_REDUCED_MOTION = !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
 
 const state = {
   graph: { nodes: [], edges: [] },
@@ -2522,7 +2588,7 @@ function loadInitial(){
 }
 function resetFiltersFromGraph(){
   state.filtersNode = new Set(allNodeTypes());
-  state.filtersEdge = new Set(EDGE_TYPES);
+  state.filtersEdge = new Set(allEdgeTypes());
   applyStoredFilters();
 }
 /* Filter selections persist in localStorage. We store the DESELECTED types so
@@ -2530,7 +2596,7 @@ function resetFiltersFromGraph(){
    types stay hidden across reloads). */
 function persistFilters(){
   const hiddenNodeTypes = allNodeTypes().filter(t => !state.filtersNode.has(t));
-  const hiddenEdgeTypes = EDGE_TYPES.filter(t => !state.filtersEdge.has(t));
+  const hiddenEdgeTypes = allEdgeTypes().filter(t => !state.filtersEdge.has(t));
   saveUIState({ hiddenNodeTypes, hiddenEdgeTypes });
 }
 function applyStoredFilters(){
@@ -2540,7 +2606,7 @@ function applyStoredFilters(){
     if (Array.isArray(ui.hiddenEdgeTypes)) ui.hiddenEdgeTypes.forEach(t => state.filtersEdge.delete(t));
   } catch(_){}
 }
-function persist(){ try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)); } catch(_){} }
+function persist(){ try { syncPositionsToGraph(); localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)); } catch(_){} }
 
 /* ---------- HELPERS ---------- */
 const uid = p => p+"-"+Math.random().toString(36).slice(2,8)+"-"+Date.now().toString(36).slice(-4);
@@ -2552,6 +2618,55 @@ function neighborsOf(id){
     outE: state.graph.edges.filter(e=>e.source===id)
   };
 }
+/* ----- Structured search -----
+   The search box accepts field operators alongside free text, e.g.:
+     type:Person owner:"Jane Smith" status:retired sharepoint
+   Known fields: type, tag, owner, lead, status, platform, office,
+   directorate, id. Quoted values may contain spaces. All clauses must match
+   (AND). Plain terms keep the original behavior: label / type / tags. */
+const SEARCH_FIELDS = { type:1, tag:1, owner:1, lead:1, status:1, platform:1, office:1, directorate:1, id:1 };
+function parseSearchQuery(q){
+  const clauses = [];
+  const re = /(\w+):"([^"]*)"|(\w+):(\S+)|"([^"]*)"|(\S+)/g;
+  let m;
+  while ((m = re.exec(q)) !== null){
+    if (m[1] !== undefined || m[3] !== undefined){
+      const field = (m[1] !== undefined ? m[1] : m[3]).toLowerCase();
+      const value = (m[1] !== undefined ? m[2] : m[4]).toLowerCase();
+      if (SEARCH_FIELDS[field] && value){ clauses.push({ field, value }); continue; }
+      clauses.push({ field: null, value: m[0].toLowerCase() }); // unknown field -> free text
+    } else {
+      const value = (m[5] !== undefined ? m[5] : m[6]).toLowerCase();
+      if (value) clauses.push({ field: null, value });
+    }
+  }
+  return clauses;
+}
+// Parse cache — the canvas render path calls nodeMatchesSearch per node per frame.
+function searchClauses(){
+  if (searchClauses._q !== state.search){
+    searchClauses._q = state.search;
+    searchClauses._c = parseSearchQuery(state.search);
+  }
+  return searchClauses._c;
+}
+function nodeMatchesSearch(n){
+  if (!state.search) return true;
+  const clauses = searchClauses();
+  if (!clauses.length) return true;
+  const f = v => String(v == null ? "" : v).toLowerCase();
+  return clauses.every(c => {
+    if (!c.field){
+      return f(n.label).includes(c.value) || f(n.type).includes(c.value) ||
+             (n.tags||[]).join(",").toLowerCase().includes(c.value);
+    }
+    if (c.field === "tag")      return (n.tags||[]).some(t => f(t).includes(c.value));
+    if (c.field === "owner")    return f(typeof effectiveOwner === "function" ? effectiveOwner(n) : n.owner).includes(c.value);
+    if (c.field === "lead")     return f(typeof effectiveLead === "function" ? effectiveLead(n) : n.lead).includes(c.value);
+    if (c.field === "platform") return f(typeof effectivePlatform === "function" ? effectivePlatform(n) : n.platform).includes(c.value);
+    return f(n[c.field]).includes(c.value);
+  });
+}
 function isVisibleNode(n){
   if (state.present.active && state.present.isolate && state.present.focusIds && !state.present.focusIds.has(n.id)) return false;
   if (state.scopeIds && !state.scopeIds.has(n.id)) return false;
@@ -2559,11 +2674,7 @@ function isVisibleNode(n){
   // Hidden by an ancestor's collapse — the parent stays visible to act as the proxy
   if (isHiddenByCollapse(n.id)) return false;
   if (state.search){
-    const s = state.search.toLowerCase();
-    const hit = (n.label||"").toLowerCase().includes(s) ||
-                (n.type||"").toLowerCase().includes(s) ||
-                (n.tags||[]).join(",").toLowerCase().includes(s);
-    if (!hit && !isNeighborhoodInclude(n)) return false;
+    if (!nodeMatchesSearch(n) && !isNeighborhoodInclude(n)) return false;
   }
   if (state.showNeighborhoodOnly && state.selectedNode){
     return n.id===state.selectedNode || isNeighborhoodInclude(n);
@@ -2645,8 +2756,12 @@ function showToast(msg, kind){
   const el = document.getElementById("toast");
   el.classList.remove("err","ok");
   if (kind) el.classList.add(kind);
+  // Errors (incl. form validation) should interrupt screen readers; info/ok
+  // announcements can wait politely.
+  el.setAttribute("aria-live", kind === "err" ? "assertive" : "polite");
+  el.setAttribute("role", kind === "err" ? "alert" : "status");
   const icon = kind==="err" ? "circle-exclamation" : kind==="ok" ? "circle-check" : "circle-info";
-  el.innerHTML = `<i class="fa-solid fa-${icon}"></i> ${escapeHtml(msg)}`;
+  el.innerHTML = `<i class="fa-solid fa-${icon}" aria-hidden="true"></i> ${escapeHtml(msg)}`;
   el.classList.add("show");
   clearTimeout(showToast._t);
   showToast._t = setTimeout(()=>el.classList.remove("show"), 2400);
@@ -2792,6 +2907,13 @@ function clearPath(){
   requestRedraw();
   renderDetails();
 }
+// Reset transient view state (found path, multi-select) that would otherwise
+// reference nodes from a previous graph after a file/sample/snapshot load —
+// stale path state dims the entire new graph and keeps dead IDs selected.
+function clearLoadedViewState(){
+  if (state.pathFinding.active || state.pathFinding.pathNodes.size > 0) clearPath();
+  if (state.multiSelect.size){ state.multiSelect.clear(); updateStats(); }
+}
 // Keeps the sidebar Find Path button in sync with path-finding state.
 // Three states: idle (default label), picking (cancel label, active style),
 // path shown (clear label, active style).
@@ -2834,7 +2956,13 @@ function applyFoundPath(steps, srcId, dstId){
       });
     }
   });
-  if (expanded) recomputeHiddenByCollapse();
+  if (expanded){
+    recomputeHiddenByCollapse();
+    // collapsedNodes is persisted graph data: route through afterMutate so the
+    // expansion survives reload and participates in undo history. skipDirty —
+    // revealing a path is a view aid, not an edit the user must re-save.
+    afterMutate(true);
+  }
   // Also select source so its profile shows; details renderer prefers path view if active
   selectNode(srcId);
 }
@@ -2895,6 +3023,44 @@ function ensurePositions(){
   });
 }
 
+/* ----- Layout persistence -----
+   Hand-arranged layouts survive save/reload: node positions (and pin flags)
+   are serialized into graph.positions on every persist/save and restored on
+   load. When positions restore successfully the loader skips re-running the
+   layout algorithm, so the geometry on screen is exactly what was saved.
+   (History snapshots deliberately exclude positions — the force sim moves
+   nodes between history pushes, so undo would otherwise yank the camera.) */
+function syncPositionsToGraph(){
+  const out = {};
+  state.graph.nodes.forEach(n=>{
+    const p = state.positions.get(n.id);
+    if (!p || !isFinite(p.x) || !isFinite(p.y)) return;
+    const rec = { x: Math.round(p.x*10)/10, y: Math.round(p.y*10)/10 };
+    if (p.pinned) rec.pinned = 1;
+    out[n.id] = rec;
+  });
+  state.graph.positions = out;
+}
+function restorePositionsFromGraph(){
+  const saved = state.graph.positions;
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) return 0;
+  let restored = 0;
+  state.graph.nodes.forEach(n=>{
+    const p = saved[n.id];
+    if (p && isFinite(p.x) && isFinite(p.y)){
+      state.positions.set(n.id, { x:+p.x, y:+p.y, vx:0, vy:0, fixed:false, pinned:!!p.pinned });
+      restored++;
+    }
+  });
+  return restored;
+}
+// Debounced localStorage persist for drag re-arrangements, so moving nodes
+// around (without any data edit) still survives a reload.
+function schedulePositionPersist(){
+  clearTimeout(schedulePositionPersist._t);
+  schedulePositionPersist._t = setTimeout(persist, 800);
+}
+
 /* ----- Hierarchy helpers (shared by hierarchical / hierarchical-lr / radial) ----- */
 const HIER_DOWN_TYPES = ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST","OWNS","MANAGES"];
 const HIER_UP_TYPES   = ["REPORTS_TO","PART_OF"];
@@ -2922,10 +3088,16 @@ function buildHierarchy(opts){
   // singleton row far from its unit. When leadParents is set, attach such
   // orphans to the unit they lead so leads sit directly under it.
   if (opts.leadParents){
+    const nodeById = new Map(state.graph.nodes.map(n => [n.id, n]));
     state.graph.edges.forEach(ed => {
       if (ed.type !== "RESPONSIBLE_FOR" && ed.type !== "MANAGES") return;
       const child = ed.source, parent = ed.target; // person --RESPONSIBLE_FOR--> unit
       if (parent === child) return;
+      // Only rescue actual people/roles — without this check an orphaned
+      // Office that MANAGES an Application would become the Application's
+      // child in the org tree.
+      const childNode = nodeById.get(child);
+      if (!childNode || (childNode.type !== "Person" && childNode.type !== "Role")) return;
       if (!childrenOf.has(parent) || !childrenOf.has(child)) return;
       if (parentOf.has(child)) return; // only rescue true orphans
       parentOf.set(child, parent);
@@ -3611,12 +3783,7 @@ function render(){
   const focusId = state.selectedNode || state.hoveredNode;
   const searchHits = new Set();
   if (state.search){
-    const s = state.search.toLowerCase();
-    state.graph.nodes.forEach(n=>{
-      if ((n.label||"").toLowerCase().includes(s) ||
-          (n.type||"").toLowerCase().includes(s) ||
-          (n.tags||[]).join(",").toLowerCase().includes(s)) searchHits.add(n.id);
-    });
+    state.graph.nodes.forEach(n=>{ if (nodeMatchesSearch(n)) searchHits.add(n.id); });
   }
 
   // edges
@@ -3653,7 +3820,9 @@ function render(){
       (e.source === state.selectedNode || e.target === state.selectedNode);
     if (animateThisEdge){
       ctx.setLineDash([10, 5]);
-      ctx.lineDashOffset = -(performance.now() / 70) % 15;
+      // Static dashes under prefers-reduced-motion (WCAG 2.3.3 / 2.2.2):
+      // the connection still reads as dashed, it just doesn't march.
+      ctx.lineDashOffset = PREFERS_REDUCED_MOTION ? 0 : -(performance.now() / 70) % 15;
     }
 
     const dx = b.x-a.x, dy = b.y-a.y;
@@ -3951,14 +4120,39 @@ function pickNode(sx,sy){
 }
 function pickEdge(sx,sy){
   const w = screenToWorld(sx,sy);
+  // Tolerance in SCREEN pixels (converted to world units) so edges stay
+  // clickable when zoomed out and don't grow a huge slop zone zoomed in.
+  const tol = 6 / (state.transform.scale || 1);
   const edges = state.graph.edges;
   for (let i=edges.length-1;i>=0;i--){
     const e = edges[i]; if (!isVisibleEdge(e)) continue;
     const a = state.positions.get(e.source), b = state.positions.get(e.target);
     if (!a||!b) continue;
-    if (pointToSegmentDist(w.x,w.y,a.x,a.y,b.x,b.y) < 6) return e;
+    if (pointToEdgeCurveDist(w.x, w.y, a, b) < tol) return e;
   }
   return null;
+}
+// Distance from a point to the quadratic curve the renderer actually draws
+// (control point offset perpendicular from the chord midpoint — keep in sync
+// with the geometry in render()). Sampled as a polyline; 16 segments is well
+// within tolerance for curves whose max bow is 20 world px.
+function pointToEdgeCurveDist(px, py, a, b){
+  const dx = b.x-a.x, dy = b.y-a.y;
+  const len = Math.sqrt(dx*dx+dy*dy) || 1;
+  const offset = Math.min(20, len*0.08);
+  const nx = -dy/len, ny = dx/len;
+  const cpx = (a.x+b.x)/2 + nx*offset, cpy = (a.y+b.y)/2 + ny*offset;
+  let best = Infinity, lx = a.x, ly = a.y;
+  const STEPS = 16;
+  for (let i=1;i<=STEPS;i++){
+    const t = i/STEPS, mt = 1-t;
+    const x = mt*mt*a.x + 2*mt*t*cpx + t*t*b.x;
+    const y = mt*mt*a.y + 2*mt*t*cpy + t*t*b.y;
+    const d = pointToSegmentDist(px, py, lx, ly, x, y);
+    if (d < best) best = d;
+    lx = x; ly = y;
+  }
+  return best;
 }
 function pointToSegmentDist(px,py,x1,y1,x2,y2){
   const dx = x2-x1, dy = y2-y1, len2 = dx*dx+dy*dy;
@@ -3978,9 +4172,11 @@ canvas.addEventListener("mousedown", ev=>{
   state.lastMouse = { x:sx, y:sy };
 
   const hit = pickNode(sx, sy);
-  // What-if scenario mode: clicking a node toggles its disabled state
+  // What-if scenario mode: clicking a node toggles its disabled state.
+  // Empty-canvas drags still pan so distant nodes stay reachable mid-mode.
   if (state.whatif.active){
     if (hit) toggleWhatifNode(hit.id);
+    else { state.dragMode = "pan"; canvas.classList.add("dragging"); }
     return;
   }
   // Ctrl/Cmd+click toggles a node's membership in the multi-selection
@@ -3992,14 +4188,15 @@ canvas.addEventListener("mousedown", ev=>{
     if (hit && hit.id !== state.connectingFrom){
       openConnectModal(state.connectingFrom, hit.id);
     } else if (!hit){
-      // ignore
+      // empty canvas: pan, so the target node can be reached mid-connect
+      state.dragMode = "pan"; canvas.classList.add("dragging");
     } else {
       showToast("Pick a different node as target", "err");
     }
     return;
   }
   if (state.pathFinding.active){
-    if (!hit) return;
+    if (!hit){ state.dragMode = "pan"; canvas.classList.add("dragging"); return; }
     if (!state.pathFinding.source){
       state.pathFinding.source = hit.id;
       showPathBanner();
@@ -4100,6 +4297,7 @@ canvas.addEventListener("mouseup", ()=>{
   if (state.draggedNode){
     const p = state.positions.get(state.draggedNode);
     if (p && !p.pinned) p.fixed = false;  // pinned nodes stay anchored after release
+    schedulePositionPersist(); // re-arrangements survive reload without a data edit
   }
   state.draggedNode = null; state.dragMode = null;
   canvas.classList.remove("dragging");
@@ -4182,12 +4380,31 @@ canvas.addEventListener("keydown", ev=>{
   else if (key === "ArrowDown")  { ev.preventDefault(); navigateNode("down"); }
   else if (key === "ArrowLeft")  { ev.preventDefault(); navigateNode("left"); }
   else if (key === "ArrowRight") { ev.preventDefault(); navigateNode("right"); }
-  else if (key === "Tab"){
-    ev.preventDefault();
-    navigateNode(ev.shiftKey ? "prev" : "next");
-  }
+  // NOTE: Tab is deliberately NOT intercepted — hijacking it created a WCAG
+  // 2.1.2 keyboard trap (focus could never leave the canvas). Cycle nodes
+  // with [ and ] (or PageUp/PageDown) instead; arrows do spatial navigation.
+  else if (key === "]" || key === "PageDown"){ ev.preventDefault(); navigateNode("next"); }
+  else if (key === "[" || key === "PageUp")  { ev.preventDefault(); navigateNode("prev"); }
   else if (key === "Enter" || key === " "){
     if (state.selectedNode){ ev.preventDefault(); centerOnNode(state.selectedNode); }
+  }
+  // Keyboard path to the context menu (Shift+F10 / dedicated ContextMenu key)
+  else if (key === "ContextMenu" || (ev.shiftKey && key === "F10")){
+    if (!state.selectedNode && !state.selectedEdge) return;
+    ev.preventDefault();
+    ctxReturnFocus = canvas;
+    const rect = canvas.getBoundingClientRect();
+    const t = state.transform;
+    if (state.selectedNode){
+      const n = findNode(state.selectedNode), p = state.positions.get(state.selectedNode);
+      if (n && p) showNodeContextMenu(rect.left + p.x*t.scale + t.x, rect.top + p.y*t.scale + t.y, n);
+    } else {
+      const e = findEdge(state.selectedEdge);
+      const a = e && state.positions.get(e.source), b = e && state.positions.get(e.target);
+      if (e && a && b) showEdgeContextMenu(rect.left + (a.x+b.x)/2*t.scale + t.x, rect.top + (a.y+b.y)/2*t.scale + t.y, e);
+    }
+    const first = document.querySelector("#ctx-menu .ctx-item");
+    if (first) first.focus();
   }
 });
 
@@ -4242,7 +4459,7 @@ function announceSelection(id){
   live.textContent = n.label + ", " + n.type + ". " + summary + ".";
 }
 function selectNode(id){ state.selectedNode = id; state.selectedEdge = null; state.multiSelect.clear(); renderDetails(); updateStats(); requestRedraw(); pushRecentNode(id); announceSelection(id); }
-function selectEdge(id){ state.selectedEdge = id; state.selectedNode = null; renderDetails(); updateStats(); requestRedraw(); }
+function selectEdge(id){ state.selectedEdge = id; state.selectedNode = null; state.multiSelect.clear(); renderDetails(); updateStats(); requestRedraw(); }
 function clearSelection(){
   state.selectedNode = state.selectedEdge = null;
   state.showNeighborhoodOnly = false;
@@ -4251,6 +4468,22 @@ function clearSelection(){
 }
 
 /* ----- Tooltip ----- */
+// Human-readable edit age. Gives the staleness heatmap a non-color
+// representation (WCAG 1.4.1): the same information appears as text in the
+// tooltip and node profile.
+function timeAgo(iso){
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (isNaN(ms)) return null;
+  const days = Math.floor(ms / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return days + " days ago";
+  const months = Math.floor(days / 30);
+  if (months < 12) return months + " month" + (months===1?"":"s") + " ago";
+  const years = Math.floor(months / 12);
+  return years + " year" + (years===1?"":"s") + " ago";
+}
 function scheduleTooltip(node, clientX, clientY){
   clearTimeout(tooltipTimer);
   tooltipTimer = setTimeout(()=>{
@@ -4263,6 +4496,8 @@ function scheduleTooltip(node, clientX, clientY){
     if (tipOwner) meta.push("Owner: " + tipOwner);
     if (tipLead) meta.push("Lead: " + tipLead);
     if (tipPlatform) meta.push("Platform: " + tipPlatform);
+    const tipAge = timeAgo(node.updatedAt);
+    if (tipAge) meta.push("Edited " + tipAge);
     el.innerHTML = `<div class="tooltip-title">${escapeHtml(node.label)}</div>
       <div class="tooltip-type"><i class="fa-solid" style="color:${ts.color}">${ts.icon||""}</i> ${escapeHtml(node.type)}</div>
       ${node.description ? `<div class="tooltip-meta">${escapeHtml(node.description.slice(0,120))}${node.description.length>120?"…":""}</div>`:""}
@@ -4463,7 +4698,7 @@ function renderPathProfile(el, steps){
       if (!n) return "";
       const ts = typeStyle(n.type);
       const isEnd = i === 0 || i === steps.length-1;
-      return `<div class="rel-item" data-node="${escapeHtml(n.id)}" style="${isEnd?'border-color:rgba(251,191,36,0.5);':''}">
+      return `<div class="rel-item" data-node="${escapeHtml(n.id)}" role="button" tabindex="0" style="${isEnd?'border-color:rgba(251,191,36,0.5);':''}">
         <div class="rel-left">
           <div class="ti" style="background:${ts.color}; color:${iconFgFor(ts.color)}"><i class="fa-solid" aria-hidden="true">${ts.icon||"&#xf111;"}</i></div>
           <div style="min-width:0">
@@ -4507,6 +4742,7 @@ function renderPathProfile(el, steps){
       // Clicking a path step centers but doesn't change the path highlight
       centerOnNode(id);
     });
+    it.addEventListener("keydown", e=>{ if (e.key==="Enter"||e.key===" "){ e.preventDefault(); it.click(); } });
   });
   document.getElementById("path-find-another").onclick = ()=>{ clearPath(); startPathFinding(); };
   document.getElementById("path-clear").onclick = ()=>{ clearPath(); showToast("Path cleared","ok"); };
@@ -4514,7 +4750,7 @@ function renderPathProfile(el, steps){
 
 function relItemHtml(other, edge, dir){
   const ot = typeStyle(other.type);
-  return `<div class="rel-item" data-node="${escapeHtml(other.id)}">
+  return `<div class="rel-item" data-node="${escapeHtml(other.id)}" role="button" tabindex="0">
     <div class="rel-left">
       <div class="ti" style="background:${ot.color}; color:${iconFgFor(ot.color)}"><i class="fa-solid">${ot.icon||"&#xf111;"}</i></div>
       <div style="min-width:0">
@@ -4542,8 +4778,18 @@ function renderNodeProfile(el, node){
   addKv("Directorate", node.directorate);
   addKv("Office", node.office);
   addKv("Platform", effectivePlatform(node));
+  if (node.updatedAt){
+    const ago = timeAgo(node.updatedAt);
+    addKv("Last edited", ago ? `${ago} (${new Date(node.updatedAt).toLocaleDateString()})` : null);
+  }
   if (node.url && node.url.trim()){
-    addKv("URL", `<a href="${escapeHtml(node.url)}" target="_blank" rel="noopener">${escapeHtml(node.url)}</a>`, true);
+    // Only hyperlink http(s) URLs — escapeHtml stops attribute breakout but
+    // not a javascript: scheme in imported data; show anything else as text.
+    if (/^https?:\/\//i.test(node.url.trim())){
+      addKv("URL", `<a href="${escapeHtml(node.url)}" target="_blank" rel="noopener">${escapeHtml(node.url)}</a>`, true);
+    } else {
+      addKv("URL", node.url);
+    }
   }
   if (node.email && node.email.trim()){
     // Support comma-separated addresses (primary + aliases) by linking each one
@@ -4616,11 +4862,13 @@ function renderNodeProfile(el, node){
       </div>
       <button class="btn block" id="profile-walk" style="margin-top:6px"><i class="fa-solid fa-person-walking"></i> Walk relationships</button>
       <button class="btn block" id="profile-scope" style="margin-top:6px"><i class="fa-solid fa-filter"></i> Scope to this branch</button>
+      ${getCollapseChildren(node.id).length || isCollapsed(node.id) ? `<button class="btn block" id="profile-collapse" style="margin-top:6px"><i class="fa-solid fa-square-${isCollapsed(node.id)?"plus":"minus"}"></i> ${isCollapsed(node.id)?"Expand branch":"Collapse branch"}</button>` : ""}
       <button class="btn danger block" id="profile-delete" style="margin-top:6px"><i class="fa-solid fa-trash"></i> Delete</button>
     </div>
   `;
   el.querySelectorAll(".rel-item").forEach(it=>{
     it.addEventListener("click", ()=>{ const id = it.getAttribute("data-node"); selectNode(id); centerOnNode(id); });
+    it.addEventListener("keydown", e=>{ if (e.key==="Enter"||e.key===" "){ e.preventDefault(); it.click(); } });
   });
   document.getElementById("profile-edit").onclick = ()=>openNodeModal(node);
   document.getElementById("profile-connect").onclick = ()=>startConnect(node.id);
@@ -4633,6 +4881,13 @@ function renderNodeProfile(el, node){
   document.getElementById("profile-center").onclick = ()=>centerOnNode(node.id);
   document.getElementById("profile-walk").onclick = ()=>walkRelationships(node.id);
   document.getElementById("profile-scope").onclick = ()=>scopeToBranch(node.id);
+  // Keyboard-reachable Collapse/Expand branch — previously this action only
+  // existed in the right-click context menu (a WCAG 2.1.1 gap).
+  const collapseBtn = document.getElementById("profile-collapse");
+  if (collapseBtn) collapseBtn.onclick = ()=>{
+    if (isCollapsed(node.id)) expandNodeBranch(node.id); else collapseNodeBranch(node.id);
+    renderDetails();
+  };
   document.getElementById("profile-delete").onclick = ()=>{
     if (confirm("Delete '"+node.label+"' and its relationships?")) deleteNode(node.id);
   };
@@ -4644,7 +4899,10 @@ function renderEdgeProfile(el, edge){
   const ss = s ? typeStyle(s.type) : null, tt = t ? typeStyle(t.type) : null;
   const cat = EDGE_CATEGORY[edge.type] || "other";
   const catStyle = EDGE_STYLE[cat];
-  const typeOpts = EDGE_TYPES.map(t => `<option value="${t}" ${edge.type===t?"selected":""}>${t}</option>`).join("");
+  // Include this edge's own type even if it isn't built-in (imported files may
+  // carry custom types) so opening the editor doesn't silently coerce it.
+  const typeList = EDGE_TYPES.includes(edge.type) ? EDGE_TYPES : [...EDGE_TYPES, edge.type];
+  const typeOpts = typeList.map(t => `<option value="${escapeHtml(t)}" ${edge.type===t?"selected":""}>${escapeHtml(t)}</option>`).join("");
   el.innerHTML = `
     <div class="profile-header">
       <span class="type-pill"><i class="fa-solid fa-arrow-right-long ti"></i> Relationship · ${escapeHtml(catStyle.label)}</span>
@@ -4668,7 +4926,7 @@ function renderEdgeProfile(el, edge){
     <div class="profile-section">
       <h4><i class="fa-solid fa-link"></i> Endpoints</h4>
       <div class="rel-list">
-        <div class="rel-item" data-node="${escapeHtml(edge.source)}">
+        <div class="rel-item" data-node="${escapeHtml(edge.source)}" role="button" tabindex="0">
           <div class="rel-left">
             <div class="ti" style="background:${ss?ss.color:"#94A3B8"}; color:${iconFgFor(ss?ss.color:"#94A3B8")}"><i class="fa-solid">${ss?ss.icon:"&#xf111;"}</i></div>
             <div style="min-width:0">
@@ -4678,7 +4936,7 @@ function renderEdgeProfile(el, edge){
           </div>
           <span class="arrow">→</span>
         </div>
-        <div class="rel-item" data-node="${escapeHtml(edge.target)}">
+        <div class="rel-item" data-node="${escapeHtml(edge.target)}" role="button" tabindex="0">
           <div class="rel-left">
             <div class="ti" style="background:${tt?tt.color:"#94A3B8"}; color:${iconFgFor(tt?tt.color:"#94A3B8")}"><i class="fa-solid">${tt?tt.icon:"&#xf111;"}</i></div>
             <div style="min-width:0">
@@ -4700,6 +4958,7 @@ function renderEdgeProfile(el, edge){
   `;
   el.querySelectorAll(".rel-item").forEach(it=>{
     it.addEventListener("click", ()=>{ const id = it.getAttribute("data-node"); selectNode(id); });
+    it.addEventListener("keydown", e=>{ if (e.key==="Enter"||e.key===" "){ e.preventDefault(); it.click(); } });
   });
   // Inline-edit wiring: live-save on change, brief "saved" confirmation
   const savedFlag = document.getElementById("edge-saved-flag");
@@ -4713,7 +4972,19 @@ function renderEdgeProfile(el, edge){
   if (typeSel){
     typeSel.onchange = () => {
       edge.type = typeSel.value;
+      // A manual retype makes this a user-owned edge: clear the auto flags so
+      // syncStructuralEdges won't silently revert it on the next node save.
+      if (edge.auto){ delete edge.auto; delete edge.autoField; }
       afterMutate();
+      // afterMutate's dedupe keeps the FIRST identical edge — if this one was
+      // removed in the merge, select the survivor instead of editing a ghost.
+      if (!findEdge(edge.id)){
+        const survivor = state.graph.edges.find(x => x.source===edge.source && x.target===edge.target && x.type===edge.type);
+        showToast("Merged with an identical existing relationship", "ok");
+        if (survivor) selectEdge(survivor.id);
+        else { state.selectedEdge = null; renderDetails(); }
+        return;
+      }
       flashSaved();
       // Re-render so the header and category pill update
       setTimeout(() => renderEdgeProfile(el, edge), 0);
@@ -4739,7 +5010,16 @@ function renderEdgeProfile(el, edge){
   }
   document.getElementById("edge-reverse").onclick = ()=>{
     const tmp = edge.source; edge.source = edge.target; edge.target = tmp;
-    afterMutate(); showToast("Reversed direction", "ok");
+    if (edge.auto){ delete edge.auto; delete edge.autoField; } // now user-owned
+    afterMutate();
+    if (!findEdge(edge.id)){
+      const survivor = state.graph.edges.find(x => x.source===edge.source && x.target===edge.target && x.type===edge.type);
+      showToast("Reversed — merged with an identical existing relationship", "ok");
+      if (survivor) selectEdge(survivor.id);
+      else { state.selectedEdge = null; renderDetails(); }
+      return;
+    }
+    showToast("Reversed direction", "ok");
   };
   document.getElementById("edge-delete").onclick = ()=>{
     if (confirm("Delete this relationship?")) deleteEdge(edge.id);
@@ -4782,7 +5062,7 @@ function buildFilterUI(){
     });
     nf.appendChild(row);
   });
-  EDGE_TYPES.forEach(t=>{
+  allEdgeTypes().forEach(t=>{
     if (!presentE.has(t) && !state.filtersEdge.has(t)) return;
     const es = edgeStyle(t);
     const row = document.createElement("label");
@@ -4807,7 +5087,9 @@ function buildA11yMirror(){
     const outs = state.graph.edges.filter(e => e.source === n.id).map(e => e.type + " " + nm(e.target));
     return "<li>" + escapeHtml(n.label) + " (" + escapeHtml(n.type) + ")" + (outs.length ? ": " + escapeHtml(outs.join("; ")) : "") + "</li>";
   }).join("");
-  el.innerHTML = "<h2>Graph: " + state.graph.nodes.length + " nodes, " + state.graph.edges.length + " relationships</h2><ul>" + items + "</ul>";
+  const more = state.graph.nodes.length - nodes.length;
+  const moreNote = more > 0 ? "<li>…and " + more + " more nodes not listed.</li>" : "";
+  el.innerHTML = "<h2>Graph: " + state.graph.nodes.length + " nodes, " + state.graph.edges.length + " relationships</h2><ul>" + items + moreNote + "</ul>";
 }
 function buildLegend(){
   state.flaggedEdges = computeFlaggedEdges();
@@ -4827,7 +5109,7 @@ function buildLegend(){
   });
   // edge categories
   Object.keys(EDGE_STYLE).forEach(cat=>{
-    const es = EDGE_STYLE[cat];
+    const es = edgeCategoryStyle(cat); // theme-aware swatch color
     const dashCss = es.dash.length ? es.dash.join(" ") : "none";
     const item = document.createElement("div");
     item.className = "legend-item";
@@ -4895,6 +5177,7 @@ function closeModal(){
   modal.classList.remove("open");
   modalBody.innerHTML = "";
   modalSaveHandler = null;
+  pendingNodePos = null; // don't let a cancelled "Add node here" leak into the next add
   document.removeEventListener("keydown", trapModalFocus, true);
   // Restore footer button defaults (info-style modals like Help / Manage Types
   // hide the Save button and rename Cancel; reset so the next form modal works)
@@ -4923,7 +5206,7 @@ function nodeFormHtml(n){
     .map(t => t.name)
     .filter(nm => nm && !builtinLowerSet.has(nm.toLowerCase()));
   const builtinOpts = NODE_TYPES.map(t=>`<option value="${t}" ${n.type===t?"selected":""}>${t}</option>`).join("");
-  const customOpts  = customNames.map(t=>`<option value="${t}" ${n.type===t?"selected":""}>${t}</option>`).join("");
+  const customOpts  = customNames.map(t=>`<option value="${escapeHtml(t)}" ${n.type===t?"selected":""}>${escapeHtml(t)}</option>`).join("");
   const typeOpts = customOpts
     ? `<optgroup label="Built-in">${builtinOpts}</optgroup><optgroup label="Custom">${customOpts}</optgroup>`
     : builtinOpts;
@@ -5046,8 +5329,12 @@ function openNodeModal(existing){
     if (!isEdit){
       if (state.graph.nodes.some(n=>n.id===data.id)){ showToast("Node ID already exists","err"); return; }
       state.graph.nodes.push(data);
+      // "Add node here" (canvas context menu) stashes the click's world
+      // coordinates in pendingNodePos; otherwise drop near canvas center.
       const w = canvas.clientWidth, h = canvas.clientHeight;
-      state.positions.set(data.id, { x:w/2+(Math.random()-0.5)*120, y:h/2+(Math.random()-0.5)*120, vx:0, vy:0, fixed:false });
+      const pos = pendingNodePos || { x:w/2+(Math.random()-0.5)*120, y:h/2+(Math.random()-0.5)*120 };
+      pendingNodePos = null;
+      state.positions.set(data.id, { x:pos.x, y:pos.y, vx:0, vy:0, fixed:false });
       syncResult = syncStructuralEdges(data);
       selectNode(data.id);
       showToast("Node added" + (syncResult.added?(" · "+syncResult.added+" edge"+(syncResult.added>1?"s":"")+" auto-created"):""), "ok");
@@ -5097,7 +5384,8 @@ function edgeFormHtml(existing){
   const e = existing || {};
   const nodeOpts = state.graph.nodes.slice().sort((a,b)=>a.label.localeCompare(b.label))
     .map(n => `<option value="${escapeHtml(n.id)}">${escapeHtml(n.label)} · ${escapeHtml(n.type)}</option>`).join("");
-  const typeOpts = EDGE_TYPES.map(t=>`<option value="${t}" ${e.type===t?"selected":""}>${t}</option>`).join("");
+  const edgeTypeList = (e.type && !EDGE_TYPES.includes(e.type)) ? [...EDGE_TYPES, e.type] : EDGE_TYPES;
+  const typeOpts = edgeTypeList.map(t=>`<option value="${escapeHtml(t)}" ${e.type===t?"selected":""}>${escapeHtml(t)}</option>`).join("");
   return `
     <div class="field"><label for="e-source">Source node</label><select id="e-source">${nodeOpts}</select></div>
     <div class="field"><label for="e-target">Target node</label><select id="e-target">${nodeOpts}</select></div>
@@ -5125,7 +5413,13 @@ function openEdgeModal(existing){
       showToast("Relationship added", "ok");
     } else {
       const idx = state.graph.edges.findIndex(x=>x.id===existing.id);
-      if (idx>=0) state.graph.edges[idx] = Object.assign({}, existing, { source, target, type, description, notes });
+      // Manual edit takes ownership: drop auto/autoField so syncStructuralEdges
+      // won't treat the edited edge as stale and silently delete/recreate it.
+      const updated = Object.assign({}, existing, { source, target, type, description, notes });
+      if (source !== existing.source || target !== existing.target || type !== existing.type){
+        delete updated.auto; delete updated.autoField;
+      }
+      if (idx>=0) state.graph.edges[idx] = updated;
       showToast("Relationship updated", "ok");
     }
     afterMutate(); closeModal();
@@ -5289,7 +5583,7 @@ function computeFlaggedEdges(){
   return flagged;
 }
 function relWarnHtml(){
-  return '<div id="rel-warn" class="rel-warn" style="display:none"></div>'
+  return '<div id="rel-warn" class="rel-warn" role="alert" style="display:none"></div>'
        + '<label id="rel-force-wrap" class="rel-force" style="display:none"><input type="checkbox" id="rel-force"> Create anyway — this is intentional</label>';
 }
 function updateRelWarn(sourceId, targetId, type, ignoreId){
@@ -5410,8 +5704,10 @@ function syncStructuralEdges(node){
 function deleteNode(id){
   state.graph.nodes = state.graph.nodes.filter(n=>n.id!==id);
   state.graph.edges = state.graph.edges.filter(e=>e.source!==id && e.target!==id);
+  state.graph.collapsedNodes = (state.graph.collapsedNodes || []).filter(x => x !== id);
   state.positions.delete(id);
   if (state.selectedNode===id) state.selectedNode=null;
+  state.multiSelect.delete(id);
   afterMutate(); showToast("Node deleted","ok");
 }
 function deleteEdge(id){
@@ -5425,25 +5721,63 @@ function deleteEdge(id){
    ============================================================================ */
 function buildCtxMenu(items){
   const menu = document.getElementById("ctx-menu");
+  menu.setAttribute("role", "menu");
   menu.innerHTML = "";
   items.forEach(it=>{
-    if (it === "sep"){ const s = document.createElement("div"); s.className="ctx-sep"; menu.appendChild(s); return; }
+    if (it === "sep"){ const s = document.createElement("div"); s.className="ctx-sep"; s.setAttribute("role","separator"); menu.appendChild(s); return; }
     const el = document.createElement("div");
     el.className = "ctx-item" + (it.danger?" danger":"");
-    el.innerHTML = `<i class="fa-solid ${it.icon} ci"></i> ${escapeHtml(it.label)}`;
+    el.setAttribute("role", "menuitem");
+    el.setAttribute("tabindex", "-1");
+    el.innerHTML = `<i class="fa-solid ${it.icon} ci" aria-hidden="true"></i> ${escapeHtml(it.label)}`;
     el.onclick = ()=>{ hideContextMenu(); it.action(); };
     menu.appendChild(el);
   });
   return menu;
 }
-function positionCtxMenu(menu, x, y){
+// Keyboard navigation inside the context menu (WCAG 2.1.1 / menu pattern):
+// arrows move, Home/End jump, Enter/Space activate, Escape closes and
+// returns focus to where the menu was invoked from.
+let ctxReturnFocus = null;
+function ctxMenuItems(){
+  return [...document.getElementById("ctx-menu").querySelectorAll('.ctx-item')];
+}
+document.getElementById("ctx-menu").addEventListener("keydown", e=>{
+  const items = ctxMenuItems();
+  if (!items.length) return;
+  const idx = items.indexOf(document.activeElement);
+  if (e.key === "ArrowDown"){ e.preventDefault(); items[(idx+1) % items.length].focus(); }
+  else if (e.key === "ArrowUp"){ e.preventDefault(); items[(idx-1+items.length) % items.length].focus(); }
+  else if (e.key === "Home"){ e.preventDefault(); items[0].focus(); }
+  else if (e.key === "End"){ e.preventDefault(); items[items.length-1].focus(); }
+  else if (e.key === "Enter" || e.key === " "){
+    e.preventDefault();
+    if (idx >= 0) items[idx].click();
+  } else if (e.key === "Escape" || e.key === "Tab"){
+    e.preventDefault();
+    hideContextMenu();
+  }
+});
+function positionCtxMenu(menu, x, y, focusFirst){
   menu.classList.add("open");
   const rect = menu.getBoundingClientRect();
   if (x + rect.width > window.innerWidth) x = window.innerWidth - rect.width - 8;
   if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 8;
   menu.style.left = x + "px"; menu.style.top = y + "px";
+  if (focusFirst){
+    const first = menu.querySelector(".ctx-item");
+    if (first) first.focus();
+  }
 }
-function hideContextMenu(){ document.getElementById("ctx-menu").classList.remove("open"); }
+function hideContextMenu(){
+  const menu = document.getElementById("ctx-menu");
+  const wasOpen = menu.classList.contains("open");
+  menu.classList.remove("open");
+  if (wasOpen && ctxReturnFocus){
+    try { ctxReturnFocus.focus(); } catch(_){}
+    ctxReturnFocus = null;
+  }
+}
 function showNodeContextMenu(x, y, node){
   const items = [
     { label:"Edit node",          icon:"fa-pen",                  action:()=>openNodeModal(node) },
@@ -5468,7 +5802,19 @@ function showNodeContextMenu(x, y, node){
 function showEdgeContextMenu(x, y, edge){
   const menu = buildCtxMenu([
     { label:"Edit relationship",  icon:"fa-pen",         action:()=>openEdgeModal(edge) },
-    { label:"Reverse direction",  icon:"fa-arrows-rotate", action:()=>{ const t=edge.source; edge.source=edge.target; edge.target=t; afterMutate(); showToast("Reversed","ok"); } },
+    { label:"Reverse direction",  icon:"fa-arrows-rotate", action:()=>{
+        const t=edge.source; edge.source=edge.target; edge.target=t;
+        if (edge.auto){ delete edge.auto; delete edge.autoField; }
+        afterMutate();
+        if (!findEdge(edge.id)){
+          const survivor = state.graph.edges.find(x => x.source===edge.source && x.target===edge.target && x.type===edge.type);
+          if (state.selectedEdge === edge.id) state.selectedEdge = survivor ? survivor.id : null;
+          showToast("Reversed — merged with an identical existing relationship","ok");
+          renderDetails();
+        } else {
+          showToast("Reversed","ok");
+        }
+      } },
     "sep",
     { label:"Delete relationship",icon:"fa-trash", danger:true, action:()=>{ if(confirm("Delete this relationship?")) deleteEdge(edge.id); } }
   ]);
@@ -5563,11 +5909,15 @@ function applyStampFromBundle(bundle){
             - Edge types: HAS_FORM
             - Older v2 files still load — missing fields default at read time.
 */
+// Bundle schema version. 4 = graph.positions (persisted layouts) added.
+// Bump when the file format gains fields older builds can't round-trip.
+const BUNDLE_SCHEMA_VERSION = 4;
 function currentBundle(){
   const now = new Date().toISOString();
   const editor = getEditorName() || "unknown";
+  syncPositionsToGraph(); // hand-arranged layout travels with the file
   return {
-    version: 3,
+    version: BUNDLE_SCHEMA_VERSION,
     exportedAt: now,
     lastModifiedBy: editor,
     lastModifiedAt: now,
@@ -5579,6 +5929,11 @@ function currentBundle(){
 function parseBundle(text){
   const obj = JSON.parse(text);
   if (obj && obj.graph && Array.isArray(obj.graph.nodes) && Array.isArray(obj.graph.edges)){
+    // Forward-compat: warn when the file was written by a NEWER build — fields
+    // this build doesn't know about won't round-trip on the next save.
+    if (typeof obj.version === "number" && obj.version > BUNDLE_SCHEMA_VERSION){
+      setTimeout(() => showToast("This file was saved by a newer version of the tool (schema v" + obj.version + " > v" + BUNDLE_SCHEMA_VERSION + "). Saving may drop newer fields.", "err"), 600);
+    }
     return {
       graph: obj.graph,
       snapshots: Array.isArray(obj.snapshots) ? obj.snapshots : null,
@@ -5593,8 +5948,49 @@ function parseBundle(text){
   throw new Error("Not a recognized graph JSON file");
 }
 
+// Coerce externally-authored graph data to the canonical shape so malformed
+// files degrade gracefully instead of crashing later (e.g. label-less nodes
+// blow up in `a.label.localeCompare(b.label)` sorts; string `tags` break
+// `.join`). Returns counts for an informational toast.
+function coerceLoadedGraph(graph){
+  const report = { fixedNodes: 0, droppedNodes: 0, droppedEdges: 0 };
+  const seenIds = new Set();
+  graph.nodes = (graph.nodes || []).filter(n => {
+    if (!n || typeof n !== "object"){ report.droppedNodes++; return false; }
+    let fixed = false;
+    if (typeof n.id !== "string" || !n.id){
+      if (n.id != null){ n.id = String(n.id); fixed = true; }
+      else { report.droppedNodes++; return false; } // no usable identity
+    }
+    if (seenIds.has(n.id)){ report.droppedNodes++; return false; } // duplicate ID
+    seenIds.add(n.id);
+    if (typeof n.label !== "string" || !n.label.trim()){ n.label = n.label != null && String(n.label).trim() ? String(n.label) : n.id; fixed = true; }
+    if (typeof n.type !== "string" || !n.type){ n.type = "Other"; fixed = true; }
+    if (n.tags != null && !Array.isArray(n.tags)){
+      n.tags = String(n.tags).split(",").map(s=>s.trim()).filter(Boolean); fixed = true;
+    }
+    if (fixed) report.fixedNodes++;
+    return true;
+  });
+  graph.edges = (graph.edges || []).filter(e => {
+    if (!e || typeof e !== "object" || !e.source || !e.target || !e.type){ report.droppedEdges++; return false; }
+    if (!seenIds.has(e.source) || !seenIds.has(e.target)){ report.droppedEdges++; return false; } // dangling endpoint
+    if (typeof e.id !== "string" || !e.id) e.id = uid("e");
+    return true;
+  });
+  return report;
+}
+
 function applyLoadedBundle(bundle, fileName){
   state.graph = bundle.graph;
+  const coerced = coerceLoadedGraph(state.graph);
+  if (coerced.droppedNodes || coerced.droppedEdges || coerced.fixedNodes){
+    const bits = [];
+    if (coerced.fixedNodes)   bits.push(coerced.fixedNodes + " node" + (coerced.fixedNodes===1?"":"s") + " repaired");
+    if (coerced.droppedNodes) bits.push(coerced.droppedNodes + " invalid node" + (coerced.droppedNodes===1?"":"s") + " dropped");
+    if (coerced.droppedEdges) bits.push(coerced.droppedEdges + " dangling edge" + (coerced.droppedEdges===1?"":"s") + " dropped");
+    setTimeout(() => showToast("File cleanup: " + bits.join(", "), "ok"), 100);
+  }
   // Clean up duplicate edges from legacy data (e.g., a user filled the Lead
   // field AND Quick-Connected the same person — two edges got created).
   // Silent if nothing was found; toast with count if duplicates were removed.
@@ -5614,9 +6010,14 @@ function applyLoadedBundle(bundle, fileName){
   if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
   state.positions.clear();
   state.selectedNode = state.selectedEdge = null;
+  clearLoadedViewState();
   resetFiltersFromGraph();
+  // Restore the saved arrangement when the file carries one; only fall back
+  // to recomputing the layout for files without positions (or older schemas).
+  const restoredPos = restorePositionsFromGraph();
   ensurePositions();
-  applyLayout(state.layout);
+  if (!restoredPos) applyLayout(state.layout);
+  else { recomputeHiddenByCollapse(); wakeSim(); }
   // Merge snapshots by ID (newer timestamp wins). If the loaded file contains
   // no snapshots array, leave existing snapshots alone (don't wipe local).
   let added = 0, updated = 0;
@@ -5688,13 +6089,12 @@ async function getRememberedHandle(){
     return h;
   } catch(e){ return null; }
 }
-async function loadFromHandle(handle, silent){
+async function loadFromHandle(handle){
   try {
     const file = await handle.getFile();
     const bundle = parseBundle(await file.text());
     state.fileHandle = handle;
-    applyLoadedBundle(bundle, file.name);
-    if (!silent) showToast("Reopened " + file.name, "ok");
+    applyLoadedBundle(bundle, file.name); // toasts "Opened <file>"
     return true;
   } catch(err){
     showToast("Could not reopen the remembered file: " + err.message, "err");
@@ -5708,8 +6108,9 @@ async function tryReopenLast(){
   let perm = "prompt";
   try { perm = await handle.queryPermission({ mode:"readwrite" }); } catch(e){ perm = "prompt"; }
   if (perm === "granted"){
+    // applyLoadedBundle (inside loadFromHandle) already toasts "Opened <file>";
+    // a second "Reopened" toast immediately overwrote it.
     await loadFromHandle(handle, true);
-    showToast("Reopened " + (state.fileName || "last file"), "ok");
     return;
   }
   const btn = document.getElementById("btn-reopen-last");
@@ -5848,6 +6249,11 @@ function updateFileChip(){
   const name = document.getElementById("fc-name");
   if (!chip || !name) return;
   chip.classList.toggle("dirty", state.dirty);
+  // Dirty state must not be color/title-only (WCAG 1.4.1): mirror it in the
+  // accessible name so screen readers hear "unsaved changes" too.
+  chip.setAttribute("aria-label", state.dirty
+    ? "Current file" + (state.fileName ? " " + state.fileName : "") + ", unsaved changes. Save."
+    : "Current file" + (state.fileName ? " " + state.fileName : ""));
   if (state.fileName){
     name.textContent = state.fileName;
     name.classList.remove("no-file");
@@ -5869,6 +6275,7 @@ function loadSample(){
   if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
   state.positions.clear();
   state.selectedNode = state.selectedEdge = null;
+  clearLoadedViewState();
   resetFiltersFromGraph();
   ensurePositions();
   applyLayout(state.layout);
@@ -5989,10 +6396,7 @@ function exportPng(){
   const octx = off.getContext("2d");
   octx.scale(scale, scale);
   octx.fillStyle = "#0D0E11"; octx.fillRect(0,0,gw,gh);
-  // Use main render in offscreen by temporarily swapping ctx
-  const savedTransform = state.transform;
-  const savedCtxBackup = { setTransform:ctx.setTransform };
-  // Easier: directly redraw using local code into octx with our own transform
+  // Redraw with local code into octx using our own transform
   octx.translate(-minX+pad, -minY+pad);
   // edges
   visibleEdges().forEach(e=>{
@@ -6282,10 +6686,11 @@ function openManageTypesModal(){
     }
     // Make sure filter includes the new/renamed type
     state.filtersNode.add(name);
+    const wasEdit = !!editingName; // capture before hideEditor() nulls editingName
     afterMutate();
     hideEditor();
     buildCustomList(); buildBuiltinGrid();
-    showToast(editingName ? "Type updated" : "Type '" + name + "' added", "ok");
+    showToast(wasEdit ? "Type updated" : "Type '" + name + "' added", "ok");
   }
 
   // Initial render of modal contents
@@ -6320,11 +6725,18 @@ function loadSnapshot(id){
   const snaps = loadSnapshots();
   const s = snaps.find(x=>x.id===id); if (!s) return;
   if (!confirm("Load snapshot '"+s.name+"'? Current graph will be replaced.")) return;
+  // snapshot() doesn't capture views/walkthroughs — preserve the current ones
+  // so loading a snapshot doesn't silently destroy them.
+  const keepViews = state.graph.views;
+  const keepWalkthroughs = state.graph.walkthroughs;
   state.graph = JSON.parse(JSON.stringify(s.graph));
+  if (keepViews) state.graph.views = keepViews;
+  if (keepWalkthroughs) state.graph.walkthroughs = keepWalkthroughs;
   if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
   if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
   state.positions.clear();
   state.selectedNode = state.selectedEdge = null;
+  clearLoadedViewState();
   resetFiltersFromGraph();
   ensurePositions();
   applyLayout(state.layout);
@@ -6447,7 +6859,7 @@ function openHelp(){
       <div class="step-grid">
         <div class="step-num">1</div><div class="step-text"><strong>Click any node</strong> to see its profile (relationships organized by type) in the right panel.</div>
         <div class="step-num">2</div><div class="step-text"><strong>Drag empty space</strong> to pan, <strong>scroll</strong> to zoom, <strong>drag nodes</strong> to reposition.</div>
-        <div class="step-num">3</div><div class="step-text"><strong>Type in Search</strong> to highlight matches. Hits glow briefly.</div>
+        <div class="step-num">3</div><div class="step-text"><strong>Type in Search</strong> to highlight matches. Hits glow briefly. Field operators narrow it: <code>type:Person owner:"jane smith" status:retired</code> — supported fields are type, tag, owner, lead, status, platform, office, directorate, id; plain words match name/type/tags; all terms must match.</div>
         <div class="step-num">4</div><div class="step-text"><strong>Right-click anything</strong> for a context menu (edit, connect, delete).</div>
         <div class="step-num">5</div><div class="step-text"><strong>Press <kbd>?</kbd></strong> any time to open this help.</div>
       </div>
@@ -6694,6 +7106,8 @@ function openHelp(){
       <p>The intended workflow: <strong>open a JSON file, edit, save</strong>. The file on disk is the source of truth. The header shows the open file name plus an amber dot when there are unsaved changes. Click the chip (or press <kbd>Ctrl</kbd>+<kbd>S</kbd>) to save back to that file.</p>
       <p>In Chrome and Edge, "Save" writes silently in-place. In Firefox and Safari (which don't yet support the File System Access API), "Save" downloads a fresh copy of the JSON; you replace the file on disk manually. The "Save As..." button always prompts for a new location.</p>
       <p>You can also drag a <code>.json</code> file onto the window to open it.</p>
+      <h4>Layouts travel with the file</h4>
+      <p>Node positions (including pins from layout-mode drags) are saved into the JSON and into the local cache. Opening a file restores the arrangement exactly as it was saved instead of re-running the layout algorithm — so a hand-tuned diagram stays hand-tuned. Picking a layout from the dropdown recomputes positions as usual. Note that in force layout, unpinned nodes still drift gently as the simulation settles; pin the nodes you care about (Shift+drag or layout mode <kbd>M</kbd>).</p>
       <h4>Crash-recovery cache</h4>
       <p>Every change is also cached in <code>localStorage</code> so you don't lose work if you close the tab without saving. The cache is per-browser-profile and isn't a substitute for saving: when you reopen this file in a new tab or different browser, only the JSON file you Open will be the source of truth.</p>
       <h4>Named snapshots</h4>
@@ -6725,6 +7139,8 @@ function openHelp(){
         <div class="rk"><kbd>L</kbd></div><div class="rv">Toggle "always show edge labels"</div>
         <div class="rk"><kbd>M</kbd></div><div class="rv">Toggle layout mode (drag nodes without selecting)</div>
         <div class="rk"><kbd>Shift</kbd>+drag</div><div class="rv">Move a single node without changing selection</div>
+        <div class="rk"><kbd>&uarr;</kbd><kbd>&darr;</kbd><kbd>&larr;</kbd><kbd>&rarr;</kbd></div><div class="rv">Navigate nodes spatially (canvas focused)</div>
+        <div class="rk"><kbd>[</kbd> / <kbd>]</kbd></div><div class="rv">Cycle to previous / next node (canvas focused)</div>
         <div class="rk"><kbd>C</kbd></div><div class="rv">Start quick-connect from selected node</div>
         <div class="rk"><kbd>N</kbd></div><div class="rv">Open Add Node dialog</div>
         <div class="rk"><kbd>E</kbd></div><div class="rv">Edit the selected item</div>
@@ -6775,12 +7191,17 @@ function openHelp(){
   openModal('<i class="fa-solid fa-circle-question"></i> Help & Reference', html, ()=>closeModal(), true);
   document.getElementById("modal-foot").style.display = "none";
   setTimeout(()=>{ document.getElementById("modal-foot").style.display = ""; }, 0);
-  // tabs
+  // tabs (with WAI-ARIA tab semantics so AT announces selection state)
+  const helpTablist = modalBody.querySelector(".help-tabs");
+  if (helpTablist) helpTablist.setAttribute("role", "tablist");
   modalBody.querySelectorAll(".help-tab").forEach(tab=>{
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", tab.classList.contains("active") ? "true" : "false");
     tab.onclick = ()=>{
-      modalBody.querySelectorAll(".help-tab").forEach(t=>t.classList.remove("active"));
+      modalBody.querySelectorAll(".help-tab").forEach(t=>{ t.classList.remove("active"); t.setAttribute("aria-selected","false"); });
       modalBody.querySelectorAll(".help-pane").forEach(p=>p.classList.remove("active"));
       tab.classList.add("active");
+      tab.setAttribute("aria-selected", "true");
       modalBody.querySelector(`.help-pane[data-pane="${tab.dataset.pane}"]`).classList.add("active");
     };
   });
@@ -7598,7 +8019,7 @@ function openMetricsModal(){
   const cxHtml = `
     <p class="m-lede">How tangled the operational topology is. Hubs concentrate risk; long dependency chains concentrate change blast-radius.</p>
     <div class="kpi-grid">
-      ${mKpi("Max connections (top hub)", cx.byDeg[0] ? cx.byDeg[0].d : 0, cx.byDeg[0] ? cx.byDeg[0].n.label : "&mdash;")}
+      ${mKpi("Max connections (top hub)", cx.byDeg[0] ? cx.byDeg[0].d : 0, cx.byDeg[0] ? escapeHtml(cx.byDeg[0].n.label) : "&mdash;")}
       ${mKpi("System integrations", cx.integrationCount, "INTEGRATES_WITH + CONNECTED_TO edges")}
       ${mKpi("Automations cataloged", cx.automationCount, "Workflows + Power Automate flows")}
       ${mKpi("Longest dependency chain", cx.longest, "hops along DEPENDS_ON / USES / HOSTED_ON")}
@@ -7827,12 +8248,17 @@ function openMetricsModal(){
 
   openModal('<i class="fa-solid fa-chart-line"></i> Leadership Metrics', html, ()=>closeModal(), true);
   document.getElementById("modal").classList.add("xl");
-  // Tab switching
+  // Tab switching (with WAI-ARIA tab semantics)
+  const mTablist = modalBody.querySelector(".m-tabs");
+  if (mTablist) mTablist.setAttribute("role", "tablist");
   modalBody.querySelectorAll(".m-tab").forEach(tab=>{
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", tab.classList.contains("active") ? "true" : "false");
     tab.onclick = ()=>{
-      modalBody.querySelectorAll(".m-tab").forEach(t=>t.classList.remove("active"));
+      modalBody.querySelectorAll(".m-tab").forEach(t=>{ t.classList.remove("active"); t.setAttribute("aria-selected","false"); });
       modalBody.querySelectorAll(".m-pane").forEach(p=>p.classList.remove("active"));
       tab.classList.add("active");
+      tab.setAttribute("aria-selected", "true");
       modalBody.querySelector(`.m-pane[data-pane="${tab.dataset.pane}"]`).classList.add("active");
     };
   });
@@ -8411,7 +8837,7 @@ function openDataQualityModal(){
           const s = findNode(it.edge.source), t = findNode(it.edge.target);
           const sl = s ? s.label : it.edge.source, tl = t ? t.label : it.edge.target;
           return `<tr><td>
-            <a class="m-entity-link" tabindex="0" data-node-id="${escapeHtml(it.edge.source)}"><span class="m-pill ${it.sev==='critical'?'crit':'warn'}">${it.sev==='critical'?'Critical':'Warning'}</span> ${escapeHtml(sl)} <span style="color:var(--muted)">&mdash;${escapeHtml(it.edge.type)}&rarr;</span> ${escapeHtml(tl)}</a>
+            <a class="m-entity-link" role="link" tabindex="0" data-node-id="${escapeHtml(it.edge.source)}"><span class="m-pill ${it.sev==='critical'?'crit':'warn'}">${it.sev==='critical'?'Critical':'Warning'}</span> ${escapeHtml(sl)} <span style="color:var(--muted)">&mdash;${escapeHtml(it.edge.type)}&rarr;</span> ${escapeHtml(tl)}</a>
             <div style="font-size:11px; color:var(--muted); margin-top:3px;">${escapeHtml(it.message)}${it.suggest ? " · " + escapeHtml(it.suggest) : ""}</div>
           </td></tr>`;
         }).join("")}
@@ -8532,6 +8958,8 @@ function renderRecentPopover(){
 function toggleRecentPopover(){
   const pop = document.getElementById("recent-popover");
   if (!pop) return;
+  const trigger = document.getElementById("btn-recent");
+  if (trigger) trigger.setAttribute("aria-expanded", pop.classList.contains("open") ? "false" : "true");
   if (pop.classList.contains("open")){
     pop.classList.remove("open");
   } else {
@@ -8613,7 +9041,7 @@ function openImpactModal(nodeId){
 
   const sevForCount = c => c === 0 ? "ok" : (c > 15 ? "crit" : c > 5 ? "warn" : "accent");
   const directCount = impact.byHop.get(1)?.length || 0;
-  const lede = `<p class="m-lede">If <strong>${escapeHtml(node.label)}</strong> (${escapeHtml(node.type)}) is removed, retired, or has an outage, here's what's affected. The analysis walks dependency edges (DEPENDS_ON, USES, HOSTED_ON, SUPPORTS, INTEGRATES_WITH, CONNECTED_TO) and ownership edges (CONTAINS, OWNS, MANAGES, HAS_*, RESPONSIBLE_FOR) outward.</p>`;
+  const lede = `<p class="m-lede">If <strong>${escapeHtml(node.label)}</strong> (${escapeHtml(node.type)}) is removed, retired, or has an outage, here's what's affected. The cascade walks dependency edges transitively (DEPENDS_ON, USES, HOSTED_ON, SUPPORTS, INTEGRATES_WITH, CONNECTED_TO, RESPONSIBLE_FOR). Ownership edges (CONTAINS, OWNS, MANAGES, HAS_*) are listed separately below as direct organizational impact — they are not walked recursively.</p>`;
 
   const kpiHtml = `
     <div class="kpi-grid">
@@ -8682,6 +9110,16 @@ function openImpactModal(nodeId){
       catch (err){ console.error("Drill-down failed:", err); }
     };
     modalBody.addEventListener("click", e => {
+      const link = e.target.closest(".m-entity-link");
+      if (!link) return;
+      e.preventDefault();
+      jumpToNode(link.dataset.nodeId);
+    });
+    // Keyboard parity with the metrics/data-quality modals: without this,
+    // opening Impact first in a session would set the shared flag with no
+    // Enter/Space handling, breaking keyboard drill-down everywhere.
+    modalBody.addEventListener("keydown", e => {
+      if (e.key !== "Enter" && e.key !== " ") return;
       const link = e.target.closest(".m-entity-link");
       if (!link) return;
       e.preventDefault();
@@ -8758,11 +9196,15 @@ function computeOrgIntelligence(){
     if (!src || (src.type !== "Person" && src.type !== "Role")) continue;
     bumpOwner(src.label);
   }
-  // Field-only cases (no auto-edge created because the name doesn't match a Person)
+  // Field-only cases (no auto-edge created because the name doesn't match a Person).
+  // Skip names that resolve to ANY node (e.g. an Office named as owner) — the
+  // table is titled "People named as Owner", so org-unit owners don't belong;
+  // they're already represented structurally. Mirrors the bus-factor logic.
   const personLabels = new Set(nodes.filter(n => n.type === "Person" || n.type === "Role").map(n => n.label));
+  const anyLabel = new Set(nodes.map(n => (n.label || "").trim()));
   for (const n of nodes){
-    if (has(n.owner) && !personLabels.has(n.owner.trim())) bumpOwner(n.owner.trim());
-    if (has(n.lead)  && !personLabels.has(n.lead.trim()))  bumpOwner(n.lead.trim());
+    if (has(n.owner) && !personLabels.has(n.owner.trim()) && !anyLabel.has(n.owner.trim())) bumpOwner(n.owner.trim());
+    if (has(n.lead)  && !personLabels.has(n.lead.trim())  && !anyLabel.has(n.lead.trim()))  bumpOwner(n.lead.trim());
   }
   const ownersAsPersons = [];
   for (const [name, count] of ownerLoad){
@@ -8922,8 +9364,10 @@ function wireUp(){
   };
   document.getElementById("btn-focus-search").onclick = ()=>{
     if (!state.search) return;
+    // Prefer a label match for plain terms, fall back to any structured match
     const s = state.search.toLowerCase();
-    const hit = state.graph.nodes.find(n=>n.label.toLowerCase().includes(s));
+    const hit = state.graph.nodes.find(n=>(n.label||"").toLowerCase().includes(s))
+             || state.graph.nodes.find(n=>nodeMatchesSearch(n));
     if (hit){ selectNode(hit.id); centerOnNode(hit.id); }
   };
 
@@ -9021,6 +9465,8 @@ function wireUp(){
     if (pop.contains(e.target)) return;
     if (e.target.closest("#btn-recent")) return;
     pop.classList.remove("open");
+    const rb = document.getElementById("btn-recent");
+    if (rb) rb.setAttribute("aria-expanded", "false");
   });
   // Load recently-viewed from storage on boot
   loadRecentNodesFromStorage();
@@ -9052,6 +9498,7 @@ function wireUp(){
   const edgeLabelsBtn = document.getElementById("tb-edge-labels");
   function syncEdgeLabelBtn(){
     edgeLabelsBtn.classList.toggle("active", state.showAllEdgeLabels);
+    edgeLabelsBtn.setAttribute("aria-pressed", state.showAllEdgeLabels ? "true" : "false");
     edgeLabelsBtn.title = state.showAllEdgeLabels
       ? "Hide edge labels (L)" : "Show all edge labels (L)";
   }
@@ -9067,6 +9514,7 @@ function wireUp(){
   const layoutBtn = document.getElementById("tb-layout-mode");
   function syncLayoutBtn(){
     layoutBtn.classList.toggle("active", state.layoutMode);
+    layoutBtn.setAttribute("aria-pressed", state.layoutMode ? "true" : "false");
     canvas.classList.toggle("layout-mode", state.layoutMode);
     document.getElementById("footer-mode").innerHTML = state.layoutMode
       ? '<i class="fa-solid fa-up-down-left-right" aria-hidden="true"></i> Layout mode (M to exit)'
@@ -9091,20 +9539,29 @@ function wireUp(){
     });
     if (count === 0){ showToast("No pinned nodes", "err"); return; }
     requestRedraw();
+    schedulePositionPersist(); // pin flags are part of the persisted layout
     showToast("Released " + count + " pinned node" + (count===1?"":"s"), "ok");
   };
 
   document.getElementById("legend-toggle").onclick = ()=>{
     const lg = document.getElementById("legend");
     lg.classList.toggle("collapsed");
-    document.getElementById("legend-toggle").textContent =
-      lg.classList.contains("collapsed") ? "show" : "hide";
+    const collapsed = lg.classList.contains("collapsed");
+    const tg = document.getElementById("legend-toggle");
+    tg.textContent = collapsed ? "show" : "hide";
+    tg.setAttribute("aria-label", collapsed ? "Show legend" : "Hide legend");
+    tg.setAttribute("aria-expanded", collapsed ? "false" : "true");
     captureLegendCollapse();
   };
+  const legendTablist = document.querySelector(".legend-tabs");
+  if (legendTablist) legendTablist.setAttribute("role", "tablist");
   document.querySelectorAll(".legend-tab").forEach(tab=>{
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", tab.classList.contains("active") ? "true" : "false");
     tab.onclick = ()=>{
-      document.querySelectorAll(".legend-tab").forEach(t=>t.classList.remove("active"));
+      document.querySelectorAll(".legend-tab").forEach(t=>{ t.classList.remove("active"); t.setAttribute("aria-selected","false"); });
       tab.classList.add("active");
+      tab.setAttribute("aria-selected", "true");
       const which = tab.dataset.tab;
       document.getElementById("legend-grid-nodes").style.display = which==="nodes" ? "" : "none";
       document.getElementById("legend-grid-edges").style.display = which==="edges" ? "" : "none";
@@ -9139,7 +9596,7 @@ function wireUp(){
   // Filter all/none
   document.getElementById("ntf-all").onclick = ()=>{ state.filtersNode = new Set(allNodeTypes()); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
   document.getElementById("ntf-none").onclick = ()=>{ state.filtersNode = new Set(); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
-  document.getElementById("etf-all").onclick = ()=>{ state.filtersEdge = new Set(EDGE_TYPES); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
+  document.getElementById("etf-all").onclick = ()=>{ state.filtersEdge = new Set(allEdgeTypes()); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
   document.getElementById("etf-none").onclick = ()=>{ state.filtersEdge = new Set(); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
 
   // ----- v1.1 feature wiring -----
@@ -9215,7 +9672,10 @@ function wireUp(){
   // Ctrl/Cmd+S to save
   document.addEventListener("keydown", e=>{
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") {
-      if (e.key === "Escape" && state.connectingFrom) cancelConnect();
+      if (e.key === "Escape"){
+        if (state.connectingFrom) cancelConnect();
+        else if (modal.classList.contains("open")) closeModal(); // Esc closes the dialog even from a form field
+      }
       return;
     }
     if (state.present.active){
@@ -9226,6 +9686,12 @@ function wireUp(){
       return;
     }
     if (e.key === "Escape"){
+      const recentPop = document.getElementById("recent-popover");
+      if (recentPop && recentPop.classList.contains("open")){
+        toggleRecentPopover();
+        const rb = document.getElementById("btn-recent"); if (rb) rb.focus();
+        return;
+      }
       if (state.whatif.active){ exitWhatif(); return; }
       if (state.spof.size){ clearSpof(); return; }
       if (state.multiSelect.size){ state.multiSelect.clear(); updateStats(); requestRedraw(); return; }
@@ -9235,6 +9701,11 @@ function wireUp(){
       if (modal.classList.contains("open")) closeModal();
       else clearSelection();
       hideContextMenu();
+    } else if (modal.classList.contains("open")){
+      // A modal is open with focus on a non-field element (button, swatch...):
+      // swallow single-key shortcuts so n/e/c/Delete don't replace the modal
+      // or delete the selection underneath it. Escape is handled above.
+      return;
     } else if (e.key === "?" || (e.shiftKey && e.key === "/")){
       openHelp();
     } else if (e.key === "f" || e.key === "F"){ fitGraph(); }
@@ -9399,7 +9870,7 @@ function buildHeatmapLegend(ln, le){
   add(HEAT_NODATA, "No edit date yet");
   // keep edge legend populated so the Edge Styles tab still works
   Object.keys(EDGE_STYLE).forEach(cat=>{
-    const es = EDGE_STYLE[cat];
+    const es = edgeCategoryStyle(cat); // theme-aware swatch color
     const dashCss = es.dash.length ? es.dash.join(" ") : "none";
     const item = document.createElement("div");
     item.className = "legend-item";
@@ -9415,7 +9886,10 @@ function buildHeatmapLegend(ln, le){
 }
 function setBtnActive(id, on){
   const el = document.getElementById(id);
-  if (el) el.classList.toggle("active", !!on);
+  if (el){
+    el.classList.toggle("active", !!on);
+    el.setAttribute("aria-pressed", on ? "true" : "false"); // expose toggle state to AT
+  }
 }
 // Lower an rgba edge color's alpha so relationships recede into the dark
 // background — keeps the category hue but stops bright lines dominating.
@@ -9643,7 +10117,7 @@ function applyView(id){
   const v = getViews().find(x=>x.id===id);
   if (!v){ showToast("View not found", "err"); return; }
   state.filtersNode = new Set(v.filtersNode || allNodeTypes());
-  state.filtersEdge = new Set(v.filtersEdge || EDGE_TYPES);
+  state.filtersEdge = new Set(v.filtersEdge || allEdgeTypes());
   state.clusterAttr = v.clusterAttr || "type";
   const clSel = document.getElementById("cluster-attr"); if (clSel) clSel.value = state.clusterAttr;
   if (v.layout){
@@ -9710,6 +10184,12 @@ function animateCameraTo(px, py, dur){
   const fromX = state.transform.x, fromY = state.transform.y, fromS = state.transform.scale;
   const toS = Math.max(fromS, 1.05);
   const toX = w/2 - px*toS, toY = h/2 - py*toS;
+  if (PREFERS_REDUCED_MOTION){
+    // Jump-cut instead of tweening for users who opt out of motion
+    state.transform.x = toX; state.transform.y = toY; state.transform.scale = toS;
+    updateZoomLabel(); requestRedraw();
+    return;
+  }
   if (_camAnim) cancelAnimationFrame(_camAnim);
   const t0 = performance.now(); dur = dur || 650;
   const ease = t => 1 - Math.pow(1 - t, 4);
@@ -9788,6 +10268,9 @@ function startPresent(steps){
   updatePresentPlayBtn();
   updatePresentIsolateBtn();
   presentGoto(0);
+  // Move focus into the overlay so keyboard/SR users land on the controls
+  const nextBtn = document.getElementById("present-next");
+  if (nextBtn) nextBtn.focus();
 }
 function presentGoto(i){
   const steps = state.present.steps;
@@ -9811,6 +10294,7 @@ function exitPresent(){
   state.present = { active:false, steps:[], idx:0, playing:false, timer:null, isolate:true, focusIds:null };
   const ov = document.getElementById("present-overlay");
   ov.classList.remove("active"); ov.setAttribute("aria-hidden","true");
+  canvas.focus(); // return focus from the dismissed overlay
   updateStats(); requestRedraw();
 }
 function openPresentManager(){
@@ -9863,11 +10347,11 @@ function openWalkthroughBuilder(id){
     wrap.innerHTML = draft.steps.map((st,i)=>`
       <div class="step-row" data-i="${i}">
         <span class="step-num">${i+1}</span>
-        <select class="step-node">${nodeOptions(st.nodeId)}</select>
-        <input type="text" class="step-note" placeholder="Narration…" value="${escapeHtml(st.note||"")}" />
-        <button class="icon-btn" data-act="up" title="Move up"><i class="fa-solid fa-arrow-up"></i></button>
-        <button class="icon-btn" data-act="down" title="Move down"><i class="fa-solid fa-arrow-down"></i></button>
-        <button class="icon-btn danger" data-act="rm" title="Remove"><i class="fa-solid fa-xmark"></i></button>
+        <select class="step-node" aria-label="Step ${i+1} node">${nodeOptions(st.nodeId)}</select>
+        <input type="text" class="step-note" aria-label="Step ${i+1} narration" placeholder="Narration…" value="${escapeHtml(st.note||"")}" />
+        <button class="icon-btn" data-act="up" title="Move up" aria-label="Move step ${i+1} up"><i class="fa-solid fa-arrow-up" aria-hidden="true"></i></button>
+        <button class="icon-btn" data-act="down" title="Move down" aria-label="Move step ${i+1} down"><i class="fa-solid fa-arrow-down" aria-hidden="true"></i></button>
+        <button class="icon-btn danger" data-act="rm" title="Remove" aria-label="Remove step ${i+1}"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
       </div>`).join("");
     wrap.querySelectorAll(".step-row").forEach(row=>{
       const i = +row.getAttribute("data-i");
@@ -9936,6 +10420,8 @@ function applyTheme(theme, persist){
   if (theme === "light") document.documentElement.setAttribute("data-theme", "light");
   else document.documentElement.removeAttribute("data-theme");
   CANVAS_COLORS = (theme === "light") ? CANVAS_COLORS_LIGHT : CANVAS_COLORS_DARK;
+  // Legend swatches bake in theme-aware edge colors — rebuild on switch.
+  if (typeof buildLegend === "function" && state.graph) buildLegend();
   if (persist !== false){ try { localStorage.setItem("erg.theme", theme); } catch(e){} }
   const btn = document.getElementById("btn-theme");
   if (btn){
@@ -9953,16 +10439,20 @@ function boot(){
   document.getElementById("btn-theme").addEventListener("click", toggleTheme);
   applyTheme(currentTheme(), false);
   resizeCanvas();
+  // Restore the saved arrangement from the localStorage cache (if present)
+  // BEFORE ensurePositions hands out random spots.
+  const restoredPos = restorePositionsFromGraph();
   ensurePositions();
   buildFilterUI(); buildLegend();
   updateStats(); updateZoomLabel();
   renderDetails(); renderSnapList();
-  applyLayout(state.layout);
+  if (!restoredPos) applyLayout(state.layout);
   // initial history baseline
   state.history = [snapshot()]; state.historyIndex = 0;
   updateUndoRedo();
-  // pre-warm force layout (more iterations to let the looser constants settle)
-  for (let i=0;i<400;i++) simulateStep();
+  // pre-warm force layout (more iterations to let the looser constants settle);
+  // skip when positions were restored — the saved arrangement IS the warm state.
+  if (!restoredPos) for (let i=0;i<400;i++) simulateStep();
   setTimeout(fitGraph, 60);
   // load FA font then start render loop
   if (document.fonts && document.fonts.load){
@@ -10003,3 +10493,4 @@ boot();
 </script>
 </body>
 </html>
+

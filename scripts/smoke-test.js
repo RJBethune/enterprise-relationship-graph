@@ -235,6 +235,167 @@ test('Per-directorate footprint is non-empty (regression test)', () => {
   expect(hasContent).toBeTruthy('directorates should have descendants counted');
 });
 
+test('typeStyle sanitizes malicious custom-type icon and color (XSS guard)', () => {
+  const sb = buildSandbox();
+  // TYPE_STYLE table + typeStyle/isBuiltInType
+  const styleBlock = findBlock('const TYPE_STYLE = {', '// Type-style lookup');
+  vm.runInContext(styleBlock.replace(/^const TYPE_STYLE/m, 'globalThis.TYPE_STYLE'), sb);
+  const fnBlock = findBlock('function typeStyle', 'function isBuiltInType');
+  vm.runInContext(fnBlock.replace(/^function typeStyle/m, 'globalThis.typeStyle = function'), sb);
+  sb.state.graph = { nodes: [], edges: [], customNodeTypes: [
+    { name: 'Evil', color: 'red;} body{display:none', icon: '<img src=x onerror=alert(1)>' },
+    { name: 'Good', color: '#AB34CD', icon: '' },
+  ]};
+  const evil = sb.typeStyle('Evil');
+  expect(evil.icon).toBe('', 'markup icon must be rejected');
+  expect(/^#[0-9a-fA-F]{3,8}$/.test(evil.color)).toBe(true, 'non-hex color must fall back to a safe hex');
+  const good = sb.typeStyle('Good');
+  expect(good.color).toBe('#AB34CD', 'valid hex color preserved');
+  expect(good.icon).toBe('', 'glyph icon preserved');
+});
+
+test('coerceLoadedGraph repairs/drops malformed nodes and dangling edges', () => {
+  const sb = buildSandbox();
+  let n = 0; sb.uid = p => p + '-test-' + (++n);
+  const block = findBlock('function coerceLoadedGraph', 'function applyLoadedBundle');
+  vm.runInContext(block.replace(/^function coerceLoadedGraph/m, 'globalThis.coerceLoadedGraph = function'), sb);
+  const graph = {
+    nodes: [
+      { id: 'a', label: 'Alpha', type: 'Office' },
+      { id: 'b', type: 'Person', tags: 'one, two' },     // missing label, string tags
+      { id: 'a', label: 'Dupe', type: 'Office' },        // duplicate id
+      null,                                               // garbage
+      { label: 'No identity at all' },                    // no id
+    ],
+    edges: [
+      { id: 'e1', source: 'a', target: 'b', type: 'CONTAINS' },
+      { source: 'a', target: 'b', type: 'USES' },         // missing id -> generated
+      { id: 'e3', source: 'a', target: 'ghost', type: 'USES' }, // dangling
+      { id: 'e4', source: 'a', target: 'b' },              // missing type
+    ],
+  };
+  const report = sb.coerceLoadedGraph(graph);
+  expect(graph.nodes.length).toBe(2, 'two valid nodes survive');
+  expect(graph.nodes[1].label).toBe('b', 'label defaults to id');
+  expect(Array.isArray(graph.nodes[1].tags)).toBe(true, 'string tags coerced to array');
+  expect(graph.nodes[1].tags.length).toBe(2);
+  expect(graph.edges.length).toBe(2, 'dangling/typeless edges dropped');
+  expect(graph.edges[1].id).toBeTruthy('missing edge id generated');
+  expect(report.droppedNodes).toBe(3);
+  expect(report.droppedEdges).toBe(2);
+});
+
+test('allEdgeTypes includes unrecognized imported edge types', () => {
+  const sb = buildSandbox();
+  const typesBlock = findBlock('const EDGE_TYPES', 'const EDGE_CATEGORY');
+  vm.runInContext(typesBlock.replace(/^const EDGE_TYPES/m, 'globalThis.EDGE_TYPES'), sb);
+  const fnBlock = findBlock('function allEdgeTypes', '/* ---------- Group/branch collapse');
+  vm.runInContext(fnBlock.replace(/^function allEdgeTypes/m, 'globalThis.allEdgeTypes = function'), sb);
+  sb.state.graph = { nodes: [], edges: [
+    { id: 'e1', source: 'a', target: 'b', type: 'FUNDED_BY' },
+    { id: 'e2', source: 'a', target: 'b', type: 'USES' },
+  ]};
+  const all = sb.allEdgeTypes();
+  expect(all.includes('FUNDED_BY')).toBe(true, 'custom type seeded into filter list');
+  expect(all.includes('USES')).toBe(true, 'built-ins retained');
+  expect(all.filter(t => t === 'USES').length).toBe(1, 'no duplicates');
+});
+
+test('Edge hit-testing measures distance to the drawn curve, not the chord', () => {
+  const sb = buildSandbox();
+  const curveBlock = findBlock('function pointToEdgeCurveDist', '/* ----- Mouse interaction');
+  vm.runInContext(
+    curveBlock
+      .replace(/^function pointToEdgeCurveDist/m, 'globalThis.pointToEdgeCurveDist = function')
+      .replace(/^function pointToSegmentDist/m, 'globalThis.pointToSegmentDist = function'),
+    sb
+  );
+  const a = { x: 0, y: 0 }, b = { x: 400, y: 0 }; // long edge -> max bow of 20
+  // Curve midpoint bows 10 world px off the chord (quadratic midpoint = offset/2... actually
+  // B(0.5) = 0.25*a + 0.5*cp + 0.25*b, cp offset 20 -> bow 10). Click ON the bow:
+  const distAtBow = sb.pointToEdgeCurveDist(200, 10, a, b);
+  expect(distAtBow).toBeLt(1.5, 'click on the visible curve should register');
+  // A click on the chord midpoint is ~10px from the curve, not 0:
+  const distAtChord = sb.pointToEdgeCurveDist(200, 0, a, b);
+  expect(distAtChord).toBeGt(8, 'chord midpoint is measurably off the drawn curve');
+});
+
+test('Structured search parses operators, quotes, and free text', () => {
+  const sb = buildSandbox();
+  const block = findBlock('const SEARCH_FIELDS', 'function isVisibleNode');
+  vm.runInContext(
+    block
+      .replace(/^const SEARCH_FIELDS/m, 'globalThis.SEARCH_FIELDS')
+      .replace(/^function parseSearchQuery/m, 'globalThis.parseSearchQuery = function')
+      .replace(/^function searchClauses/m, 'globalThis.searchClauses = function')
+      .replace(/^function nodeMatchesSearch/m, 'globalThis.nodeMatchesSearch = function'),
+    sb
+  );
+  const clauses = sb.parseSearchQuery('type:Person owner:"jane smith" misc:x sharepoint');
+  expect(clauses.length).toBe(4);
+  expect(clauses[0].field).toBe('type');
+  expect(clauses[1].value).toBe('jane smith', 'quoted value keeps spaces');
+  expect(clauses[2].field).toBe(null, 'unknown field treated as free text');
+  expect(clauses[3].field).toBe(null);
+
+  const person = { id:'p1', label:'Jane Smith', type:'Person', owner:'', tags:['hr'], status:'active' };
+  const site   = { id:'s1', label:'HR SharePoint', type:'SharePoint Site', owner:'Jane Smith', tags:[], status:'retired' };
+  sb.state.search = 'type:Person';
+  expect(sb.nodeMatchesSearch(person)).toBe(true);
+  expect(sb.nodeMatchesSearch(site)).toBe(false);
+  sb.state.search = 'owner:"jane smith" status:retired';
+  expect(sb.nodeMatchesSearch(site)).toBe(true, 'AND of two field clauses');
+  expect(sb.nodeMatchesSearch(person)).toBe(false);
+  sb.state.search = 'sharepoint';
+  expect(sb.nodeMatchesSearch(site)).toBe(true, 'free text matches label');
+  sb.state.search = 'tag:hr';
+  expect(sb.nodeMatchesSearch(person)).toBe(true, 'tag: operator');
+});
+
+test('Node positions round-trip through graph.positions', () => {
+  const sb = buildSandbox();
+  const block = findBlock('function syncPositionsToGraph', '// Debounced localStorage persist');
+  vm.runInContext(
+    block
+      .replace(/^function syncPositionsToGraph/m, 'globalThis.syncPositionsToGraph = function')
+      .replace(/^function restorePositionsFromGraph/m, 'globalThis.restorePositionsFromGraph = function'),
+    sb
+  );
+  sb.state.graph = { nodes: [{ id:'a' }, { id:'b' }, { id:'c' }], edges: [] };
+  sb.state.positions = new Map([
+    ['a', { x: 100.26, y: -50, vx: 3, vy: 1, fixed: true, pinned: true }],
+    ['b', { x: 0, y: 0, vx: 0, vy: 0, fixed: false }],
+    ['ghost', { x: 1, y: 2 }], // deleted node — must not serialize
+  ]);
+  sb.syncPositionsToGraph();
+  expect(Object.keys(sb.state.graph.positions).length).toBe(2, 'only live nodes serialized');
+  expect(sb.state.graph.positions.a.x).toBe(100.3, 'coords rounded to 0.1');
+  expect(sb.state.graph.positions.a.pinned).toBe(1, 'pin flag survives');
+  expect(sb.state.graph.positions.b.pinned).toBe(undefined);
+
+  sb.state.positions = new Map();
+  const restored = sb.restorePositionsFromGraph();
+  expect(restored).toBe(2);
+  const a = sb.state.positions.get('a');
+  expect(a.x).toBe(100.3);
+  expect(a.pinned).toBe(true);
+  expect(a.vx).toBe(0, 'velocities reset on restore');
+  expect(sb.state.positions.has('c')).toBe(false, 'node without saved position left for ensurePositions');
+  // Garbage positions object must not throw
+  sb.state.graph.positions = "corrupt";
+  expect(sb.restorePositionsFromGraph()).toBe(0);
+});
+
+test('XSS regression guards present in source', () => {
+  // Cheap static assertions that the known injection points stay escaped.
+  expect(code).toContain('escapeHtml(cx.byDeg[0].n.label)');           // metrics top-hub KPI
+  expect(code).toContain('const safeIcon');                            // typeStyle sanitization
+  expect(html).toContain('id="toast" role="status" aria-live="polite"'); // announced toasts
+  expect(code).toContain('/^https?:\\/\\//i.test(node.url');           // javascript: URL guard
+  expect(html).toContain('http-equiv="Content-Security-Policy"');      // CSP meta present
+  expect(code).toContain('BUNDLE_SCHEMA_VERSION = 4');                 // schema version pinned
+});
+
 // --- runner ---
 let passed = 0, failed = 0;
 const startTime = Date.now();

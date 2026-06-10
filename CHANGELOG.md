@@ -4,6 +4,90 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.4.0] - 2026-06-09
+
+### Added
+- **Persisted layouts** — node positions (and pin flags) are saved into the
+  JSON bundle (`graph.positions`, schema v4) and the localStorage cache, and
+  restored exactly on open instead of re-running the layout algorithm. Drag
+  re-arrangements persist via a debounced cache write; picking a layout from
+  the dropdown still recomputes as usual.
+- **Structured search** — the search box accepts field operators with quoted
+  values (`type:Person owner:"jane smith" status:retired`); supported fields:
+  type, tag, owner, lead, status, platform, office, directorate, id. Plain
+  terms keep matching label/type/tags; all clauses AND. Shared by the canvas
+  highlight, visibility filter, and "Jump to".
+- **Schema versioning** — bundles are stamped `version: 4`
+  (`BUNDLE_SCHEMA_VERSION`); opening a file written by a newer build warns
+  that saving may drop newer fields.
+- **Content-Security-Policy meta** — only the three CDNs already in use are
+  allowed (Font Awesome, Google Fonts, SheetJS); all other remote loads and
+  all fetch/XHR are blocked, so any future injection cannot exfiltrate data.
+- Two new smoke tests (structured search parsing/matching, position
+  round-trip) — 16 total.
+
+## [1.3.0] - 2026-06-09
+
+Full code review pass: two stored-XSS fixes, data-loss and state bugs, and a
+Section 508 / WCAG 2.1 AA remediation. See CODE-REVIEW-2026-06-09.md for the
+complete findings list.
+
+### Security
+- Custom node types from imported JSON are sanitized in `typeStyle()` (hex-only
+  colors, markup rejected in icons); custom type names escaped in the node form.
+- Node labels escaped in the Metrics "top hub" KPI (was an innerHTML injection).
+- `javascript:` URLs in node profiles render as text instead of links.
+
+### Fixed
+- Loading a snapshot no longer destroys saved Views and Walkthroughs.
+- Stale path-finder / multi-select state is cleared when a file, sample, or
+  snapshot loads (previously dimmed the entire new graph).
+- "Add node here" places the node at the click position (was always center).
+- Edge hit-testing follows the drawn quadratic curve and scales with zoom —
+  edges are now clickable when zoomed out and clicks on the visible curve land.
+- Pan works on empty canvas during what-if, path-finder, and quick-connect modes.
+- Inline edge retype/reverse that collides with an existing identical edge now
+  selects the surviving edge instead of leaving a dead editor; manual edits to
+  auto-created edges clear the `auto` flag so node saves don't revert them.
+- Edges with unrecognized types from imported files are seeded into the edge
+  filter (new `allEdgeTypes()`), appear in the filter UI, and stay selectable
+  in the edge editors.
+- Malformed imported files are coerced on load (`coerceLoadedGraph`): label-less
+  nodes repaired, duplicate-ID/garbage nodes and dangling edges dropped, with a
+  cleanup toast.
+- Org-chart lead clustering only rescues Person/Role nodes (an orphaned Office
+  that MANAGES an Application no longer becomes the Application's child).
+- "People named as Owner" no longer counts org units named in owner/lead fields.
+- Path-finder branch expansion persists through afterMutate (survives reload,
+  participates in undo).
+- Deleting a node cleans it from collapsedNodes and multi-select; Manage Types
+  edit toast says "updated"; redundant double "Opened/Reopened" toast removed;
+  Impact modal description matches the algorithm; dead exportPng vars removed.
+
+### Accessibility (Section 508 / WCAG 2.1 AA)
+- Canvas keyboard trap removed: Tab moves focus normally; `[`/`]` and
+  PageUp/PageDown cycle nodes; arrows navigate spatially.
+- Toasts are announced via a live region (assertive for errors); inline
+  relationship warnings use role=alert.
+- Relationship rows, context menu (role=menu, arrow keys, Shift+F10 to open),
+  and per-node Collapse/Expand branch are fully keyboard-operable.
+- Edge strokes meet the 3:1 non-text contrast minimum in dark theme and have
+  dedicated saturated light-theme colors (legend swatches follow the theme).
+- "Last edited" shown in node profile and tooltip (staleness no longer
+  color-only); dark-theme primary buttons meet 4.5:1; prefers-reduced-motion
+  honored (static dashes, jump-cut camera); desktop-blocking overlay no longer
+  triggers at 400% browser zoom.
+- aria-pressed on all toggle buttons; tablist/tab semantics on Help, Metrics,
+  and Legend tabs; labels/names for sidebar selects, search, walkthrough
+  builder rows, icon-only buttons, and the legend toggle; landmark labels on
+  both side panels; presentation overlay manages focus; recently-viewed
+  popover exposes state, closes on Escape, and shows a visible focus ring.
+
+### Tests
+- Five new smoke tests: typeStyle XSS sanitization, malformed-file coercion,
+  unknown edge-type filter seeding, curve-aware edge hit-testing, and static
+  XSS regression guards (14 total).
+
 ## [1.2.0] - 2026-05-31
 
 Performance, scale, and a round of analysis/UX refinements.
