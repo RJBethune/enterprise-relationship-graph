@@ -1847,7 +1847,7 @@ const NODE_TYPES = [
 const EDGE_TYPES = [
   "CONTAINS","REPORTS_TO","OWNS","MANAGES","SUPPORTS","USES","DEPENDS_ON",
   "HOSTED_ON","CONNECTED_TO","INTEGRATES_WITH","HAS_SITE","HAS_TEAM",
-  "HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST","SENDS_TO","RECEIVES_FROM","AUTOMATES",
+  "HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST","SECURES","SENDS_TO","RECEIVES_FROM","AUTOMATES",
   "STORES_DATA_IN","VISUALIZED_IN","DOCUMENTED_IN","APPROVED_BY","REQUESTED_BY",
   "RESPONSIBLE_FOR","BACKUP_FOR","PART_OF","OTHER"
 ];
@@ -2083,6 +2083,7 @@ const EDGE_CATEGORY = {
   "HOSTED_ON":"hosting", "STORES_DATA_IN":"hosting", "VISUALIZED_IN":"hosting",
   "DOCUMENTED_IN":"docs", "APPROVED_BY":"docs", "REQUESTED_BY":"docs",
   "HAS_SITE":"composition", "HAS_TEAM":"composition", "HAS_O365_GROUP":"composition", "HAS_MAILBOX":"composition",
+  "SECURES":"access",
   "OTHER":"other"
 };
 // Per-category line style. `color` is the dark-theme stroke; `colorLight` is
@@ -2094,6 +2095,7 @@ const EDGE_STYLE = {
   hierarchy:   { dash:[],          width:1.6, color:"rgba(165,180,252,0.70)", colorLight:"rgba(67,56,202,0.75)",   label:"Hierarchy"   },
   ownership:   { dash:[],          width:1.3, color:"rgba(167,139,250,0.70)", colorLight:"rgba(109,40,217,0.75)",  label:"Ownership"   },
   composition: { dash:[],          width:1.2, color:"rgba(196,181,253,0.70)", colorLight:"rgba(124,58,237,0.70)",  label:"Composition" },
+  access:      { dash:[10,4],      width:1.4, color:"rgba(74,222,128,0.72)",  colorLight:"rgba(21,128,61,0.80)",   label:"Access"      },
   usage:       { dash:[],          width:1.0, color:"rgba(148,163,184,0.65)", colorLight:"rgba(71,85,105,0.70)",   label:"Usage"       },
   dependency:  { dash:[6,4],       width:1.4, color:"rgba(248,113,113,0.75)", colorLight:"rgba(185,28,28,0.80)",   label:"Dependency"  },
   integration: { dash:[2,3],       width:1.2, color:"rgba(94,234,212,0.70)",  colorLight:"rgba(15,118,110,0.75)",  label:"Integration" },
@@ -5489,6 +5491,7 @@ function guessEdgeType(s, t){
   if (s.type === "Office" && t.type === "SPFx Application") return "OWNS";
   if (s.type === "Office" && t.type === "SharePoint Site") return "HAS_SITE";
   if (s.type === "Site Collection" && t.type === "SharePoint Site") return "HAS_SITE";
+  if (s.type === "O365 Group" && t.type === "SharePoint Site") return "SECURES";
   if (s.type === "SharePoint Site" && t.type === "SharePoint List") return "CONTAINS";
   if (s.type === "Platform" && t.type === "Site Collection") return "CONTAINS";
   if (s.type === "Platform" && t.type === "Dataverse Table") return "CONTAINS";
@@ -7086,7 +7089,7 @@ function openHelp(){
       <p>Three header buttons and one in-profile button that turn the graph into an analysis surface. Each one answers a specific operational question.</p>
 
       <h4>Impact Analysis (the <i class="fa-solid fa-bolt"></i> button on any node profile)</h4>
-      <p>Select any node, click <strong>Impact</strong> in the profile panel, and a modal opens showing the dependency cascade if that node is removed, retired, or has an outage. The walk follows incoming dependency edges only (DEPENDS_ON, USES, HOSTED_ON, SUPPORTS, INTEGRATES_WITH, CONNECTED_TO, RESPONSIBLE_FOR) up to 8 hops &mdash; pure "what breaks" without the noise of organizational reshuffling.</p>
+      <p>Select any node, click <strong>Impact</strong> in the profile panel, and a modal opens showing the dependency cascade if that node is removed, retired, or has an outage. The walk follows incoming dependency edges only (DEPENDS_ON, USES, HOSTED_ON, SUPPORTS, SECURES, INTEGRATES_WITH, CONNECTED_TO, RESPONSIBLE_FOR) up to 8 hops &mdash; pure "what breaks" without the noise of organizational reshuffling.</p>
       <ul>
         <li><strong>Dependency cascade KPI</strong> &mdash; total entities that break transitively, severity-colored at 5 and 15.</li>
         <li><strong>Composition bar chart</strong> &mdash; which types are affected (Platforms? Applications? People?).</li>
@@ -7174,6 +7177,7 @@ function openHelp(){
         <div class="rk">OWNS</div><div class="rv">A is accountable for B as the owner-of-record.</div>
         <div class="rk">MANAGES</div><div class="rv">A operates / administers B day-to-day.</div>
         <div class="rk">SUPPORTS</div><div class="rv">A provides support for B without owning it.</div>
+        <div class="rk">SECURES</div><div class="rv">A's membership grants permissions / access to B (an O365 Group secures a SharePoint Site).</div>
         <div class="rk">USES</div><div class="rv">A consumes B's functionality.</div>
         <div class="rk">DEPENDS_ON</div><div class="rv">A cannot operate (or operates degraded) without B.</div>
         <div class="rk">HOSTED_ON</div><div class="rv">A runs on platform/system B.</div>
@@ -9151,7 +9155,7 @@ function toggleRecentPopover(){
 // edges (CONTAINS, OWNS, etc.) are surfaced separately on hop 0 as
 // "things this node directly owns or contains" without recursive expansion,
 // since those represent organizational restructuring rather than breakage.
-const IMPACT_DEPENDENCY_EDGES = ["DEPENDS_ON","USES","HOSTED_ON","SUPPORTS","INTEGRATES_WITH","CONNECTED_TO","RESPONSIBLE_FOR"];
+const IMPACT_DEPENDENCY_EDGES = ["DEPENDS_ON","USES","HOSTED_ON","SUPPORTS","SECURES","INTEGRATES_WITH","CONNECTED_TO","RESPONSIBLE_FOR"];
 const IMPACT_OWNERSHIP_EDGES = ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","OWNS","MANAGES"];
 
 function computeImpactTree(nodeId, maxDepth){
@@ -9215,7 +9219,7 @@ function openImpactModal(nodeId){
 
   const sevForCount = c => c === 0 ? "ok" : (c > 15 ? "crit" : c > 5 ? "warn" : "accent");
   const directCount = impact.byHop.get(1)?.length || 0;
-  const lede = `<p class="m-lede">If <strong>${escapeHtml(node.label)}</strong> (${escapeHtml(node.type)}) is removed, retired, or has an outage, here's what's affected. The cascade walks dependency edges transitively (DEPENDS_ON, USES, HOSTED_ON, SUPPORTS, INTEGRATES_WITH, CONNECTED_TO, RESPONSIBLE_FOR). Ownership edges (CONTAINS, OWNS, MANAGES, HAS_*) are listed separately below as direct organizational impact — they are not walked recursively.</p>`;
+  const lede = `<p class="m-lede">If <strong>${escapeHtml(node.label)}</strong> (${escapeHtml(node.type)}) is removed, retired, or has an outage, here's what's affected. The cascade walks dependency edges transitively (DEPENDS_ON, USES, HOSTED_ON, SUPPORTS, SECURES, INTEGRATES_WITH, CONNECTED_TO, RESPONSIBLE_FOR). Ownership edges (CONTAINS, OWNS, MANAGES, HAS_*) are listed separately below as direct organizational impact — they are not walked recursively.</p>`;
 
   const kpiHtml = `
     <div class="kpi-grid">

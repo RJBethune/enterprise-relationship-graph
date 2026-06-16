@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.6.0] - 2026-06-16
+
+### Added
+- **`SECURES` relationship type** — models an O365 Group that grants
+  permissions / access to a SharePoint Site (Group → Site). It lives in a new
+  **Access** edge category with its own canvas line style and legend entry, so
+  permission edges read distinctly from ownership. Quick-Connect auto-suggests
+  it for O365 Group → SharePoint Site, and Impact analysis treats it as a
+  dependency (removing the group flags the site it secures). Previously these
+  links were modeled with the generic `SUPPORTS` type. Existing `SUPPORTS`
+  edges are left as-is — re-pick the type on each to adopt `SECURES`.
+
 ## [1.5.0] - 2026-06-10
 
 Leadership metrics: trends and a composite risk watchlist, plus a browser test.

@@ -1,6 +1,6 @@
 {
   "name": "enterprise-relationship-graph",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "description": "Offline-capable, single-file enterprise relationship graph viewer/editor",
   "type": "commonjs",

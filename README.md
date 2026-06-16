@@ -166,7 +166,7 @@ A graph is a JSON file with this shape:
 
 **Entity types** (built-in, 25 total): Executive Office, Front Office, Directorate, Office, Person, Role, System, Platform, Application, SharePoint Site, Microsoft Team, O365 Group, Mailbox, Workflow, Power Automate Flow, Power BI Dashboard, API, Dataset, Document, Requirement, Decision, Vendor, Service, Environment, Other. You can define your own.
 
-**Relationship types** (26 total): CONTAINS, REPORTS_TO, OWNS, MANAGES, SUPPORTS, USES, DEPENDS_ON, HOSTED_ON, CONNECTED_TO, INTEGRATES_WITH, HAS_SITE, HAS_TEAM, HAS_O365_GROUP, HAS_MAILBOX, SENDS_TO, RECEIVES_FROM, AUTOMATES, STORES_DATA_IN, VISUALIZED_IN, DOCUMENTED_IN, APPROVED_BY, REQUESTED_BY, RESPONSIBLE_FOR, BACKUP_FOR, PART_OF, OTHER.
+**Relationship types** (29 total): CONTAINS, REPORTS_TO, OWNS, MANAGES, SUPPORTS, USES, DEPENDS_ON, HOSTED_ON, CONNECTED_TO, INTEGRATES_WITH, HAS_SITE, HAS_TEAM, HAS_O365_GROUP, HAS_MAILBOX, HAS_FORM, HAS_DISTRIBUTION_LIST, SECURES, SENDS_TO, RECEIVES_FROM, AUTOMATES, STORES_DATA_IN, VISUALIZED_IN, DOCUMENTED_IN, APPROVED_BY, REQUESTED_BY, RESPONSIBLE_FOR, BACKUP_FOR, PART_OF, OTHER.
 
 The in-app help (press `?`) defines what each one means.
 
