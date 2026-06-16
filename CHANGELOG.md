@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.0] - 2026-06-16
+
+### Added
+- **Mermaid import** — a new **Import Mermaid…** button in the Data panel opens
+  a dialog to paste a Mermaid `flowchart` / `graph` diagram (e.g. one built at
+  mermaid.live) or load a `.mmd` / `.md` file, then imports it as a brand-new
+  graph. **Replaces the entire current graph** (clearing it first), but is fully
+  undoable with Ctrl+Z and clears the open-file handle so a later Save can't
+  clobber a previously-open JSON. A post-import summary reports nodes/edges
+  imported, how many node types were inferred from class vs. shape, how many
+  defaulted to *Other*, edges defaulted to *OTHER*, and subgraphs flattened.
+  The parser handles all node shapes, every arrow/label style (pipe and inline),
+  `&` fan-out/in, chains, subgraphs, `classDef`/`class`/`:::`, comments,
+  `%%{init}%%`, fenced ```` ```mermaid ```` blocks, and Mermaid-11 `@{}` shapes;
+  it round-trips the tool's own Mermaid export. Mermaid is a lossy source —
+  node id, label, a best-guess type, and edge labels come across; metadata and
+  positions do not — so JSON Open remains the lossless path. Non-flowchart
+  diagrams (sequence, class, gantt, …) are rejected rather than imported as
+  junk nodes.
+
 ## [1.6.0] - 2026-06-16
 
 ### Added

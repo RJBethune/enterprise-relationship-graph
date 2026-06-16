@@ -1646,6 +1646,7 @@
         </div>
         <button class="btn block" id="btn-file-save-as" style="margin-top:6px"><i class="fa-solid fa-file-arrow-down" aria-hidden="true"></i> Save As...</button>
         <button class="btn block" id="btn-reopen-last" style="display:none; margin-top:6px"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i> Reopen <span id="reopen-last-name"></span></button>
+        <button class="btn block" id="btn-import-mermaid" style="margin-top:6px"><i class="fa-solid fa-file-import" aria-hidden="true"></i> Import Mermaid&hellip;</button>
         <div style="font-size:10.5px; color:var(--muted); margin:10px 0 4px; letter-spacing:0.3px">Export a copy as</div>
         <div class="btn-row" style="grid-template-columns:repeat(4,1fr); gap:4px">
           <button class="btn" id="btn-export-csv" title="CSV (nodes.csv + edges.csv)" aria-label="Export CSV"><i class="fa-solid fa-file-csv" aria-hidden="true"></i></button>
@@ -8761,6 +8762,508 @@ function exportMermaid(){
 }
 
 /* ============================================================================
+   MERMAID IMPORT  — parse a mermaid.live flowchart into the graph (replace)
+   ============================================================================ */
+/* ----------------------------------------------------------------------------
+   parseMermaid(text) -> { graph:{nodes,edges,customNodeTypes,collapsedNodes},
+                           report:{...counts...} }
+
+   Imports a Mermaid `flowchart` / `graph` diagram (the kind built at
+   mermaid.live) into the app's graph shape. Mermaid is a lossy source: it
+   carries node id, label, an inferred type (from :::class / classDef / shape),
+   and the edge label as the relationship type. Everything else (metadata,
+   positions) is not present and defaults at read time. Round-tripping the
+   app's OWN Mermaid export recovers shapes/edge-types and the class-group of
+   each node; exact node types collapse (the export is many-to-one), so some
+   nodes land on "Other" for the user to retype. Best-effort by design.
+---------------------------------------------------------------------------- */
+function parseMermaid(text){
+  const NUL = "\u0000";
+  const report = {
+    nodes:0, edges:0,
+    typedFromClass:0, typedFromShape:0, defaultedOther:0,
+    edgesDefaulted:0, subgraphs:0, skipped:0, skippedSamples:[]
+  };
+  text = String(text == null ? "" : text);
+
+  // 1. If the user pasted a fenced ```mermaid block (or our own .md export),
+  //    keep only the fence body.
+  const fence = text.match(/```(?:mermaid)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1];
+
+  // 2. Normalise newlines and strip %%{init}%% directive blocks. NOTE: %% line
+  //    comments are stripped LATER (after masking) so a literal %% inside a
+  //    label (e.g. "100%%") doesn't truncate the line.
+  text = text.replace(/\r\n?/g, "\n");
+  text = text.replace(/%%\{[\s\S]*?\}%%/g, "");
+  const rawLines = text.split("\n");
+
+  const nodes = new Map();          // id -> { id, label, shape, cls }
+  const edges = [];                 // { source, target, type }
+  const classDefFill = {};          // className -> fill hex (hint, currently unused)
+  const classAssign = [];           // { ids:[...], cls }
+
+  // ---- constants (declared before the execution block below) ----
+  // opener (longest first) -> [closerToken|null, shapeName]; null closer = /] or \]
+  const OPENERS = [
+    ["(((", ")))", "dblcirc"],
+    ["[[",  "]]",  "subroutine"],
+    ["[(",  ")]",  "cylinder"],
+    ["[/",  null,  "para"],
+    ["[\\", null,  "para"],
+    ["([",  "])",  "stadium"],
+    ["((",  "))",  "circle"],
+    ["{{",  "}}",  "hexagon"],
+    ["[",   "]",   "rect"],
+    ["(",   ")",   "round"],
+    ["{",   "}",   "rhombus"]
+  ];
+  // a Mermaid link: optional leading head (< x o), a body of -- / == / -.- /
+  // ~~~ , optional trailing head (> o x), optional |label|. The leading head
+  // must be GLUED to the body: a whitespace-preceded `x`/`o` head (x--x, o--o)
+  // can't swallow the trailing char of a node id ("Box-->Fox") NOR a standalone
+  // node named x/o sitting between arrows ("A --> x --> B"), because in both
+  // cases the x/o isn't immediately followed by the link body. `<` (left arrows)
+  // may be glued to the source.
+  const LINK_SRC = "((?:(?<=\\s)[xo])|<)?(-{2,}|={2,}|-\\.+-|~{2,})([>ox]?)\\s*(?:\\|([^|]*)\\|)?";
+  const LINK_RE  = new RegExp(LINK_SRC);
+  const LINK_G   = new RegExp("\\s*" + LINK_SRC + "\\s*", "g");
+  const PLACEHOLDER_RE = new RegExp(NUL + "@(\\d+)" + NUL, "g");
+
+  const CLASSDEF_TO_TYPE = {
+    execoffice:"Executive Office", orgunit:"Office", platform:"Platform",
+    collab:"SharePoint Site", vendor:"Vendor", req:"Requirement"
+  };
+  const SHAPE_TO_TYPE = {
+    subroutine:"Executive Office", cylinder:"Dataset", stadium:"Person",
+    hexagon:"Workflow", rhombus:"Decision", para:"System"
+    // dblcirc / circle / round / rect / flag -> Other
+  };
+  const NODE_TYPE_NORM = {};
+  for (const t of NODE_TYPES) NODE_TYPE_NORM[t.toLowerCase().replace(/[^a-z0-9]/g,"")] = t;
+  const EDGE_TYPE_SET = new Set(EDGE_TYPES);
+
+  // ---- helpers ----
+  function ensureNode(id){
+    id = id.trim();
+    if (!id) return null;
+    let n = nodes.get(id);
+    if (!n){ n = { id, label:null, shape:null, cls:null }; nodes.set(id, n); }
+    return n;
+  }
+
+  // scan for `closer` token from `from`, honouring "..." quotes. Returns the
+  // index where the closer starts, or -1.
+  function scanTo(line, from, closer){
+    let q = false;
+    for (let i = from; i < line.length; i++){
+      const c = line[i];
+      if (c === '"'){ q = !q; continue; }
+      if (q) continue;
+      if (line.startsWith(closer, i)) return i;
+    }
+    return -1;
+  }
+  function scanToEither(line, from, a, b){
+    let q = false;
+    for (let i = from; i < line.length; i++){
+      const c = line[i];
+      if (c === '"'){ q = !q; continue; }
+      if (q) continue;
+      if (line.startsWith(a, i) || line.startsWith(b, i)) return i;
+    }
+    return -1;
+  }
+
+  // Replace every shape-delimited label payload AND every |...| edge-label
+  // payload on a line with a placeholder, so statement-splitting / comment-
+  // stripping / link-tokenising never trip over brackets, dashes, spaces, ';',
+  // '%%' or '|' inside a label. Each store entry keeps `raw` (the exact text it
+  // replaced) so labels can be reconstructed verbatim.
+  function maskLabels(line){
+    const store = [];
+    let out = "", i = 0;
+    const n = line.length;
+    const push = entry => { const k = store.length; store.push(entry); return NUL + "@" + k + NUL; };
+    while (i < n){
+      const c = line[i];
+      // |edge label|  (quote-aware) — mask the inner span, keep the pipes so the
+      // link regex still sees a |...| group.
+      if (c === "|"){
+        const r = scanTo(line, i+1, "|");
+        if (r >= 0){
+          out += "|" + push({ at:"pipe", raw: line.slice(i+1, r) }) + "|";
+          i = r + 1; continue;
+        }
+      }
+      // @{ shape: ..., label: "..." }  (Mermaid 11 new-shape syntax)
+      if (c === "@" && line[i+1] === "{"){
+        const r = scanTo(line, i+2, "}");
+        if (r >= 0){
+          out += push({ at:"new", inner: line.slice(i+2, r), raw: line.slice(i, r+1) });
+          i = r + 1; continue;
+        }
+      }
+      // flag shape  id>label]  (">" glued to a word char, not part of -->)
+      if (c === ">" && out.length && /\w/.test(out[out.length-1])){
+        const r = scanTo(line, i+1, "]");
+        if (r >= 0){
+          out += push({ shape:"flag", label: line.slice(i+1, r), raw: line.slice(i, r+1) });
+          i = r + 1; continue;
+        }
+      }
+      let matched = null;
+      for (const m of OPENERS){ if (line.startsWith(m[0], i)){ matched = m; break; } }
+      if (matched){
+        const op = matched[0], closer = matched[1], shape = matched[2];
+        const end = (closer === null)
+          ? scanToEither(line, i+op.length, "/]", "\\]")
+          : scanTo(line, i+op.length, closer);
+        if (end >= 0){
+          const closerLen = (closer === null ? 2 : closer.length);
+          out += push({ shape, label: line.slice(i+op.length, end), raw: line.slice(i, end+closerLen) });
+          i = end + closerLen;
+          continue;
+        }
+      }
+      out += c; i++;
+    }
+    return { masked: out, store };
+  }
+
+  // Restore placeholders to their original (verbatim) text — used on captured
+  // edge labels so brackets/pipes that were masked come back before the label
+  // is normalised into a relationship type.
+  function unmaskLabel(text, store){
+    if (text == null) return text;
+    PLACEHOLDER_RE.lastIndex = 0;
+    return text.replace(PLACEHOLDER_RE, (_, k) => {
+      const e = store[+k];
+      return e ? (e.raw != null ? e.raw : "") : "";
+    });
+  }
+
+  function processStatement(stmt, store){
+    const bare = stmt.trim();
+    if (!bare) return;
+
+    if (/^subgraph\b/i.test(bare)){ report.subgraphs++; return; }
+    if (/^end$/i.test(bare)){ return; }
+    // directives we intentionally ignore (incl. accessibility titles, which in
+    // the single-line brace form would otherwise leak in as a node).
+    if (/^(direction|linkStyle|click|style|accTitle|accDescr)\b/i.test(bare)) return;
+
+    let m;
+    if ((m = bare.match(/^classDef\s+([\w,]+)\s+(.*)$/i))){
+      const fill = (m[2].match(/fill\s*:\s*(#[0-9a-fA-F]{3,8})/) || [])[1];
+      if (fill) m[1].split(",").forEach(nm => { classDefFill[nm] = fill; });
+      return;
+    }
+    if ((m = bare.match(/^class\s+([\w,\s]+?)\s+(\w+)\s*$/i))){
+      classAssign.push({ ids: m[1].split(",").map(s=>s.trim()).filter(Boolean), cls: m[2] });
+      return;
+    }
+
+    // Unify inline-label link forms (`-- text -->`, `-. text .->`) into pipe
+    // form BEFORE deciding edge-vs-node: a dotted inline link has no contiguous
+    // operator for LINK_RE to recognise until it's normalised.
+    const norm = normaliseInlineLabels(bare);
+    if (LINK_RE.test(norm)){
+      parseEdgeChain(norm, store);
+    } else {
+      if (!parseNodeToken(bare, store)){
+        report.skipped++;
+        if (report.skippedSamples.length < 5)
+          report.skippedSamples.push(stmt.split(NUL).join(""));
+      }
+    }
+  }
+
+  function parseEdgeChain(s, store){
+    const groups = [];   // arrays of node ids
+    const links  = [];   // { label, lhead, rhead }
+    let last = 0, mm;
+    LINK_G.lastIndex = 0;
+    while ((mm = LINK_G.exec(s)) !== null){
+      if (LINK_G.lastIndex === mm.index){ LINK_G.lastIndex++; continue; }
+      groups.push(parseNodeGroup(s.slice(last, mm.index), store));
+      links.push({ label: mm[4] != null ? mm[4] : null, lhead: mm[1] || "", rhead: mm[3] || "" });
+      last = LINK_G.lastIndex;
+    }
+    groups.push(parseNodeGroup(s.slice(last), store));
+
+    for (let i = 0; i < links.length; i++){
+      const from = groups[i] || [], to = groups[i+1] || [];
+      const type = mapEdgeType(links[i].label, store);
+      if (links[i].label == null) report.edgesDefaulted += from.length * to.length;
+      // A left-pointing arrowhead with no right head (`<--`, `x--`, `o--`) means
+      // the relationship flows right-to-left, so swap source/target.
+      const reverse = !links[i].rhead && /[<xo]/.test(links[i].lhead);
+      for (const a of from) for (const b of to){
+        const src = reverse ? b : a, tgt = reverse ? a : b;
+        if (src && tgt && src !== tgt) edges.push({ source:src, target:tgt, type });
+      }
+    }
+  }
+
+  function normaliseInlineLabels(s){
+    return s
+      .replace(/-\.\s+(\S.*?\S|\S)\s+\.-([>ox])/g, (_,l,h)=>`-.-${h}|${l}|`)
+      .replace(/-\.\s+(\S.*?\S|\S)\s+\.-(?![>ox-])/g, (_,l)=>`-.-|${l}|`)
+      .replace(/==\s+(\S.*?\S|\S)\s+==([>ox])/g, (_,l,h)=>`==${h}|${l}|`)
+      .replace(/==\s+(\S.*?\S|\S)\s+==(?![>ox=])/g, (_,l)=>`===|${l}|`)
+      .replace(/--\s+(\S.*?\S|\S)\s+--([>ox])/g, (_,l,h)=>`--${h}|${l}|`)
+      .replace(/--\s+(\S.*?\S|\S)\s+--(?![>ox-])/g, (_,l)=>`---|${l}|`);
+  }
+
+  function parseNodeGroup(seg, store){
+    return seg.split("&").map(t => parseNodeToken(t, store)).filter(Boolean);
+  }
+
+  // "id" | "id[label]" | "id:::cls" | "id[label]:::cls" -> records label/shape/
+  // class on the node and returns the id, or null if no valid id present.
+  function parseNodeToken(tok, store){
+    let t = tok.trim();
+    if (!t) return null;
+    let cls = null;
+    const cm = t.match(/:::(\w+)\s*$/);
+    if (cm){ cls = cm[1]; t = t.slice(0, cm.index).trim(); }
+
+    let placeholderEntry = null, idPart;
+    const pm = t.match(new RegExp("^(.*?)" + NUL + "@(\\d+)" + NUL + "\\s*$"));
+    if (pm){ idPart = pm[1].trim(); placeholderEntry = store[+pm[2]] || null; }
+    else   { idPart = t; }
+
+    // Unicode-aware id (Mermaid allows accented / non-ASCII identifiers).
+    if (!/^[\p{L}\p{N}_][\p{L}\p{N}_.\-]*$/u.test(idPart)) return null;
+    const nrec = ensureNode(idPart);
+    if (!nrec) return null;
+
+    if (placeholderEntry){
+      if (placeholderEntry.at === "new"){
+        const ns = parseNewShape(placeholderEntry.inner);
+        if (ns.label != null && nrec.label == null) nrec.label = ns.label;
+        if (ns.shape && !nrec.shape) nrec.shape = ns.shape;
+      } else if (placeholderEntry.at !== "pipe"){
+        if (nrec.label == null) nrec.label = cleanLabel(placeholderEntry.label);
+        if (!nrec.shape) nrec.shape = placeholderEntry.shape;
+      }
+    }
+    if (cls && !nrec.cls) nrec.cls = cls;
+    return idPart;
+  }
+
+  function parseNewShape(inner){
+    const out = { shape:null, label:null };
+    const sm = inner.match(/shape\s*:\s*"?([\w-]+)"?/i);
+    const lm = inner.match(/label\s*:\s*"([^"]*)"/i) || inner.match(/label\s*:\s*([^,}]+)/i);
+    if (lm) out.label = cleanLabel(lm[1]);
+    if (sm){
+      const NEW = {
+        cyl:"cylinder", cylinder:"cylinder", db:"cylinder",
+        circle:"circle", "dbl-circ":"dblcirc", "double-circle":"dblcirc",
+        diam:"rhombus", diamond:"rhombus", decision:"rhombus", hex:"hexagon", hexagon:"hexagon",
+        stadium:"stadium", pill:"stadium", subproc:"subroutine", subroutine:"subroutine",
+        "lean-r":"para", "lean-l":"para", "trap-b":"para", "trap-t":"para",
+        rect:"rect", rounded:"round"
+      };
+      out.shape = NEW[sm[1].toLowerCase()] || null;
+    }
+    return out;
+  }
+
+  function cleanLabel(s){
+    if (s == null) return "";
+    let v = String(s).trim();
+    if (v.length >= 2 && v[0] === '"' && v[v.length-1] === '"') v = v.slice(1,-1);
+    return v.replace(/<br\s*\/?>/gi, " ")
+            .replace(/#quot;/g, '"').replace(/&quot;/g, '"')
+            .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+            .replace(/&#?\w+;/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+  }
+
+  function classToType(cls){
+    if (!cls) return null;
+    const k = cls.toLowerCase();
+    if (CLASSDEF_TO_TYPE[k]) return CLASSDEF_TO_TYPE[k];
+    return NODE_TYPE_NORM[k.replace(/[^a-z0-9]/g, "")] || null;
+  }
+  function inferType(rec){
+    const byClass = classToType(rec.cls);
+    if (byClass){ report.typedFromClass++; return byClass; }
+    if (rec.shape && SHAPE_TO_TYPE[rec.shape]){ report.typedFromShape++; return SHAPE_TO_TYPE[rec.shape]; }
+    report.defaultedOther++;
+    return "Other";
+  }
+  function mapEdgeType(label, store){
+    if (label == null) return "OTHER";
+    const raw = cleanLabel(unmaskLabel(label, store)).trim();
+    if (!raw) return "OTHER";
+    if (EDGE_TYPE_SET.has(raw)) return raw;
+    const norm = raw.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "");
+    if (EDGE_TYPE_SET.has(norm)) return norm;
+    return norm || "OTHER";
+  }
+
+  // ---- execution: walk the lines ----
+  let headerSeen = false;
+  for (let rawLine of rawLines){
+    let line = rawLine.trim();
+    if (!line) continue;
+    if (!headerSeen){
+      const h = line.match(/^(flowchart|graph)\b[ \t]*([A-Za-z]{2})?[ \t]*;?/i);
+      headerSeen = true;
+      if (h){ line = line.slice(h[0].length).trim(); if (!line) continue; }
+      else if (/^(sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|journey|gantt|pie\b|mindmap|timeline|gitGraph|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment|sankey(-beta)?|xychart(-beta)?|block(-beta)?|packet(-beta)?)\b/i.test(line)){
+        // A non-flowchart Mermaid diagram — not importable as a node/edge graph.
+        // Return empty so the caller rejects it ("is this a Mermaid flowchart?")
+        // rather than turning the diagram-type keyword into a junk node.
+        report.notFlowchart = true;
+        return { graph:{ nodes:[], edges:[], customNodeTypes:[], collapsedNodes:[] }, report };
+      }
+    }
+    const { masked, store } = maskLabels(line);
+    // Strip %% line comments now that labels are masked (a literal %% inside a
+    // node/edge label is safely inside a placeholder and won't be touched).
+    const cleaned = masked.replace(/%%.*$/, "");
+    for (const stmt of cleaned.split(";")){ processStatement(stmt, store); }
+  }
+
+  // apply `class A,B name` assignments after all nodes are known
+  for (const a of classAssign){
+    for (const id of a.ids){
+      const nrec = nodes.get(id);
+      if (nrec && !nrec.cls) nrec.cls = a.cls;
+    }
+  }
+
+  // ---- finalise ----
+  const outNodes = [];
+  for (const rec of nodes.values()){
+    outNodes.push({
+      id: rec.id,
+      label: (rec.label != null && rec.label !== "") ? rec.label : rec.id,
+      type: inferType(rec)
+    });
+  }
+  const outEdges = edges.map(e => ({ id: uid("e"), source:e.source, target:e.target, type:e.type }));
+  report.nodes = outNodes.length;
+  report.edges = outEdges.length;
+
+  return {
+    graph: { nodes: outNodes, edges: outEdges, customNodeTypes:[], collapsedNodes:[] },
+    report
+  };
+}
+
+function openMermaidImport(){
+  const html = `
+    <p style="margin:0 0 8px; color:var(--muted); font-size:12.5px; line-height:1.5">
+      Paste a Mermaid <code>flowchart</code> / <code>graph</code> diagram (e.g. one built at
+      <strong>mermaid.live</strong>) and import it as a brand-new graph.
+      <strong>This replaces the entire current graph.</strong> Mermaid is a lossy source:
+      node ids, labels, a best-guess type (from shape / class) and edge labels come across;
+      nodes whose type can't be inferred land on <em>Other</em> for you to retype.
+      You can undo with Ctrl+Z right after importing.
+    </p>
+    <textarea id="mm-input" spellcheck="false" aria-label="Mermaid diagram source"
+      placeholder="flowchart TD&#10;  A[Start] --> B{Decide}&#10;  B -->|yes| C([Done])"
+      style="width:100%; min-height:220px; box-sizing:border-box; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px; line-height:1.45"></textarea>
+    <div style="display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap">
+      <button class="btn primary" id="mm-do-import"><i class="fa-solid fa-file-import" aria-hidden="true"></i> Import (replace graph)</button>
+      <label class="btn" style="margin:0; cursor:pointer">
+        <i class="fa-solid fa-folder-open" aria-hidden="true"></i> Load .mmd / .md file
+        <input type="file" id="mm-file" accept=".mmd,.mermaid,.txt,.md,.markdown,text/plain" style="display:none">
+      </label>
+      <span id="mm-hint" style="color:var(--muted); font-size:12px"></span>
+    </div>`;
+  openModal('<i class="fa-solid fa-diagram-project" aria-hidden="true"></i> Import Mermaid diagram', html, null, true);
+
+  const fileInput = document.getElementById("mm-file");
+  if (fileInput) fileInput.onchange = e => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      document.getElementById("mm-input").value = reader.result;
+      const h = document.getElementById("mm-hint");
+      if (h) h.textContent = "Loaded " + f.name;
+    };
+    reader.readAsText(f);
+  };
+  const go = document.getElementById("mm-do-import");
+  if (go) go.onclick = runMermaidImport;
+}
+
+function runMermaidImport(){
+  const ta = document.getElementById("mm-input");
+  const text = ta ? ta.value : "";
+  if (!text.trim()){ showToast("Paste a Mermaid diagram first", "err"); return; }
+
+  let parsed;
+  try { parsed = parseMermaid(text); }
+  catch(err){ showToast("Mermaid parse failed: " + err.message, "err"); return; }
+
+  const { graph, report } = parsed;
+  if (!report.nodes){
+    showToast("No nodes found — is this a Mermaid flowchart?", "err");
+    return;
+  }
+  if (!confirm("Replace the entire graph with " + report.nodes + " node" + (report.nodes===1?"":"s") +
+               " and " + report.edges + " relationship" + (report.edges===1?"":"s") +
+               " parsed from this Mermaid diagram?\n\nThe current graph will be cleared (Ctrl+Z to undo).")) return;
+
+  // ---- clean-slate replace (mirrors loadSample) ----
+  state.graph = graph;
+  coerceLoadedGraph(state.graph);
+  if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
+  if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
+  state.positions.clear();
+  state.selectedNode = state.selectedEdge = null;
+  // Imported data has no backing JSON file: clear the handle so a later Save
+  // prompts for a new location instead of overwriting a previously-open file.
+  state.fileHandle = null; state.fileName = null;
+  state.lastModifiedBy = null; state.lastModifiedAt = null; updateModifiedChip();
+  clearLoadedViewState();
+  resetFiltersFromGraph();
+  ensurePositions();
+  applyLayout(state.layout);
+  afterMutate();                 // pushes undo history, persists, marks dirty
+  renderViewList(); renderWalkthroughList(); fitGraph();
+
+  closeModal();
+  showMermaidImportSummary(report);
+}
+
+function showMermaidImportSummary(r){
+  const row = (label, val) => `<tr><td style="padding:3px 14px 3px 0; color:var(--muted)">${label}</td><td style="padding:3px 0; font-weight:600; text-align:right">${val}</td></tr>`;
+  let skipped = "";
+  if (r.skipped){
+    const samples = (r.skippedSamples || []).map(s => `<code>${escapeHtml(s.length>60?s.slice(0,60)+"…":s)}</code>`).join("<br>");
+    skipped = `<p style="margin:10px 0 0; color:var(--muted); font-size:12px"><strong>${r.skipped}</strong> line${r.skipped===1?"":"s"} skipped (not nodes/edges)${samples?":<br>"+samples:""}</p>`;
+  }
+  const html = `
+    <table style="border-collapse:collapse; font-size:13px">
+      ${row("Nodes imported", r.nodes)}
+      ${row("Relationships imported", r.edges)}
+      ${row("Types inferred from class", r.typedFromClass)}
+      ${row("Types inferred from shape", r.typedFromShape)}
+      ${row("Nodes set to “Other”", r.defaultedOther)}
+      ${row("Edges set to “OTHER”", r.edgesDefaulted)}
+      ${r.subgraphs ? row("Subgraphs flattened", r.subgraphs) : ""}
+    </table>
+    ${skipped}
+    <p style="margin:12px 0 0; color:var(--muted); font-size:12px; line-height:1.5">
+      Types are best-effort — retype any <em>Other</em> nodes from the legend or each node's
+      detail panel. Nothing is saved yet: use <strong>Save As…</strong> to keep this graph as a JSON file.
+    </p>`;
+  openModal('<i class="fa-solid fa-circle-check" aria-hidden="true"></i> Mermaid import complete', html, ()=>closeModal(), false);
+  showToast("Imported " + r.nodes + " nodes, " + r.edges + " relationships", "ok");
+}
+
+/* ============================================================================
    DATA QUALITY VALIDATION
    ============================================================================ */
 function computeValidationViolations(){
@@ -9624,6 +10127,7 @@ function wireUp(){
   document.getElementById("btn-metrics").onclick = openMetricsModal;
   document.getElementById("btn-data-quality").onclick = openDataQualityModal;
   document.getElementById("btn-export-mermaid").onclick = exportMermaid;
+  document.getElementById("btn-import-mermaid").onclick = openMermaidImport;
   document.getElementById("btn-recent").onclick = toggleRecentPopover;
   // Org Chart banner exit button — restores the layout that was active
   // before the user switched to Org Chart mode.
