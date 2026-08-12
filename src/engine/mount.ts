@@ -1,5 +1,6 @@
 import { SPComponentLoader } from '@microsoft/sp-loader';
 import { ENGINE_CSS, ENGINE_HTML } from './engineAssets';
+import { ICON_CSS } from './iconAssets';
 import { startEngine } from './engine';
 import { IErgHost } from './hostContract';
 
@@ -141,7 +142,12 @@ export const injectEngineStyles = (): void => {
   if (document.getElementById(STYLE_ID)) { return; }
   const style = document.createElement('style');
   style.id = STYLE_ID;
-  style.appendChild(document.createTextNode(ENGINE_CSS + HOST_OVERRIDES));
+  // ICON_CSS carries Font Awesome's class rules UNMANGLED. The stylesheet import
+  // above registers the faces and emits the woff2 files, but SPFx's css-loader runs
+  // CSS Modules over it and hashes the class names, so <i class="fa-solid fa-user">
+  // matches nothing. Canvas glyphs were unaffected — they ask for the family by name —
+  // which is why the icons looked half-broken rather than absent.
+  style.appendChild(document.createTextNode(ENGINE_CSS + ICON_CSS + HOST_OVERRIDES));
   document.head.appendChild(style);
 };
 

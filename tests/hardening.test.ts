@@ -12,6 +12,7 @@ import {
 import { ItemGraphStore } from '../src/services/sp/ItemGraphStore';
 import { convertProjectStorage } from '../src/services/sp/convertStorage';
 import { IGraph, IGraphNode, normalizeGraph, CHUNK_SIZE } from '../src/model/bundle';
+import { ICON_CSS } from '../src/engine/iconAssets';
 
 const node = (id: string, label: string): IGraphNode => ({ id, label, type: 'Office' });
 const graph = (nodes: IGraphNode[]): IGraph =>
@@ -302,5 +303,41 @@ suite('hardening: the document ceiling is announced before it is hit', () => {
     assert.equal(outcome.status, 'saved', 'it must still save — this is advice, not a failure');
     assert.ok(outcome.warning, 'the operator should hear about it before saves start failing');
     assert.includes(outcome.warning as string, 'per-item storage');
+  });
+});
+
+suite('hardening: DOM icons survive the build', () => {
+  test('the class names are UNMANGLED — they are the icon library API', () => {
+    // SPFx runs css-loader with CSS Modules over imported stylesheets, which hashes
+    // class names. For a component's own styles that is right; for Font Awesome it
+    // renamed `.fa-solid` to `.fa-solid_f1fd2f8f` and every <i class="fa-solid fa-user">
+    // in the engine's markup matched nothing. The failure was asymmetric and therefore
+    // confusing: @font-face is not a class, so canvas glyphs kept working while every
+    // icon in the DOM became an empty box.
+    assert.includes(ICON_CSS, '.fa-solid');
+    assert.ok(!/\.fa-solid_[0-9a-f]{6}/.test(ICON_CSS), 'a hashed class name means modules ran over it');
+  });
+
+  test('both font families are assigned to their classes', () => {
+    assert.includes(ICON_CSS, 'font-family:"Font Awesome 6 Free"');
+    assert.includes(ICON_CSS, 'font-family:"Font Awesome 6 Brands"');
+  });
+
+  test('glyph mappings are present and singly escaped', () => {
+    // CSS needs a LITERAL backslash; the CSS parser does the unescaping, not
+    // JavaScript. Double-escaping would render every icon as literal text.
+    const bs = String.fromCharCode(92);
+    assert.includes(ICON_CSS, `.fa-user:before{content:"${bs}f007"}`);
+    assert.ok(
+      ICON_CSS.indexOf(bs + bs + 'f007') < 0,
+      'double-escaped glyphs would print as text rather than draw an icon'
+    );
+  });
+
+  test('no url() survives, because a string constant cannot resolve one', () => {
+    // @font-face is deliberately stripped: the stylesheet IMPORT supplies it, with URLs
+    // webpack rewrote to the emitted woff2 files.
+    assert.ok(ICON_CSS.indexOf('url(') < 0);
+    assert.ok(ICON_CSS.indexOf('@font-face') < 0);
   });
 });

@@ -7,7 +7,7 @@ module.exports = [
     // It is untyped by design (see src/engine/README.md) and carries @ts-nocheck;
     // linting it would report thousands of style findings against code whose
     // value is that it is UNCHANGED from the shipped, tested original.
-    ignores: ['src/engine/engine.ts', 'src/engine/engineAssets.ts']
+    ignores: ['src/engine/engine.ts', 'src/engine/engineAssets.ts', 'src/engine/iconAssets.ts']
   },
   {
     files: ['**/*.ts', '**/*.tsx'],

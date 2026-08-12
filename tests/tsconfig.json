@@ -31,6 +31,7 @@
     "../src/services/sp/PresenceService.ts",
     "../src/services/sp/permissions.ts",
     "../src/services/sp/SnapshotStore.ts",
-    "../src/services/sp/convertStorage.ts"
+    "../src/services/sp/convertStorage.ts",
+    "../src/engine/iconAssets.ts"
   ]
 }

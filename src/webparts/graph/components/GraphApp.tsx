@@ -11,7 +11,9 @@ import { IProvisioningStepResult } from '../../../services/sp/SpProvisioningServ
 import { IPresentUser, PresenceMode, HEARTBEAT_MS } from '../../../services/sp/PresenceService';
 import { CORE_LISTS, PROJECTS_LIST } from '../../../provisioning/schema';
 import { readListRights } from '../../../services/sp/permissions';
-import { convertProjectStorage } from '../../../services/sp/convertStorage';
+import {
+  convertProjectStorage, detectStorageMismatch, repairStorageMode
+} from '../../../services/sp/convertStorage';
 
 /** Never collapse smaller than this, however cramped the page section is. */
 const MIN_SHELL_HEIGHT = 520;
@@ -324,6 +326,45 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     this.fitToViewport();
     this.startPolling();
     this.startPresence();
+    void this.checkForStrandedData(session);
+  }
+
+  /**
+   * A graph that opens empty might genuinely be empty — or its data might be sitting
+   * in SharePoint under a storage mode the project no longer claims, after a
+   * conversion that did not finish. The second case looks exactly like data loss to
+   * everyone who is not reading the lists directly, so it is worth one cheap check.
+   */
+  private async checkForStrandedData(session: IOpenProject): Promise<void> {
+    if ((session.bundle.graph.nodes || []).length > 0) { return; }
+    try {
+      const actual = await detectStorageMismatch(this.props.services.sp, session.summary.id);
+      if (!actual || this.disposed) { return; }
+
+      const repair = window.confirm(
+        [
+          `"${session.summary.title}" looks empty, but its nodes are stored in SharePoint`,
+          'as individual rows — the sign of a storage change that did not finish.',
+          '',
+          'Point the project back at its data now? Nothing is deleted either way.'
+        ].join('\n')
+      );
+      if (!repair) {
+        this.setSync('error', 'This graph\'s data is stored elsewhere — see Backend.');
+        return;
+      }
+
+      await repairStorageMode(this.props.services.sp, session.summary.id, actual);
+      const projects = this.state.projects.map(
+        (p) => (p.id === session.summary.id ? { ...p, storageMode: actual } : p)
+      );
+      if (this.session) { this.session.dispose(); this.session = null; }
+      this.setState({ projects });
+      await this.openProject(session.summary.id, projects);
+      if (this.engine) { this.engine.toast('Reconnected this graph to its data.', 'ok'); }
+    } catch {
+      // A failed check must never stop somebody using an empty graph.
+    }
   }
 
   /* ----------------------------------------------------------------- presence */
@@ -624,9 +665,9 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
           (message) => this.setSync('saving', message)
         );
 
-        const projects = this.state.projects.map(
-          (p) => (p.id === current.id ? { ...p, storageMode: target } : p)
-        );
+        // Re-read the list rather than assuming: if the mode did not actually change,
+        // the chip must say so instead of showing what we hoped for.
+        const projects = await this.props.services.storeFor('Document').listProjects();
         this.setState({ projects });
         await this.openProject(current.id, projects);
         this.setSync('saved', null);

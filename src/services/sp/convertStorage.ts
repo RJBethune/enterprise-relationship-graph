@@ -78,6 +78,23 @@ export const convertProjectStorage = async (
   say('Switching storage mode…');
   await sp.merge(`${projectsPath()}/items(${projectId})`, { ErgStorageMode: target }, '*');
 
+  // VERIFY it landed before anything is cleared. A mode that silently fails to change
+  // is the worst outcome available here: the rows get written, the old copy gets
+  // cleared, and the project carries on reading the place the data just left. The data
+  // is present in SharePoint and invisible in the app, which is indistinguishable from
+  // data loss to everyone except the person reading the list.
+  const confirmed = await sp.get<{ ErgStorageMode: string | null }>(
+    `${projectsPath()}/items(${projectId})?$select=ErgStorageMode`
+  );
+  if (confirmed.ErgStorageMode !== target) {
+    throw new Error(
+      `SharePoint did not accept the storage mode change (it still reads ` +
+      `"${confirmed.ErgStorageMode || 'empty'}"). Nothing has been changed. This usually ` +
+      `means the ErgStorageMode column is missing the "${target}" choice — press Backend ` +
+      `and Deploy, then try again.`
+    );
+  }
+
   say(`Writing ${nodes} node${nodes === 1 ? '' : 's'} and ${edges} relationship${edges === 1 ? '' : 's'}…`);
   const after = await destination.openProject(projectId);
   const outcome = await after.save(graph, snapshots);
@@ -99,4 +116,46 @@ export const convertProjectStorage = async (
   }
 
   return { from, to: target, nodes, edges, snapshots: snapshots.length };
+};
+
+/**
+ * Find a project whose data and storage mode disagree.
+ *
+ * An interrupted conversion — or one whose mode change was rejected — leaves rows in
+ * the item lists while the project still claims to be a Document whose payload has been
+ * cleared. The graph then opens EMPTY even though every node is sitting in SharePoint,
+ * which reads as catastrophic data loss and is in fact a one-column fix.
+ *
+ * Returns the mode the data actually implies, or null when everything agrees.
+ */
+export const detectStorageMismatch = async (
+  sp: SpRest, projectId: number
+): Promise<StorageMode | null> => {
+  try {
+    const item = await sp.get<{ ErgStorageMode: string | null; [k: string]: unknown }>(
+      `${projectsPath()}/items(${projectId})?$select=ErgStorageMode,ErgPayload1`
+    );
+    const mode: StorageMode = item.ErgStorageMode === 'Items' ? 'Items' : 'Document';
+    const hasPayload = !!String(item.ErgPayload1 || '').trim();
+
+    const nodeRows = await sp.getAll<{ Id: number }>(
+      `web/lists/getbytitle('${encodeURIComponent(NODES_LIST)}')/items` +
+      `?$select=Id&$filter=ErgProjectId eq ${projectId}&$top=1`
+    );
+    const hasRows = nodeRows.length > 0;
+
+    // The only combination worth reporting: it says Document, its payload is gone, and
+    // its nodes are sitting in the item list.
+    if (mode === 'Document' && !hasPayload && hasRows) { return 'Items'; }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+/** Point a project at whichever storage its data is actually in. */
+export const repairStorageMode = async (
+  sp: SpRest, projectId: number, actual: StorageMode
+): Promise<void> => {
+  await sp.merge(`${projectsPath()}/items(${projectId})`, { ErgStorageMode: actual }, '*');
 };
