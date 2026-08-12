@@ -34,6 +34,19 @@ export interface IErgHost {
   /** Fires when the snapshot list changes. */
   onSnapshotsChanged(snapshots: unknown[]): void;
 
+  /**
+   * The USER replaced the whole graph — opened a .json file, dropped one on the
+   * window, imported Mermaid.
+   *
+   * Distinct from `onGraphChanged` because the engine marks itself CLEAN after a file
+   * load: "clean" there means "matches the file I just opened", which is exactly the
+   * moment it does not match what SharePoint holds. Without this the imported graph
+   * would sit in the browser, apparently saved, and vanish on the next reload.
+   *
+   * Not fired when the host itself drives the load through `setBundle`.
+   */
+  onGraphReplaced?(graph: IGraph, sourceName: string | null): void;
+
   /** Lets the shell own the header chip's text — "Saved", "Saving…", "Conflict". */
   renderStatusChip?(chip: HTMLElement, nameEl: HTMLElement, state: { dirty: boolean; fileName: string | null }): void;
 

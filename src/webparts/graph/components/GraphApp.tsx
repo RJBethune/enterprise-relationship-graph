@@ -389,6 +389,9 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
         this.snapshots = snaps;
         if (this.pendingGraph) { this.scheduleSave(this.pendingGraph); }
       },
+      onGraphReplaced: (graph: IGraph, sourceName: string | null): void => {
+        void this.importIntoProject(graph, sourceName);
+      },
       renderStatusChip: (chip, nameEl): void => { this.paintChip(chip, nameEl); },
       onReady: (api: IEngineApi): void => {
         this.engine = api;
@@ -397,6 +400,64 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     };
 
     mountEngine({ container: this.engineHost, host, assetBaseUrl: this.props.assetBaseUrl });
+  }
+
+  /* ------------------------------------------------------------------ import */
+
+  /**
+   * A file the user opened becomes this project's stored graph.
+   *
+   * The engine treats a file load as "now clean", which is true of the file and false
+   * of SharePoint — so this has to push it, not wait for the next edit. It is also
+   * destructive: it replaces whatever the project held. Version history makes that
+   * recoverable, but recoverable is not the same as expected, so an import over a
+   * populated project asks first, and declining restores what was there.
+   */
+  private async importIntoProject(graph: IGraph, sourceName: string | null): Promise<void> {
+    if (!this.session || !this.engine) { return; }
+
+    if (!this.canEdit) {
+      this.engine.toast('Loaded for viewing only — you do not have permission to save to this graph.', 'err');
+      return;
+    }
+
+    const existing = this.session.summary;
+    const hadContent = (this.state.projects.filter((p) => p.id === existing.id)[0] || existing).nodeCount > 0;
+    const incoming = (graph.nodes || []).length;
+    const label = sourceName ? `"${sourceName}"` : 'that file';
+
+    if (hadContent) {
+      const ok = window.confirm(
+        `Replace the graph "${existing.title}" with ${label}?\n\n` +
+        `${incoming} node${incoming === 1 ? '' : 's'} will be saved to SharePoint, replacing what is ` +
+        'stored now.\n\nThe previous version stays in this list item\'s version history, but the ' +
+        'graph everyone else sees will change.'
+      );
+      if (!ok) {
+        // Put back exactly what SharePoint holds rather than leaving the import on screen.
+        const reopened = await this.props.services
+          .storeFor(existing.storageMode).openProject(existing.id);
+        this.session.dispose();
+        this.session = reopened;
+        this.engine.setBundle(reopened.bundle, existing.title);
+        this.engine.toast('Import cancelled — the stored graph is back.', 'ok');
+        return;
+      }
+    }
+
+    this.engine.setProjectLabel(existing.title);
+    this.engine.markDirty();
+    this.pendingGraph = graph;
+    this.lastEditAt = Date.now();
+    this.setSync('saving', `Importing ${label}`);
+    await this.flushPendingSave();
+
+    if (!this.disposed && this.engine && this.state.sync !== 'error') {
+      this.engine.toast(
+        `Imported ${incoming} node${incoming === 1 ? '' : 's'} into "${existing.title}" and saved to SharePoint.`,
+        'ok'
+      );
+    }
   }
 
   /* --------------------------------------------------------------- autosaving */

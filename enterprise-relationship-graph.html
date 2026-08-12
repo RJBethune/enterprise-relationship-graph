@@ -6080,6 +6080,14 @@ function applyLoadedBundle(bundle, fileName){
   updateModifiedChip();
   markClean();
   afterMutate(true); // skip dirty mark; we just synced from file
+  // A host (SharePoint) needs to know the graph was REPLACED wholesale, because
+  // "clean" here means "matches the file we just opened", which is precisely when it
+  // does NOT match what is stored. Suppressed while the host itself is driving the
+  // load — a project switch or a merged remote change must not echo straight back as
+  // a save.
+  if (host && typeof host.onGraphReplaced === "function" && !__ergHostLoading){
+    try { host.onGraphReplaced(state.graph, fileName || null); } catch(e){ console.error("ERG onGraphReplaced failed", e); }
+  }
   renderViewList(); renderWalkthroughList();
   fitGraph();
   const bits = [];

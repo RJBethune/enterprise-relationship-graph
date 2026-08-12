@@ -1,6 +1,6 @@
 {
   "name": "enterprise-relationship-graph",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "private": true,
   "description": "Enterprise Relationship Graph — SharePoint-hosted single source of truth for offices, systems, platforms, sites, teams, groups, and operational dependencies.",
   "engines": {

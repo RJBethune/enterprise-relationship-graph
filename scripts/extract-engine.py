@@ -161,7 +161,11 @@ function buildEngineApi(){
   return {
     /** Replace the whole graph (project switch, remote change, snapshot restore). */
     setBundle: function(bundle, label){
-      applyLoadedBundle(bundle, label || null);
+      // Marks this as a HOST-driven load so applyLoadedBundle does not report it back
+      // as a user import — otherwise opening a project would immediately re-save it,
+      // and a merged remote change would echo into a write loop.
+      __ergHostLoading = true;
+      try { applyLoadedBundle(bundle, label || null); } finally { __ergHostLoading = false; }
       state.fileHandle = null;
       state.dirty = false;
       updateFileChip();
@@ -248,6 +252,9 @@ export function startEngine(host: IErgHost): void {
   // Frame scheduling is shadowed so destroy() can stop the render loop within
   // one frame: every internal requestAnimationFrame call routes through here.
   var __ergDestroyed = false;
+  // True while the HOST is replacing the graph (project switch, remote merge), as
+  // opposed to the user opening a file.
+  var __ergHostLoading = false;
   var __ergRaf = window.requestAnimationFrame.bind(window);
   function requestAnimationFrame(cb){ return __ergDestroyed ? 0 : __ergRaf(cb); }
   // Listener recorder — see destroy() in buildEngineApi().

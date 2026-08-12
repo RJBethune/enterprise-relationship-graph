@@ -102,6 +102,15 @@ startEngine({
   onSnapshotsChanged: function (snaps) {
     try { localStorage.setItem(SNAP_KEY_PREVIEW, JSON.stringify(snaps)); } catch (e) {}
   },
+  onGraphReplaced: function (graph, sourceName) {
+    // The SPFx shell saves to SharePoint here. The preview just records it, which is
+    // what lets the extraction test prove the seam fires for a user import and NOT
+    // for a host-driven setBundle.
+    window.__ergReplaced = (window.__ergReplaced || []).concat([
+      { nodes: (graph.nodes || []).length, source: sourceName }
+    ]);
+    console.log('onGraphReplaced', sourceName, (graph.nodes || []).length, 'nodes');
+  },
   onReady: function (api) {
     window.__ergApi = api;   // handy for poking at the running engine from the console
     console.log("ERG preview ready:", api.getBundle().graph.nodes.length, "nodes");
