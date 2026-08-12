@@ -510,6 +510,42 @@ suite('integration: presence', () => {
     assert.equal(fake.lists.get(PRESENCE_LIST)!.items.size, 0);
   });
 
+  test('presence still works on a site whose list predates the Email column', async () => {
+    // The reported symptom: no avatars at all. A site provisioned by an earlier build
+    // has no ErgEmail, so BOTH the heartbeat write and the $select naming it were
+    // rejected outright — presence showed nobody rather than degrading to initials.
+    const { sp, fake } = await deployedSite();
+    const project = await new DocumentGraphStore(sp, 'Ross').createProject('Exec', 'Document');
+
+    // Roll the list back to the older schema.
+    fake.lists.get(PRESENCE_LIST)!.fields.delete('ErgEmail');
+
+    const me = new PresenceService(sp, 'me@example.gov', 'Me', 'me@example.gov');
+    await me.heartbeat(project.id, 'Editing');
+
+    assert.equal(fake.lists.get(PRESENCE_LIST)!.items.size, 1, 'the row must still be written');
+    const present = await me.list(project.id);
+    assert.equal(present.length, 1, 'and it must still be listed');
+    assert.equal(present[0].name, 'Me');
+    assert.equal(present[0].email, '', 'no photo, but the person is still shown');
+    assert.ok(!me.isDisabled, 'a missing COLUMN must not switch presence off entirely');
+  });
+
+  test('a missing column and a missing list are told apart', async () => {
+    const { sp, fake } = await deployedSite();
+    const project = await new DocumentGraphStore(sp, 'Ross').createProject('Exec', 'Document');
+    fake.lists.get(PRESENCE_LIST)!.fields.delete('ErgEmail');
+    const me = new PresenceService(sp, 'me@example.gov', 'Me', 'me@example.gov');
+    await me.heartbeat(project.id, 'Viewing');
+    assert.ok(!me.isDisabled);
+
+    // Now the list itself goes away.
+    fake.lists.delete(PRESENCE_LIST);
+    const other = new PresenceService(sp, 'me@example.gov', 'Me', 'me@example.gov');
+    await other.heartbeat(project.id, 'Viewing');
+    assert.ok(other.isDisabled, 'a missing LIST should stop the heartbeat');
+  });
+
   test('presence never breaks the graph when its list is missing', async () => {
     // A site provisioned before presence existed must keep working, silently.
     const fake = new FakeSharePoint();

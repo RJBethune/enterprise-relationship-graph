@@ -55,9 +55,41 @@ export class PresenceService {
     private readonly email: string = ''
   ) {}
 
+  /** Set when the site's presence list predates the ErgEmail column. */
+  private omitEmail: boolean = false;
+
   public get isDisabled(): boolean { return this.disabled; }
 
   private key(projectId: number): string { return `${projectId}|${this.login}`; }
+
+  /**
+   * Only a MISSING LIST disables presence.
+   *
+   * SharePoint says "does not exist" for a missing column too, and treating that the
+   * same way would switch presence off permanently on any site whose list is one
+   * column behind — silently, and exactly when a re-deploy would have fixed it.
+   */
+  private isMissingList(message: string): boolean {
+    return /list\s+'[^']*'\s+does not exist/i.test(message) ||
+      /does not exist at site/i.test(message);
+  }
+
+  private isUnknownColumn(message: string): boolean {
+    return /field or property/i.test(message) || /column\s+'[^']*'\s+does not exist/i.test(message);
+  }
+
+  private rowBody(projectId: number, mode: PresenceMode): { [k: string]: unknown } {
+    const body: { [k: string]: unknown } = {
+      Title: this.key(projectId),
+      ErgProjectId: projectId,
+      ErgUser: this.displayName,
+      ErgLogin: this.login,
+      ErgMode: mode,
+      ErgHeartbeat: new Date().toISOString()
+    };
+    if (!this.omitEmail && this.email) { body.ErgEmail = this.email; }
+    return body;
+  }
 
   /**
    * Refresh our row. Never throws: presence is a nicety, and a graph must stay fully
@@ -65,50 +97,57 @@ export class PresenceService {
    */
   public async heartbeat(projectId: number, mode: PresenceMode): Promise<void> {
     if (this.disabled) { return; }
-    const body = {
-      Title: this.key(projectId),
-      ErgProjectId: projectId,
-      ErgUser: this.displayName,
-      ErgLogin: this.login,
-      ErgEmail: this.email,
-      ErgMode: mode,
-      ErgHeartbeat: new Date().toISOString()
-    };
-
     try {
-      const known = this.ownRow.get(projectId);
-      if (known) {
-        await this.sp.merge(`${presencePath()}/items(${known})`, body, '*');
-        return;
-      }
-
-      // First beat for this project: adopt an existing row if we already have one
-      // (a previous session, or another tab), otherwise create it.
-      const existing = await this.sp.getAll<IPresenceItemDto>(
-        `${presencePath()}/items?$select=Id,Title&$filter=Title eq '${encodeURIComponent(this.key(projectId))}'&$top=1`
-      );
-      if (existing.length > 0) {
-        this.ownRow.set(projectId, existing[0].Id);
-        await this.sp.merge(`${presencePath()}/items(${existing[0].Id})`, body, '*');
-        return;
-      }
-      const created = await this.sp.post<{ Id: number }>(`${presencePath()}/items`, body);
-      if (created && created.Id) { this.ownRow.set(projectId, created.Id); }
+      await this.writeRow(projectId, mode);
     } catch (e) {
-      // A missing list means presence was never provisioned — stop asking. Anything
-      // else is transient and worth retrying on the next beat.
       const message = e instanceof Error ? e.message : String(e);
-      if (/does not exist/i.test(message)) { this.disabled = true; }
+
+      if (this.isMissingList(message)) { this.disabled = true; return; }
+
+      // The list exists but is a column behind — a site provisioned before the photo
+      // support landed. Drop the optional column and try once more, permanently, so
+      // presence works without waiting for anyone to re-run setup.
+      if (this.isUnknownColumn(message) && !this.omitEmail) {
+        this.omitEmail = true;
+        try { await this.writeRow(projectId, mode); return; } catch { /* falls through */ }
+      }
+      // Anything else is transient; the next beat retries.
     }
+  }
+
+  private async writeRow(projectId: number, mode: PresenceMode): Promise<void> {
+    const body = this.rowBody(projectId, mode);
+
+    const known = this.ownRow.get(projectId);
+    if (known) {
+      await this.sp.merge(`${presencePath()}/items(${known})`, body, '*');
+      return;
+    }
+
+    // First beat for this project: adopt an existing row if we already have one
+    // (a previous session, or another tab), otherwise create it.
+    const existing = await this.sp.getAll<IPresenceItemDto>(
+      `${presencePath()}/items?$select=Id,Title&$filter=Title eq '${encodeURIComponent(this.key(projectId))}'&$top=1`
+    );
+    if (existing.length > 0) {
+      this.ownRow.set(projectId, existing[0].Id);
+      await this.sp.merge(`${presencePath()}/items(${existing[0].Id})`, body, '*');
+      return;
+    }
+    const created = await this.sp.post<{ Id: number }>(`${presencePath()}/items`, body);
+    if (created && created.Id) { this.ownRow.set(projectId, created.Id); }
   }
 
   /** Everyone currently on this graph, most recently seen first. */
   public async list(projectId: number): Promise<IPresentUser[]> {
     if (this.disabled) { return []; }
     try {
+      // NO $select. Naming a column the list does not have yet — ErgEmail on a site
+      // provisioned before photo support — makes SharePoint reject the WHOLE query
+      // with 400, so presence would show nobody at all rather than degrade. The rows
+      // are half a dozen short fields; asking for all of them costs nothing.
       const rows = await this.sp.getAll<IPresenceItemDto>(
-        `${presencePath()}/items?$select=Id,Title,ErgUser,ErgLogin,ErgEmail,ErgMode,ErgHeartbeat` +
-        `&$filter=ErgProjectId eq ${projectId}&$top=200`
+        `${presencePath()}/items?$filter=ErgProjectId eq ${projectId}&$top=200`
       );
       const cutoff = Date.now() - STALE_MS;
       return rows
@@ -126,7 +165,7 @@ export class PresenceService {
         .sort((a, b) => Date.parse(b.lastSeen) - Date.parse(a.lastSeen));
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      if (/does not exist/i.test(message)) { this.disabled = true; }
+      if (this.isMissingList(message)) { this.disabled = true; }
       return [];
     }
   }

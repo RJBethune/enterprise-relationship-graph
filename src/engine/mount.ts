@@ -113,6 +113,21 @@ const HOST_OVERRIDES = `
 @media (max-width: 900px) {
   .erg-root header.app-header .brand-text p { display: none; }
 }
+
+/* The brand claimed a fixed share of a 64px row that also carries the save chip, the
+   stats and six tool buttons. At SharePoint widths that squeezed the stats until
+   "<name> selected" wrapped onto a second line and spilled out of the row. Shrinking
+   the brand hands that space back, and the stats are pinned to one line so they
+   truncate rather than wrap. */
+.erg-root header.app-header .brand { flex: 0 1 auto; }
+.erg-root header.app-header .brand-mark {
+  width: 30px; height: 30px; min-width: 30px; font-size: 14px;
+}
+.erg-root header.app-header .brand-text h1 { font-size: 15px; line-height: 1.25; }
+.erg-root header.app-header .brand-text p { font-size: 11px; line-height: 1.3; }
+.erg-root header.app-header .header-right { flex: 0 0 auto; min-width: 0; flex-wrap: nowrap; }
+.erg-root header.app-header .stats,
+.erg-root header.app-header .stats * { white-space: nowrap; flex-wrap: nowrap; }
 `;
 
 export const injectEngineStyles = (): void => {

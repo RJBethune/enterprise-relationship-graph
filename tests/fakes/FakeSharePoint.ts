@@ -282,7 +282,40 @@ export class FakeSharePoint implements ISpTransport {
     return out;
   }
 
+  /**
+   * SharePoint rejects a write naming a column the list does not have, and rejects a
+   * $select naming one too — with 400 for the WHOLE request, not a partial result.
+   * Modelling that is what turns "presence silently shows nobody" into a failing test.
+   */
+  private static readonly BUILT_IN_ITEM_FIELDS: string[] = [
+    'Id', 'ID', 'Title', 'Modified', 'Created', 'Editor', 'Author', 'GUID', 'ContentTypeId'
+  ];
+
+  private unknownField(list: IFakeList, name: string): boolean {
+    if (FakeSharePoint.BUILT_IN_ITEM_FIELDS.indexOf(name) >= 0) { return false; }
+    if (list.fields.has(name)) { return false; }
+    // Lookup and user columns are written as "<InternalName>Id".
+    if (/Id$/.test(name) && list.fields.has(name.replace(/Id$/, ''))) { return false; }
+    return true;
+  }
+
+  private rejectUnknownFields(
+    list: IFakeList, names: string[]
+  ): ISpRawResponse | null {
+    for (const raw of names) {
+      const name = raw.trim().split('/')[0];
+      if (!name) { continue; }
+      if (this.unknownField(list, name)) {
+        return this.err(400, `The field or property '${name}' does not exist on list '${list.title}'.`);
+      }
+    }
+    return null;
+  }
+
   private createItem(list: IFakeList, body: { [k: string]: unknown }): ISpRawResponse {
+    const rejected = this.rejectUnknownFields(list, Object.keys(body));
+    if (rejected) { return rejected; }
+
     const unique = Array.from(list.fields.values()).filter((f) => f.unique);
     for (const f of unique) {
       const value = body[f.internal];
@@ -333,6 +366,8 @@ export class FakeSharePoint implements ISpTransport {
     }
 
     if (verb === 'MERGE') {
+      const rejected = this.rejectUnknownFields(list, Object.keys(body));
+      if (rejected) { return rejected; }
       for (const key of Object.keys(body)) { item.data[key] = body[key]; }
       item.version++;
       item.editor = this.currentUser;
@@ -366,6 +401,11 @@ export class FakeSharePoint implements ISpTransport {
     const filterMatch = /[?&]\$filter=([^&]*)/.exec(rest);
     const orderMatch = /[?&]\$orderby=([^&]*)/.exec(rest);
     const selectMatch = /[?&]\$select=([^&]*)/.exec(rest);
+
+    if (selectMatch) {
+      const rejected = this.rejectUnknownFields(list, decodeURIComponent(selectMatch[1]).split(','));
+      if (rejected) { return rejected; }
+    }
 
     let items = Array.from(list.items.values());
     if (filterMatch) {

@@ -2716,13 +2716,24 @@ function fitGraph(){
     if (p.x<minX) minX=p.x; if (p.y<minY) minY=p.y;
     if (p.x>maxX) maxX=p.x; if (p.y>maxY) maxY=p.y;
   });
+  // A canvas that has not been measured yet has nothing to fit into; fitting against
+  // it would write a garbage transform the user then has to escape from.
+  if (!(w > 0) || !(h > 0)) return;
   const pad = 90;
   const gw = (maxX-minX)||1, gh = (maxY-minY)||1;
+  // The padded space can be ZERO or NEGATIVE on a canvas smaller than 2*pad — a short
+  // section, a collapsed panel, a mid-transition measurement. Feeding that into the
+  // scale mirrored and collapsed the entire graph, which is why switching layout could
+  // make everything vanish in a way no amount of zooming or panning could recover:
+  // the transform itself was inverted. Fall back to half the canvas when padding does
+  // not fit, and never let the scale reach zero.
+  const availW = Math.max(w - pad*2, w*0.5, 1);
+  const availH = Math.max(h - pad*2, h*0.5, 1);
   // cap zoom-in so dense graphs aren't shown at impossible scale
-  const s = Math.min((w-pad*2)/gw, (h-pad*2)/gh, 1.1);
+  const s = Math.max(0.05, Math.min(availW/gw, availH/gh, 1.1));
   state.transform.scale = s;
-  state.transform.x = pad - minX*s + (w - pad*2 - gw*s)/2;
-  state.transform.y = pad - minY*s + (h - pad*2 - gh*s)/2;
+  state.transform.x = (w - gw*s)/2 - minX*s;
+  state.transform.y = (h - gh*s)/2 - minY*s;
   updateZoomLabel(); requestRedraw();
 }
 function resetView(){ state.transform = { x:0, y:0, scale:1 }; updateZoomLabel(); requestRedraw(); }
