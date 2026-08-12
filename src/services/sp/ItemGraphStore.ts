@@ -10,6 +10,7 @@ import { GraphOp, opKey, orderOps } from '../../model/ops';
 import { diffGraphs, applyOps, hasLayoutChange, repairOrphans } from '../../model/diff';
 import { threeWayMerge } from '../../model/merge';
 import { WriteQueue } from '../WriteQueue';
+import { SnapshotStore, ISnapshotRecord } from './SnapshotStore';
 import { NODES_LIST, EDGES_LIST } from '../../provisioning/schema';
 import {
   projectsPath, listProjectItems, createProjectItem, readProjectItem, toSummary, IProjectItemDto
@@ -66,7 +67,10 @@ const parseData = <T>(json: string, fallback: T): T => {
 };
 
 export class ItemGraphStore implements IGraphStore {
-  public constructor(private readonly sp: SpRest, private readonly editorName: string) {}
+  private readonly snapshotStore: SnapshotStore;
+  public constructor(private readonly sp: SpRest, private readonly editorName: string) {
+    this.snapshotStore = new SnapshotStore(sp);
+  }
 
   public listProjects(): Promise<IProjectSummary[]> { return listProjectItems(this.sp); }
 
@@ -132,15 +136,17 @@ export class ItemGraphStore implements IGraphStore {
       this.currentToken(edgesPath())
     ]);
 
+    // Snapshots are rows in their own list, shared with Document mode — which is why
+    // changing a project's storage model no longer destroys its restore points.
     const bundle: IBundle = {
       version: BUNDLE_SCHEMA_VERSION,
       graph: repaired.graph,
-      snapshots: []
+      snapshots: await this.snapshotStore.list(id)
     };
 
     return new ItemProject(
       this.sp, this.editorName, toSummary(dto), bundle,
-      nodeItemIds, edgeItemIds, nodeToken, edgeToken, repaired.removedEdges
+      nodeItemIds, edgeItemIds, nodeToken, edgeToken, repaired.removedEdges, this.snapshotStore
     );
   }
 
@@ -158,6 +164,8 @@ export class ItemGraphStore implements IGraphStore {
 
 class ItemProject implements IOpenProject {
   private base: IGraph;
+  /** Serialized snapshots as stored, so a snapshot-only change still saves. */
+  private baseSnapshots: string;
   private readonly queue: WriteQueue<GraphOp>;
   /** graph id -> SharePoint item id, and the reverse, for interpreting delete changes. */
   private readonly nodeItems: Map<string, number>;
@@ -174,9 +182,11 @@ class ItemProject implements IOpenProject {
     edgeItems: Map<string, number>,
     private nodeToken: string | null,
     private edgeToken: string | null,
-    public readonly orphansRemovedOnLoad: number
+    public readonly orphansRemovedOnLoad: number,
+    private readonly snapshotStore: SnapshotStore
   ) {
     this.base = JSON.parse(JSON.stringify(bundle.graph)) as IGraph;
+    this.baseSnapshots = stableStringify(bundle.snapshots || []);
     this.nodeItems = nodeItems;
     this.edgeItems = edgeItems;
     nodeItems.forEach((itemId, graphId) => this.nodeIdByItem.set(itemId, graphId));
@@ -193,12 +203,14 @@ class ItemProject implements IOpenProject {
     });
   }
 
-  public async save(graph: IGraph, _snapshots: unknown[] | null): Promise<ISaveOutcome> {
+  public async save(graph: IGraph, snapshots: unknown[] | null): Promise<ISaveOutcome> {
     const next = normalizeGraph(graph);
     const ops = diffGraphs(this.base, next);
     const layoutMoved = hasLayoutChange(this.base, next);
+    const snapsNow = stableStringify(snapshots || []);
+    const snapsMoved = snapsNow !== this.baseSnapshots;
 
-    if (ops.length === 0 && !layoutMoved) { return { status: 'saved', writes: 0 }; }
+    if (ops.length === 0 && !layoutMoved && !snapsMoved) { return { status: 'saved', writes: 0 }; }
 
     try {
       if (ops.length > 0) {
@@ -212,6 +224,9 @@ class ItemProject implements IOpenProject {
           throw this.queue.getLastError() || new Error('Some changes could not be saved.');
         }
       }
+      if (snapsMoved) {
+        await this.snapshotStore.sync(this.summary.id, (snapshots || []) as ISnapshotRecord[]);
+      }
       // Presentation travels as one blob no matter how many nodes moved.
       if (layoutMoved || ops.length > 0) { await this.writeProjectBlob(next); }
     } catch (e) {
@@ -219,6 +234,7 @@ class ItemProject implements IOpenProject {
     }
 
     this.base = JSON.parse(JSON.stringify(next)) as IGraph;
+    this.baseSnapshots = snapsNow;
     return { status: 'saved', writes: ops.length + (layoutMoved ? 1 : 0) };
   }
 

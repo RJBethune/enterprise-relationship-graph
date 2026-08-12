@@ -169,10 +169,14 @@ export const EXPECTED_SCHEMA: IExpectedList[] = [
     title: SNAPSHOTS_LIST,
     description: 'Named restore points. Independent of list version history, which captures every save.',
     versioning: false,
-    viewFields: ['Title', 'ErgProject', 'ErgNote', 'Modified'],
+    viewFields: ['Title', 'ErgProject', 'ErgSnapshotId', 'ErgNote', 'Modified'],
     fields: [
       { internal: 'Title', display: 'Snapshot name', types: ['Text'], builtIn: true },
       projectLookup(),
+      {
+        internal: 'ErgSnapshotId', display: 'Snapshot id', types: ['Text'], indexed: true,
+        description: 'The engine\'s own id for this restore point, so rows survive renames.'
+      },
       ...payloadFields(),
       { internal: 'ErgNote', display: 'Note', types: ['Note'], description: 'Why this restore point matters.' }
     ]

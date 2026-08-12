@@ -82,6 +82,17 @@
 
 .spacer { margin-left: auto; }
 
+/* The storage chip doubles as the control that changes it — the setting and the way to
+   change it in the same place, rather than buried in a settings panel. */
+.badgeButton {
+  cursor: pointer;
+  font-family: inherit;
+
+  &:hover:not(:disabled) { border-color: var(--border-strong, rgba(170, 166, 160, 0.4)); }
+  &:focus-visible { outline: 2px solid var(--accent, #6366f1); outline-offset: 2px; }
+  &:disabled { cursor: default; }
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

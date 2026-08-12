@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.1.0] - 2026-08-12
+
+Per-item storage becomes a choice you can actually make, and unmake.
+
+### Added
+- **Change a project's storage model, either way.** Reading happens through the model the
+  project is in and writing through the one it is moving to, so conversion has no bespoke
+  write logic of its own to get wrong. The new copy is written and verified before the old
+  one is cleared, which makes an interrupted conversion safe to retry: data may briefly
+  exist in both places, never in neither.
+- **Snapshots are rows in ERG Snapshots**, shared by both storage models. That list had
+  been provisioned since 2.0.0 and never used.
+
+### Fixed
+- **Per-item projects silently discarded every snapshot.** They were read as an empty
+  array and ignored on save, so switching a project to per-item storage destroyed all of
+  its restore points.
+- **Snapshots ate the document ceiling.** Each one is a full copy of the graph, and they
+  travelled inside the payload — a handful could exhaust the ~480KB a list item holds.
+  They now live outside it.
+- A snapshot arriving without an id is given a content-derived one rather than being
+  dropped.
+
 ## [2.0.9] - 2026-08-12
 
 Field fixes from the first real deployment, plus the font-hosting problem solved

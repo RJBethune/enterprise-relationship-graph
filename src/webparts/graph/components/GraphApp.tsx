@@ -11,6 +11,7 @@ import { IProvisioningStepResult } from '../../../services/sp/SpProvisioningServ
 import { IPresentUser, PresenceMode, HEARTBEAT_MS } from '../../../services/sp/PresenceService';
 import { CORE_LISTS, PROJECTS_LIST } from '../../../provisioning/schema';
 import { readListRights } from '../../../services/sp/permissions';
+import { convertProjectStorage } from '../../../services/sp/convertStorage';
 
 /** Never collapse smaller than this, however cramped the page section is. */
 const MIN_SHELL_HEIGHT = 520;
@@ -583,6 +584,67 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     }
   }
 
+  /* ---------------------------------------------------------------- conversion */
+
+  private convertStorage = (): void => {
+    const current = this.state.projects.filter((p) => p.id === this.state.currentProjectId)[0];
+    if (!current || !this.canEdit) { return; }
+    const target: StorageMode = current.storageMode === 'Items' ? 'Document' : 'Items';
+
+    const blurb = target === 'Items'
+      ? [
+        'Move this graph to PER-ITEM storage?',
+        '',
+        'Every node and relationship becomes its own row, so several people can edit at once',
+        'and see the changes other people make, and there is no size ceiling.',
+        '',
+        'Trade-off: SharePoint has no transactions, so a save becomes many operations rather',
+        'than one atomic write. Snapshots and version history are unaffected.'
+      ].join('\n')
+      : [
+        'Move this graph back to DOCUMENT storage?',
+        '',
+        'The whole graph returns to one list item, so every save is a single atomic write',
+        'with full version history.',
+        '',
+        'It must fit within about 480KB, and concurrent editors will merge on save rather',
+        'than see each other live.'
+      ].join('\n');
+    if (!window.confirm(blurb)) { return; }
+
+    void (async (): Promise<void> => {
+      this.setState({ switching: true });
+      try {
+        // Never convert with work in flight — the source has to be what is stored.
+        await this.flushPendingSave();
+        if (this.session) { this.session.dispose(); this.session = null; }
+
+        const result = await convertProjectStorage(
+          this.props.services.sp, this.props.editorName, current.id, target,
+          (message) => this.setSync('saving', message)
+        );
+
+        const projects = this.state.projects.map(
+          (p) => (p.id === current.id ? { ...p, storageMode: target } : p)
+        );
+        this.setState({ projects });
+        await this.openProject(current.id, projects);
+        this.setSync('saved', null);
+        if (this.engine) {
+          this.engine.toast(
+            `Moved to ${target === 'Items' ? 'per-item' : 'document'} storage — ` +
+            `${result.nodes} nodes, ${result.edges} relationships, ${result.snapshots} snapshots kept.`,
+            'ok'
+          );
+        }
+      } catch (e) {
+        this.fail(e);
+      } finally {
+        if (!this.disposed) { this.setState({ switching: false }); }
+      }
+    })();
+  };
+
   /* ----------------------------------------------------------------- switching */
 
   private switchProject = (event: React.ChangeEvent<HTMLSelectElement>): void => {
@@ -903,16 +965,19 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
           {this.renderPresence()}
 
           {current && (
-            <span
-              className={styles.badge}
+            <button
+              type="button"
+              className={`${styles.badge} ${this.canEdit ? styles.badgeButton : ''}`}
+              onClick={this.canEdit ? this.convertStorage : undefined}
+              disabled={!this.canEdit || this.state.switching}
               title={current.storageMode === 'Items'
                 ? 'Every node and relationship is its own row in the ERG Nodes and ERG Edges lists.'
                 : 'The whole graph is stored in the payload columns of this project\'s ERG Projects ' +
                   'item, saved in one atomic write. The ERG Nodes and ERG Edges lists stay empty for ' +
                   'this graph — that is by design, not a failed save.'}
             >
-              {current.storageMode === 'Items' ? 'Per-item · experimental' : 'Document · one list item'}
-            </span>
+              {current.storageMode === 'Items' ? 'Per-item · multi-editor' : 'Document · one list item'}
+            </button>
           )}
           {this.renderBadge()}
           <button

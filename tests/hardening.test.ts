@@ -5,7 +5,12 @@ import { SpRest } from '../src/services/sp/SpRest';
 import { SpProvisioningService } from '../src/services/sp/SpProvisioningService';
 import { DocumentGraphStore } from '../src/services/sp/DocumentGraphStore';
 import { readListRights } from '../src/services/sp/permissions';
-import { schemaFingerprint, EXPECTED_SCHEMA, PROJECTS_LIST, PRESENCE_LIST } from '../src/provisioning/schema';
+import {
+  schemaFingerprint, EXPECTED_SCHEMA, PROJECTS_LIST, PRESENCE_LIST,
+  SNAPSHOTS_LIST, NODES_LIST, EDGES_LIST
+} from '../src/provisioning/schema';
+import { ItemGraphStore } from '../src/services/sp/ItemGraphStore';
+import { convertProjectStorage } from '../src/services/sp/convertStorage';
 import { IGraph, IGraphNode, normalizeGraph, CHUNK_SIZE } from '../src/model/bundle';
 
 const node = (id: string, label: string): IGraphNode => ({ id, label, type: 'Office' });
@@ -180,6 +185,93 @@ suite('hardening: an idle graph writes nothing', () => {
     await session.save(graph([node('a', 'A')]), []);
     const outcome = await session.save(graph([node('a', 'A')]), [{ id: 's1', name: 'Baseline' }]);
     assert.equal(outcome.writes, 1, 'the graph is unchanged but the snapshots are not');
+  });
+});
+
+suite('hardening: snapshots survive a change of storage model', () => {
+  const snap = (id: string, name: string): { id: string; name: string; ts: number; graph: unknown } =>
+    ({ id, name, ts: 1000, graph: { nodes: [node('a', 'A')], edges: [] } });
+
+  test('they are rows in their own list, not passengers in the payload', async () => {
+    // Each snapshot is a FULL copy of the graph. Carried inside the document payload,
+    // a handful of them could exhaust the ~480KB a list item holds — and per-item
+    // projects dropped them entirely, so changing storage model destroyed them.
+    const { fake, sp } = await deployed();
+    const store = new DocumentGraphStore(sp, 'Ross');
+    const project = await store.createProject('Snaps', 'Document');
+    const session = await store.openProject(project.id);
+    await session.save(graph([node('a', 'A')]), [snap('s1', 'Before reorg'), snap('s2', 'After')]);
+
+    assert.equal(fake.lists.get(SNAPSHOTS_LIST)!.items.size, 2, 'each snapshot is its own row');
+
+    const payload = String(
+      Array.from(fake.lists.get(PROJECTS_LIST)!.items.values())[0].data.ErgPayload1 || ''
+    );
+    assert.ok(payload.indexOf('Before reorg') < 0, 'and no longer duplicated in the payload');
+
+    const reopened = await store.openProject(project.id);
+    assert.equal((reopened.bundle.snapshots as unknown[]).length, 2);
+  });
+
+  test('a snapshot with no id is kept rather than silently dropped', async () => {
+    const { fake, sp } = await deployed();
+    const store = new DocumentGraphStore(sp, 'Ross');
+    const project = await store.createProject('NoId', 'Document');
+    const session = await store.openProject(project.id);
+    await session.save(graph([node('a', 'A')]), [{ name: 'baseline' }]);
+    assert.equal(fake.lists.get(SNAPSHOTS_LIST)!.items.size, 1);
+  });
+
+  test('converting to per-item storage keeps the graph AND the snapshots', async () => {
+    const { fake, sp } = await deployed();
+    const store = new DocumentGraphStore(sp, 'Ross');
+    const project = await store.createProject('Convert', 'Document');
+    const session = await store.openProject(project.id);
+    const original = graph([node('a', 'A'), node('b', 'B')]);
+    original.edges = [{ id: 'e1', source: 'a', target: 'b', type: 'CONTAINS' }];
+    original.positions = { a: { x: 5, y: 6 } };
+    await session.save(original, [snap('s1', 'Before the move')]);
+
+    const result = await convertProjectStorage(sp, 'Ross', project.id, 'Items');
+    assert.equal(result.nodes, 2);
+    assert.equal(result.edges, 1);
+
+    assert.equal(fake.lists.get(NODES_LIST)!.items.size, 2, 'nodes are rows now');
+    assert.equal(fake.lists.get(EDGES_LIST)!.items.size, 1);
+    assert.equal(fake.lists.get(SNAPSHOTS_LIST)!.items.size, 1, 'restore points survive');
+
+    // The old copy must not linger, or two sources of truth exist for one graph.
+    const projectRow = Array.from(fake.lists.get(PROJECTS_LIST)!.items.values())[0];
+    assert.equal(String(projectRow.data.ErgPayload1 || ''), '', 'the payload is cleared');
+    assert.equal(projectRow.data.ErgStorageMode, 'Items');
+
+    const items = new ItemGraphStore(sp, 'Ross');
+    const reopened = await items.openProject(project.id);
+    assert.deepEqual(reopened.bundle.graph.nodes.map((n) => n.id).sort(), ['a', 'b']);
+    assert.deepEqual(reopened.bundle.graph.positions, { a: { x: 5, y: 6 } }, 'layout comes too');
+    assert.equal((reopened.bundle.snapshots as unknown[]).length, 1);
+  });
+
+  test('converting back to a document leaves no orphan rows', async () => {
+    const { fake, sp } = await deployed();
+    const items = new ItemGraphStore(sp, 'Ross');
+    const project = await items.createProject('Back', 'Items');
+    const session = await items.openProject(project.id);
+    const g = graph([node('a', 'A'), node('b', 'B')]);
+    g.edges = [{ id: 'e1', source: 'a', target: 'b', type: 'CONTAINS' }];
+    await session.save(g, [snap('s1', 'Keep me')]);
+
+    await convertProjectStorage(sp, 'Ross', project.id, 'Document');
+
+    assert.equal(fake.lists.get(NODES_LIST)!.items.size, 0, 'node rows are cleaned up');
+    assert.equal(fake.lists.get(EDGES_LIST)!.items.size, 0);
+    assert.equal(fake.lists.get(SNAPSHOTS_LIST)!.items.size, 1, 'but snapshots are not touched');
+
+    const store = new DocumentGraphStore(sp, 'Ross');
+    const reopened = await store.openProject(project.id);
+    assert.deepEqual(reopened.bundle.graph.nodes.map((n) => n.id).sort(), ['a', 'b']);
+    assert.equal(reopened.bundle.graph.edges.length, 1);
+    assert.equal((reopened.bundle.snapshots as unknown[]).length, 1);
   });
 });
 

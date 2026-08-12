@@ -7,6 +7,7 @@ import {
   MAX_DOCUMENT_CHARS
 } from '../../model/bundle';
 import { threeWayMerge } from '../../model/merge';
+import { SnapshotStore, ISnapshotRecord } from './SnapshotStore';
 import {
   projectsPath, listProjectItems, createProjectItem, readProjectItem, readProjectStamp,
   readPayload, payloadPatch, toSummary, IProjectItemDto
@@ -25,7 +26,10 @@ import {
  * Only a genuine same-entity collision produces a prompt.
  */
 export class DocumentGraphStore implements IGraphStore {
-  public constructor(private readonly sp: SpRest, private readonly editorName: string) {}
+  private readonly snapshotStore: SnapshotStore;
+  public constructor(private readonly sp: SpRest, private readonly editorName: string) {
+    this.snapshotStore = new SnapshotStore(sp);
+  }
 
   public listProjects(): Promise<IProjectSummary[]> { return listProjectItems(this.sp); }
 
@@ -44,7 +48,18 @@ export class DocumentGraphStore implements IGraphStore {
   public async openProject(id: number): Promise<IOpenProject> {
     const { dto, etag } = await readProjectItem(this.sp, id);
     const bundle = parseBundle(readPayload(dto));
-    return new DocumentProject(this.sp, this.editorName, toSummary(dto), bundle, etag);
+    // Snapshots now live in their own list. Any still embedded in the payload are from
+    // before that change: merging them here means the next save moves them out with no
+    // migration step, because write() no longer embeds them.
+    const stored = await this.snapshotStore.list(id);
+    const embedded = (bundle.snapshots || []) as ISnapshotRecord[];
+    const byId = new Map<string, ISnapshotRecord>();
+    for (const s of stored) { if (s && s.id) { byId.set(s.id, s); } }
+    for (const s of embedded) { if (s && s.id && !byId.has(s.id)) { byId.set(s.id, s); } }
+    bundle.snapshots = Array.from(byId.values());
+    return new DocumentProject(
+      this.sp, this.editorName, toSummary(dto), bundle, etag, this.snapshotStore
+    );
   }
 }
 
@@ -60,7 +75,8 @@ class DocumentProject implements IOpenProject {
     private readonly editorName: string,
     public readonly summary: IProjectSummary,
     public readonly bundle: IBundle,
-    private etag: string | null
+    private etag: string | null,
+    private readonly snapshotStore: SnapshotStore
   ) {
     this.base = JSON.parse(JSON.stringify(normalizeGraph(bundle.graph))) as IGraph;
     this.baseSnapshots = stableStringify(bundle.snapshots || []);
@@ -79,6 +95,9 @@ class DocumentProject implements IOpenProject {
     }
 
     try {
+      if (snapsNow !== this.baseSnapshots) {
+        await this.snapshotStore.sync(this.summary.id, (snapshots || []) as ISnapshotRecord[]);
+      }
       const chars = await this.write(graph, snapshots, this.etag);
       this.base = JSON.parse(JSON.stringify(next)) as IGraph;
       this.baseSnapshots = snapsNow;
@@ -147,7 +166,10 @@ class DocumentProject implements IOpenProject {
       lastModifiedBy: this.editorName,
       lastModifiedAt: now,
       graph,
-      snapshots: snapshots || []
+      // Snapshots are rows in ERG Snapshots now. Keeping them here as well would
+      // duplicate a full graph copy each, which is what made the payload ceiling so
+      // easy to hit.
+      snapshots: []
     };
     const serialized = JSON.stringify(bundle);
     const patch: { [k: string]: unknown } = payloadPatch(serialized);
