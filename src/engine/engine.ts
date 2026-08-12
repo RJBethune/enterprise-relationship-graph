@@ -3620,7 +3620,11 @@ function openNodeModal(existing){
       const w = canvas.clientWidth, h = canvas.clientHeight;
       const pos = pendingNodePos || { x:w/2+(Math.random()-0.5)*120, y:h/2+(Math.random()-0.5)*120 };
       pendingNodePos = null;
-      state.positions.set(data.id, { x:pos.x, y:pos.y, vx:0, vy:0, fixed:false });
+      // A node you CREATE stays where it was placed. It has no relationships yet, so
+      // nothing balances the centering force and it simply wanders off — the reason a
+      // new node only appeared to settle once it had an edge. Bulk paths
+      // (ensurePositions, import) deliberately stay unfixed so a layout can arrange them.
+      state.positions.set(data.id, { x:pos.x, y:pos.y, vx:0, vy:0, fixed:true });
       syncResult = syncStructuralEdges(data);
       selectNode(data.id);
       showToast("Node added" + (syncResult.added?(" · "+syncResult.added+" edge"+(syncResult.added>1?"s":"")+" auto-created"):""), "ok");

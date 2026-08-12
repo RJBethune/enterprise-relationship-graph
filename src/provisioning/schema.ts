@@ -193,6 +193,11 @@ export const EXPECTED_SCHEMA: IExpectedList[] = [
       { internal: 'ErgUser', display: 'User', types: ['Text'] },
       { internal: 'ErgLogin', display: 'Login', types: ['Text'], indexed: true },
       {
+        internal: 'ErgEmail', display: 'Email', types: ['Text'],
+        description: 'Used to fetch the profile photo. The claims login is not a valid ' +
+          'account name for the photo endpoint, so the address is stored alongside it.'
+      },
+      {
         internal: 'ErgMode', display: 'Mode', types: ['Choice'],
         choices: ['Viewing', 'Editing'], defaultValue: 'Viewing'
       },

@@ -105,33 +105,69 @@
   overflow: hidden;
 }
 
+/* ---------- full screen ---------- */
+
+/* Fallback for browsers or embeddings that refuse the Fullscreen API. */
+.expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  height: 100vh !important;
+  max-height: 100vh;
+}
+
+/* The browser paints a black backdrop behind a fullscreen element, which shows
+   through the engine's rounded panels unless the ground is painted too. */
+.shell:fullscreen {
+  height: 100vh !important;
+  max-height: 100vh;
+  background: var(--bg-0, #0d0e11);
+}
+
 /* ---------- presence ---------- */
 
 .presence {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding-right: 4px;
+  padding-right: 10px;
 }
 
-.avatar {
-  width: 24px;
-  height: 24px;
+.person {
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
-  font-weight: 650;
-  letter-spacing: 0.02em;
   background: var(--panel-2, #1c1e24);
   color: var(--text-2, #cfccc6);
   border: 1px solid var(--border, rgba(170, 166, 160, 0.2));
-  /* Overlap slightly so a group reads as one cluster, not a list of chips. */
-  margin-right: -6px;
+  /* Overlap so a group reads as one cluster rather than a row of chips. */
+  margin-right: -7px;
   position: relative;
+  overflow: visible;
+  cursor: default;
 
   &:last-of-type { margin-right: 0; }
+  &:hover, &:focus-visible { z-index: 6; }
+  &:focus-visible { outline: 2px solid var(--accent, #6366f1); outline-offset: 2px; }
+}
+
+.initials {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+/* Sits on top of the initials; onError hides it, revealing them again. */
+.photo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 .self {
@@ -139,8 +175,9 @@
   color: var(--text, #f6f5f3);
 }
 
-/* Editing is encoded in the ring as well as the tooltip — colour alone would fail
-   WCAG 1.4.1, and the difference matters most to whoever cannot see it. */
+/* Editing is encoded in the ring and the corner dot as well as the card text —
+   colour alone would fail WCAG 1.4.1, and the distinction matters most to the
+   people who cannot see it. */
 .editing {
   border-color: #4ade80;
   box-shadow: 0 0 0 1px #4ade80;
@@ -151,12 +188,81 @@
     position: absolute;
     right: -1px;
     bottom: -1px;
-    width: 7px;
-    height: 7px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: #4ade80;
     border: 1.5px solid var(--panel, #181a1f);
+    z-index: 2;
   }
+}
+
+/* ---------- hover card ---------- */
+
+.card {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  min-width: 230px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--panel, #181a1f);
+  border: 1px solid var(--border-strong, rgba(170, 166, 160, 0.4));
+  box-shadow: 0 12px 28px -12px rgba(0, 0, 0, 0.6);
+  color: var(--text, #f6f5f3);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-3px);
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s;
+  pointer-events: none;
+}
+
+.person:hover .card,
+.person:focus-visible .card,
+.person:focus-within .card {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card { transition: none; }
+}
+
+.cardTop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cardPhoto {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+  border: 1px solid var(--border, rgba(170, 166, 160, 0.2));
+}
+
+.cardWho {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+
+  strong { font-weight: 650; }
+}
+
+.cardMeta {
+  color: var(--text-2, #cfccc6);
+  font-size: 11.5px;
+  word-break: break-word;
 }
 
 /* ---------- setup / status panels ---------- */

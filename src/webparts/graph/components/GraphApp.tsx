@@ -34,6 +34,10 @@ interface IGraphAppState {
   syncDetail: string | null;
   switching: boolean;
   present: IPresentUser[];
+  /** Native Fullscreen API is active. */
+  fullscreen: boolean;
+  /** Fallback "cover the page" mode, for when the browser refuses fullscreen. */
+  expanded: boolean;
 }
 
 /**
@@ -76,7 +80,9 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
       sync: props.canEdit ? 'idle' : 'readonly',
       syncDetail: null,
       switching: false,
-      present: []
+      present: [],
+      fullscreen: false,
+      expanded: false
     };
     this.onBeforeUnload = (): void => { void this.flushPendingSave(); };
     this.onVisibility = (): void => {
@@ -88,6 +94,8 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     window.addEventListener('beforeunload', this.onBeforeUnload);
     document.addEventListener('visibilitychange', this.onVisibility);
     window.addEventListener('resize', this.fitToViewport);
+    document.addEventListener('fullscreenchange', this.onFullscreenChange);
+    document.addEventListener('keydown', this.onKeyDown);
     this.watchContainerSize();
     this.fitToViewport();
     void this.initialize();
@@ -98,6 +106,8 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     window.removeEventListener('beforeunload', this.onBeforeUnload);
     document.removeEventListener('visibilitychange', this.onVisibility);
     window.removeEventListener('resize', this.fitToViewport);
+    document.removeEventListener('fullscreenchange', this.onFullscreenChange);
+    document.removeEventListener('keydown', this.onKeyDown);
     if (this.resizeObserver) { this.resizeObserver.disconnect(); }
     if (this.saveTimer) { clearTimeout(this.saveTimer); }
     if (this.pollTimer) { clearInterval(this.pollTimer); }
@@ -122,6 +132,17 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
   private fitToViewport = (): void => {
     const el = this.shellEl;
     if (!el) { return; }
+
+    // Filling the screen is the whole point of both expanded modes; there is no page
+    // chrome left to measure around.
+    if (this.state.fullscreen || this.state.expanded) {
+      if (el.style.height !== '100vh') {
+        el.style.height = '100vh';
+        if (this.engine) { this.engine.resize(); }
+      }
+      return;
+    }
+
     const top = el.getBoundingClientRect().top;
     const height = Math.max(
       MIN_SHELL_HEIGHT,
@@ -146,6 +167,50 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     observer.observe(this.shellEl.parentElement);
     this.resizeObserver = observer;
   }
+
+  /* --------------------------------------------------------------- fullscreen */
+
+  /**
+   * Native fullscreen where the browser allows it, a page-covering overlay where it
+   * does not. SharePoint pages can sit in contexts that refuse the Fullscreen API, and
+   * "expand the graph" is too useful to be at the mercy of that.
+   */
+  private toggleFullscreen = (): void => {
+    const el = this.shellEl;
+    if (!el) { return; }
+
+    if (this.state.fullscreen) {
+      void Promise.resolve(document.exitFullscreen && document.exitFullscreen()).catch(() => undefined);
+      return;
+    }
+    if (this.state.expanded) {
+      this.setState({ expanded: false }, this.fitToViewport);
+      return;
+    }
+
+    if (!el.requestFullscreen) {
+      this.setState({ expanded: true }, this.fitToViewport);
+      return;
+    }
+    el.requestFullscreen().catch(() => {
+      this.setState({ expanded: true }, this.fitToViewport);
+    });
+  };
+
+  private onFullscreenChange = (): void => {
+    const active = document.fullscreenElement === this.shellEl;
+    this.setState({ fullscreen: active }, () => {
+      // The browser needs a frame to apply the new box before it can be measured.
+      window.setTimeout(this.fitToViewport, 50);
+    });
+  };
+
+  /** Escape exits the overlay fallback, matching what Escape does in real fullscreen. */
+  private onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape' && this.state.expanded) {
+      this.setState({ expanded: false }, this.fitToViewport);
+    }
+  };
 
   private setShellRef = (el: HTMLDivElement | null): void => {
     if (el === this.shellEl) { return; }
@@ -533,29 +598,75 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
       .split(/[\s,]+/).filter(Boolean).slice(0, 2)
       .map((part) => part.charAt(0).toUpperCase()).join('') || '?';
 
+    const others = people.filter((p) => !p.isSelf).length;
+    const shown = people.slice(0, 6);
     const summary = people
       .map((p) => `${p.name}${p.isSelf ? ' (you)' : ''} — ${p.mode.toLowerCase()}`)
-      .join('\n');
-    const others = people.filter((p) => !p.isSelf).length;
-    const shown = people.slice(0, 5);
+      .join(', ');
+
+    // SharePoint's own photo endpoint: same origin, already authenticated, and it is
+    // not a library file, so it is unaffected by the download policy. A missing photo
+    // 404s or returns a placeholder, which the onError handler turns back into initials.
+    const photoUrl = (email: string): string =>
+      `${this.props.services.sp.webUrl}/_layouts/15/userphoto.aspx` +
+      `?size=M&accountname=${encodeURIComponent(email)}`;
+
+    const ago = (iso: string): string => {
+      const seconds = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+      if (seconds < 45) { return 'just now'; }
+      if (seconds < 90) { return 'a minute ago'; }
+      return `${Math.round(seconds / 60)} minutes ago`;
+    };
 
     return (
-      <span className={styles.presence} title={summary}>
+      <span className={styles.presence}>
         {shown.map((p) => (
           <span
             key={p.login || p.name}
-            className={`${styles.avatar} ${p.mode === 'Editing' ? styles.editing : ''} ${p.isSelf ? styles.self : ''}`}
-            aria-hidden="true"
+            className={`${styles.person} ${p.mode === 'Editing' ? styles.editing : ''} ${p.isSelf ? styles.self : ''}`}
+            tabIndex={0}
+            role="button"
+            aria-label={`${p.name}${p.isSelf ? ', you' : ''}, ${p.mode.toLowerCase()}, last seen ${ago(p.lastSeen)}`}
           >
-            {initials(p.name)}
+            <span className={styles.initials} aria-hidden="true">{initials(p.name)}</span>
+            {p.email && (
+              <img
+                className={styles.photo}
+                src={photoUrl(p.email)}
+                alt=""
+                aria-hidden="true"
+                onError={(e): void => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
+            )}
+            <span className={styles.card} role="tooltip">
+              <span className={styles.cardTop}>
+                {p.email && (
+                  <img
+                    className={styles.cardPhoto}
+                    src={photoUrl(p.email)}
+                    alt=""
+                    onError={(e): void => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                )}
+                <span className={styles.cardWho}>
+                  <strong>{p.name}{p.isSelf ? ' (you)' : ''}</strong>
+                  {p.email && <span className={styles.cardMeta}>{p.email}</span>}
+                </span>
+              </span>
+              <span className={styles.cardMeta}>
+                {p.mode === 'Editing' ? 'Editing this graph' : 'Viewing this graph'} · seen {ago(p.lastSeen)}
+              </span>
+            </span>
           </span>
         ))}
         {people.length > shown.length && (
-          <span className={styles.avatar} aria-hidden="true">+{people.length - shown.length}</span>
+          <span className={styles.person} aria-hidden="true">
+            <span className={styles.initials}>+{people.length - shown.length}</span>
+          </span>
         )}
         <span className={styles.srOnly}>
           {others === 0
-            ? 'No one else is viewing this graph.'
+            ? 'No one else is on this graph.'
             : `${others} other ${others === 1 ? 'person' : 'people'} on this graph: ${summary}`}
         </span>
       </span>
@@ -584,7 +695,10 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
 
     if (phase === 'checking' || phase === 'loading') {
       return (
-        <div className={styles.shell} ref={this.setShellRef}>
+        <div
+        className={`${styles.shell} ${this.state.expanded ? styles.expanded : ''}`}
+        ref={this.setShellRef}
+      >
           <div className={styles.panel} role="status" aria-live="polite">
             <h2 className={styles.panelTitle}>Loading the graph…</h2>
             <p className={styles.panelText}>
@@ -597,7 +711,10 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
 
     if (phase === 'error') {
       return (
-        <div className={styles.shell} ref={this.setShellRef}>
+        <div
+        className={`${styles.shell} ${this.state.expanded ? styles.expanded : ''}`}
+        ref={this.setShellRef}
+      >
           <div className={styles.panel} role="alert">
             <h2 className={styles.panelTitle}>The graph could not be opened</h2>
             <p className={styles.panelText}>{this.state.error}</p>
@@ -611,7 +728,10 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
 
     if (phase === 'setup' && plan) {
       return (
-        <div className={styles.shell} ref={this.setShellRef}>
+        <div
+        className={`${styles.shell} ${this.state.expanded ? styles.expanded : ''}`}
+        ref={this.setShellRef}
+      >
           <SetupPanel
             plan={plan}
             canEdit={this.props.canEdit}
@@ -629,7 +749,10 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     const current = projects.filter((p) => p.id === currentProjectId)[0];
 
     return (
-      <div className={styles.shell} ref={this.setShellRef}>
+      <div
+        className={`${styles.shell} ${this.state.expanded ? styles.expanded : ''}`}
+        ref={this.setShellRef}
+      >
         <div className={styles.bar}>
           <label className={styles.barLabel} htmlFor="erg-project-select">Graph</label>
           <select
@@ -671,6 +794,17 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
           {this.renderBadge()}
           <button type="button" className={styles.button} onClick={this.openSetup}>
             Backend
+          </button>
+          <button
+            type="button"
+            className={styles.button}
+            onClick={this.toggleFullscreen}
+            aria-pressed={this.state.fullscreen || this.state.expanded}
+            title={this.state.fullscreen || this.state.expanded
+              ? 'Exit full screen (Esc)'
+              : 'Work in full screen'}
+          >
+            {this.state.fullscreen || this.state.expanded ? '⤡ Exit full screen' : '⤢ Full screen'}
           </button>
         </div>
 

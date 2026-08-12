@@ -39,7 +39,8 @@ export default class GraphWebPart extends BaseClientSideWebPart<IGraphWebPartPro
       page.web.absoluteUrl,
       this.editorName,
       // loginName is the stable identity; display names collide and change.
-      page.user.loginName || page.user.email || this.editorName
+      page.user.loginName || page.user.email || this.editorName,
+      page.user.email || ''
     );
     return super.onInit();
   }

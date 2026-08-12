@@ -23,6 +23,8 @@ export type PresenceMode = 'Viewing' | 'Editing';
 export interface IPresentUser {
   login: string;
   name: string;
+  /** Account name for the profile-photo endpoint; blank when unknown. */
+  email: string;
   mode: PresenceMode;
   lastSeen: string;
   isSelf: boolean;
@@ -33,6 +35,7 @@ interface IPresenceItemDto {
   Title: string;
   ErgUser: string | null;
   ErgLogin: string | null;
+  ErgEmail: string | null;
   ErgMode: string | null;
   ErgHeartbeat: string | null;
 }
@@ -48,7 +51,8 @@ export class PresenceService {
   public constructor(
     private readonly sp: SpRest,
     private readonly login: string,
-    private readonly displayName: string
+    private readonly displayName: string,
+    private readonly email: string = ''
   ) {}
 
   public get isDisabled(): boolean { return this.disabled; }
@@ -66,6 +70,7 @@ export class PresenceService {
       ErgProjectId: projectId,
       ErgUser: this.displayName,
       ErgLogin: this.login,
+      ErgEmail: this.email,
       ErgMode: mode,
       ErgHeartbeat: new Date().toISOString()
     };
@@ -102,7 +107,7 @@ export class PresenceService {
     if (this.disabled) { return []; }
     try {
       const rows = await this.sp.getAll<IPresenceItemDto>(
-        `${presencePath()}/items?$select=Id,Title,ErgUser,ErgLogin,ErgMode,ErgHeartbeat` +
+        `${presencePath()}/items?$select=Id,Title,ErgUser,ErgLogin,ErgEmail,ErgMode,ErgHeartbeat` +
         `&$filter=ErgProjectId eq ${projectId}&$top=200`
       );
       const cutoff = Date.now() - STALE_MS;
@@ -113,6 +118,7 @@ export class PresenceService {
         .map((r) => ({
           login: r.ErgLogin || '',
           name: r.ErgUser || r.ErgLogin || 'Someone',
+          email: r.ErgEmail || '',
           mode: (r.ErgMode === 'Editing' ? 'Editing' : 'Viewing') as PresenceMode,
           lastSeen: r.ErgHeartbeat as string,
           isSelf: (r.ErgLogin || '') === this.login

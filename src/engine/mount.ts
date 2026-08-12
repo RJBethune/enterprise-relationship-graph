@@ -90,6 +90,29 @@ const HOST_OVERRIDES = `
 @media (min-width: 1001px) {
   .erg-root .app { grid-template-rows: 64px 1fr 0; }
 }
+
+/* The header is a fixed 64px row holding a title and a one-line strapline. At full
+   viewport width the strapline fits; in a SharePoint column it wraps to two lines and
+   spills out of the row, overlapping the graph below. Clamp both lines to the width
+   actually available and let them ellipsize.
+
+   min-width:0 on every flex ancestor is the load-bearing part: a flex item defaults to
+   min-width:auto, which refuses to shrink below its content, so text-overflow never
+   engages no matter what is set on the text itself. */
+.erg-root header.app-header { overflow: hidden; }
+.erg-root header.app-header .brand,
+.erg-root header.app-header .brand-text { min-width: 0; }
+.erg-root header.app-header .brand-text h1,
+.erg-root header.app-header .brand-text p {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Below this the strapline has no room to say anything useful; the title carries it. */
+@media (max-width: 900px) {
+  .erg-root header.app-header .brand-text p { display: none; }
+}
 `;
 
 export const injectEngineStyles = (): void => {

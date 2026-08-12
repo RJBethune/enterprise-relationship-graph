@@ -25,7 +25,8 @@ export interface IErgServices {
 export const createServices = (
   transport: ISpTransport,
   editorName: string,
-  editorLogin: string = editorName
+  editorLogin: string = editorName,
+  editorEmail: string = ''
 ): IErgServices => {
   const sp = new SpRest(transport);
   const documentStore = new DocumentGraphStore(sp, editorName);
@@ -33,7 +34,7 @@ export const createServices = (
   return {
     sp,
     provisioning: new SpProvisioningService(sp),
-    presence: new PresenceService(sp, editorLogin, editorName),
+    presence: new PresenceService(sp, editorLogin, editorName, editorEmail),
     storeFor: (mode: StorageMode): IGraphStore => (mode === 'Items' ? itemStore : documentStore)
   };
 };
@@ -42,5 +43,7 @@ export const createSharePointServices = (
   client: SPHttpClient,
   webUrl: string,
   editorName: string,
-  editorLogin: string
-): IErgServices => createServices(new SpHttpTransport(client, webUrl), editorName, editorLogin);
+  editorLogin: string,
+  editorEmail: string
+): IErgServices =>
+  createServices(new SpHttpTransport(client, webUrl), editorName, editorLogin, editorEmail);
