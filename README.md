@@ -8,6 +8,29 @@ Built for architecture reviews, leadership briefings, operational awareness, onb
 
 ---
 
+## Two ways to run it
+
+This repository holds **one graph engine and two ways to deploy it**.
+
+| | What it is | Where the data lives |
+|---|---|---|
+| **`enterprise-relationship-graph.html`** | The original single file. Open it in a browser — no server, no build, no install. | A `.json` file you open and save, plus a local browser cache. |
+| **SPFx web part** (`src/`, `config/`) | The same engine hosted in SharePoint Online, so a whole office shares one graph. | SharePoint lists on the site, with autosave, multi-editor merge and who-is-here presence. |
+
+**The HTML file is not a legacy artifact — it is the source of truth for engine
+behaviour.** `src/engine/` is *generated* from it by `scripts/extract-engine.py`, which
+applies a short list of asserted host seams and fails loudly if any anchor moves. Change
+the graph's behaviour by editing the HTML and re-running the extractor; never by hand-
+editing the generated modules.
+
+That arrangement is deliberate: it keeps the standalone tool working for anyone who wants
+a file they can email, while the SharePoint deployment stays byte-identical in look,
+iconography and canvas animation rather than drifting into a fork.
+
+See [CLAUDE.md](CLAUDE.md) for the SPFx architecture, storage models and release process.
+
+---
+
 ## Screenshot
 
 ![Enterprise Relationship Graph](Screenshot-01.jpg)

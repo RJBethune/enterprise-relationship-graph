@@ -4,6 +4,29 @@ import { startEngine } from './engine';
 import { IErgHost } from './hostContract';
 
 /**
+ * Fonts ship INSIDE the web part.
+ *
+ * Node icons are Font Awesome glyphs drawn onto the canvas and labels are Inter, so
+ * these are data, not decoration — a missing font is a graph of blank squares.
+ *
+ * Importing them makes webpack emit the woff2 files alongside the bundle with
+ * content-hashed names, and SPFx points `__webpack_public_path__` at wherever the
+ * bundle is served. That resolves the deployment problem in both directions at once:
+ * on a dev site they come from the package's own assets, and in production they come
+ * from the project's CDN folder because that is where the bundle came from. No public
+ * CDN to be blocked by the gov network, and no separate font handoff to be forgotten —
+ * the fonts cannot arrive without the code, because they travel with it.
+ */
+import '@fortawesome/fontawesome-free/css/all.min.css';
+// Latin subsets only. The full package ships Cyrillic, Greek and Vietnamese as well —
+// 708KB of fonts for an English-language org chart, most of it for glyphs no node label
+// here will ever contain. Latin plus latin-ext keeps accented European names working.
+import '@fontsource/inter/latin-400.css';
+import '@fontsource/inter/latin-500.css';
+import '@fontsource/inter/latin-600.css';
+import '@fontsource/inter/latin-700.css';
+
+/**
  * Puts the graph engine on the page inside the web part's element.
  *
  * The engine addresses its own DOM by element id, exactly as it did as a standalone
@@ -18,48 +41,32 @@ import { IErgHost } from './hostContract';
 const STYLE_ID = 'erg-engine-styles';
 const MOUNT_FLAG = 'data-erg-mounted';
 
-/**
- * Font Awesome glyphs and Inter are drawn ONTO THE CANVAS — node icons are text
- * rendered in those faces, not decoration. Where they load from differs by environment,
- * and getting that backwards is a silent failure (missing icons, working app), so both
- * paths are explicit:
- *
- *  - PRODUCTION sites must set `assetBaseUrl` to the project's CDN folder, the only
- *    remote origin the download policy permits. The CDN handoff has to include the font
- *    files under `fonts/`.
- *  - DEV and test sites leave it blank and get the public CDNs, exactly as the v1.x
- *    single-file app did — so a test-catalog deployment works with no CDN work at all.
- *
- * Either way the engine tolerates them not arriving: it races the load against a 3s
- * timeout and renders with fallbacks.
- */
-export const PRODUCTION_ASSET_BASE = 'https://irm.azureedge.us/M/enterprise-relationship-graph/';
-
-const PUBLIC_FONT_AWESOME = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css';
-const PUBLIC_INTER = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap';
 
 export const isMounted = (): boolean => !!document.querySelector(`[${MOUNT_FLAG}]`);
 
 export interface IMountOptions {
   container: HTMLElement;
   host: IErgHost;
-  /** Base URL for font assets. Defaults to the project's CDN folder. */
+  /** Optional extra stylesheet base. Blank is correct — the fonts are bundled. */
   assetBaseUrl?: string;
 }
 
+/**
+ * Optional extra stylesheet base.
+ *
+ * The fonts themselves are bundled, so this is now only an escape hatch: a tenant that
+ * must serve them from somewhere specific can point at it, and those rules land after
+ * the bundled ones and win. Leaving it blank — the default — is correct everywhere.
+ */
 export const loadEngineFonts = (assetBaseUrl?: string): void => {
   const base = (assetBaseUrl || '').trim();
+  if (!base) { return; }
   try {
-    if (!base) {
-      SPComponentLoader.loadCss(PUBLIC_FONT_AWESOME);
-      SPComponentLoader.loadCss(PUBLIC_INTER);
-      return;
-    }
     const root = base.replace(/\/*$/, '/');
     SPComponentLoader.loadCss(`${root}fonts/font-awesome/all.min.css`);
     SPComponentLoader.loadCss(`${root}fonts/inter/inter.css`);
   } catch {
-    // Non-fatal by design — see the note above.
+    // Non-fatal: the bundled faces are already registered.
   }
 };
 

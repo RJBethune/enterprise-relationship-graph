@@ -102,12 +102,24 @@ The safety suite compiles with the project's own TypeScript and runs on plain No
 no external test runner (SPFX-ARCHITECTURE.md §4). It is chained into `check`, `test` and
 `ship`, so a release cannot go out with this logic broken.
 
-## Fonts
+## Fonts are bundled, not fetched
 
 Node icons are Font Awesome glyphs drawn onto the canvas, and labels are Inter — they are
-not decoration. They load from `<assetBaseUrl>/fonts/...`, defaulting to the project's CDN
-folder, so **the CDN handoff must include the font files**. The engine races the load
-against a 3s timeout and renders with fallbacks if they do not arrive.
+data, not decoration: a missing font is a graph of blank squares.
+
+Both are npm dependencies imported by `src/engine/mount.ts`, so webpack emits the woff2
+files alongside the bundle with content-hashed names and SPFx resolves them through
+`__webpack_public_path__`. They therefore come from wherever the bundle came from —
+ClientSideAssets on a dev site, the project's CDN folder in production — with **no public
+CDN to be blocked by the network and no separate font handoff to forget**. The fonts
+cannot arrive without the code, because they travel with it.
+
+Only the LATIN subsets of Inter are imported. The full package adds Cyrillic, Greek and
+Vietnamese: 708KB of fonts for an English-language org chart. Latin plus latin-ext keeps
+accented European names working at 404KB total.
+
+`assetBaseUrl` remains as an escape hatch for a tenant that must serve the faces from a
+specific host. Blank — the default — is correct everywhere.
 
 ## Before a production release
 
@@ -116,4 +128,5 @@ Follow the workspace CLAUDE.md release procedure. Project-specific reminders:
 1. Bump `package.json` version **and** solution + feature versions in `package-solution.json`.
 2. `includeClientSideAssets: false` and confirm `cdnBasePath` is this project's folder.
 3. `npm run release` (runs the safety suite, ships, then `eo-spfx preflight`).
-4. Font files go in the CDN handoff alongside the bundle.
+4. The CDN handoff is whatever `release/assets/` contains — the bundle AND the font
+   files webpack emitted beside it. Send the folder as-is; do not rename anything.

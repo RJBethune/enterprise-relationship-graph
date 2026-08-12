@@ -4,6 +4,60 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.0.9] - 2026-08-12
+
+Field fixes from the first real deployment, plus the font-hosting problem solved
+rather than deferred.
+
+### Fixed
+- **Provisioning could not read the schema.** The `/fields` query named `Choices` and
+  `RelationshipDeleteBehavior` in `$select`; that collection is polymorphic and declared
+  as `SP.Field`, which has neither, so SharePoint rejected the whole query with 400.
+  Every list reported "exists but could not be read" and setup was dead on arrival.
+- **Idle clients wrote to SharePoint continuously.** The engine persists for synthetic
+  mutations too — a project open, an undo — and each became a real write, which bumped
+  `Modified`, which every other client's poll read as an edit and answered with a write
+  of its own. A feedback loop between browsers with nobody editing. An unchanged graph
+  is now not written at all.
+- **The whole graph could vanish on a layout change.** `fitGraph` computed its zoom
+  with no floor, so a canvas smaller than twice its padding produced a zero or negative
+  scale, mirroring and collapsing the scene beyond the reach of any zoom or pan.
+- **Nodes drifted away after being created or dropped.** With no relationships there is
+  nothing to balance the force layout's centering pull. Created and dragged nodes now
+  stay where they are put, and a saved arrangement is held on load; choosing a layout
+  still hands everything back to the simulation.
+- **Importing a JSON file never reached SharePoint.** The engine marks itself clean
+  after a file load — true of the file, false of the list — so the import sat in the
+  browser looking saved and vanished on reload.
+- **The web part pushed the page sideways.** The engine sizes itself in viewport units;
+  inside a SharePoint column that is wider and taller than the space it has.
+- Presence showed nobody when the site's list was a version behind, and told a missing
+  column apart from a missing list only by accident.
+
+### Added
+- **Fonts ship inside the package.** Font Awesome and Inter are npm dependencies emitted
+  beside the bundle, so they come from wherever the bundle came from. No public CDN to be
+  blocked, and no separate font handoff to forget. Latin subsets only: 404KB, not 708KB.
+- **Who is here** — AD profile photos in the header with hover cards showing name, email,
+  whether they are viewing or editing, and when they were last seen.
+- **Full screen**, native where the browser allows it and a page-covering overlay where
+  it does not.
+- **A graph height setting** in the property pane, for small screens where filling the
+  window leaves a canvas barely taller than its toolbar.
+- **Schema gaps are flagged** rather than tolerated in silence: a non-core gap warns and
+  marks the Backend button instead of blocking the graph.
+- **A storage-ceiling warning** at 75% of what a single list item can hold.
+- Provisioned lists now show their columns in the default view, so a working save stops
+  looking like a broken one.
+
+### Changed
+- The schema check fans out instead of running fifteen sequential reads, and a clean
+  verdict is cached against a fingerprint of the schema in the bundle — so an upgraded
+  package re-checks automatically without anyone bumping a version.
+- Permissions are read from the list, not the site.
+- Per-item storage is labelled experimental: it has never run against a production
+  tenant, and there is no conversion between the storage models.
+
 ## [2.0.0] - 2026-08-12
 
 The tool becomes a SharePoint-hosted application with the graph stored in SharePoint
