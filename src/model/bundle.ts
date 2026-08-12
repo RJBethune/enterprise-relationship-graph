@@ -128,6 +128,16 @@ export const joinPayload = (chunks: (string | null | undefined)[]): string => {
   return out;
 };
 
+/** Guarantee the optional collections exist so downstream code can assume arrays. */
+export const normalizeGraph = (graph: IGraph): IGraph => {
+  if (!Array.isArray(graph.nodes)) { graph.nodes = []; }
+  if (!Array.isArray(graph.edges)) { graph.edges = []; }
+  if (!Array.isArray(graph.customNodeTypes)) { graph.customNodeTypes = []; }
+  if (!Array.isArray(graph.collapsedNodes)) { graph.collapsedNodes = []; }
+  if (!graph.positions || typeof graph.positions !== 'object') { graph.positions = {}; }
+  return graph;
+};
+
 /**
  * Parse a stored payload into a bundle, accepting every shape the tool has ever
  * written: current bundle, legacy graph-only, and empty (a freshly created project).
@@ -153,16 +163,6 @@ export const parseBundle = (text: string | null | undefined): IBundle => {
     return { version: BUNDLE_SCHEMA_VERSION, graph: normalizeGraph(asGraph), snapshots: [] };
   }
   throw new Error('Stored payload is not a recognized graph bundle');
-};
-
-/** Guarantee the optional collections exist so downstream code can assume arrays. */
-export const normalizeGraph = (graph: IGraph): IGraph => {
-  if (!Array.isArray(graph.nodes)) { graph.nodes = []; }
-  if (!Array.isArray(graph.edges)) { graph.edges = []; }
-  if (!Array.isArray(graph.customNodeTypes)) { graph.customNodeTypes = []; }
-  if (!Array.isArray(graph.collapsedNodes)) { graph.collapsedNodes = []; }
-  if (!graph.positions || typeof graph.positions !== 'object') { graph.positions = {}; }
-  return graph;
 };
 
 export const serializeBundle = (bundle: IBundle): string => JSON.stringify(bundle);

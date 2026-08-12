@@ -42,7 +42,7 @@ export class SpHttpTransport implements ISpTransport {
     const text = await res.text();
     let json: unknown = null;
     if (text && (text.charAt(0) === '{' || text.charAt(0) === '[')) {
-      try { json = JSON.parse(text); } catch (_e) { json = null; }
+      try { json = JSON.parse(text); } catch { json = null; }
     }
 
     return {

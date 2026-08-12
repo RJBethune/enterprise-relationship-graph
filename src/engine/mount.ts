@@ -18,12 +18,25 @@ import { IErgHost } from './hostContract';
 const STYLE_ID = 'erg-engine-styles';
 const MOUNT_FLAG = 'data-erg-mounted';
 
-/** Font Awesome glyphs and Inter are drawn onto the canvas, so they are not optional
- *  decoration — node icons are text rendered in those faces. They load from the same
- *  CDN folder as the rest of the web part's assets, which is the only remote origin
- *  production sites permit. The engine already tolerates them not arriving: it races
- *  the load against a 3s timeout and renders with fallbacks. */
-export const DEFAULT_ASSET_BASE = 'https://irm.azureedge.us/M/enterprise-relationship-graph/';
+/**
+ * Font Awesome glyphs and Inter are drawn ONTO THE CANVAS — node icons are text
+ * rendered in those faces, not decoration. Where they load from differs by environment,
+ * and getting that backwards is a silent failure (missing icons, working app), so both
+ * paths are explicit:
+ *
+ *  - PRODUCTION sites must set `assetBaseUrl` to the project's CDN folder, the only
+ *    remote origin the download policy permits. The CDN handoff has to include the font
+ *    files under `fonts/`.
+ *  - DEV and test sites leave it blank and get the public CDNs, exactly as the v1.x
+ *    single-file app did — so a test-catalog deployment works with no CDN work at all.
+ *
+ * Either way the engine tolerates them not arriving: it races the load against a 3s
+ * timeout and renders with fallbacks.
+ */
+export const PRODUCTION_ASSET_BASE = 'https://irm.azureedge.us/M/enterprise-relationship-graph/';
+
+const PUBLIC_FONT_AWESOME = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css';
+const PUBLIC_INTER = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap';
 
 export const isMounted = (): boolean => !!document.querySelector(`[${MOUNT_FLAG}]`);
 
@@ -35,11 +48,17 @@ export interface IMountOptions {
 }
 
 export const loadEngineFonts = (assetBaseUrl?: string): void => {
-  const base = (assetBaseUrl || DEFAULT_ASSET_BASE).replace(/\/*$/, '/');
+  const base = (assetBaseUrl || '').trim();
   try {
-    SPComponentLoader.loadCss(`${base}fonts/font-awesome/all.min.css`);
-    SPComponentLoader.loadCss(`${base}fonts/inter/inter.css`);
-  } catch (_e) {
+    if (!base) {
+      SPComponentLoader.loadCss(PUBLIC_FONT_AWESOME);
+      SPComponentLoader.loadCss(PUBLIC_INTER);
+      return;
+    }
+    const root = base.replace(/\/*$/, '/');
+    SPComponentLoader.loadCss(`${root}fonts/font-awesome/all.min.css`);
+    SPComponentLoader.loadCss(`${root}fonts/inter/inter.css`);
+  } catch {
     // Non-fatal by design — see the note above.
   }
 };
@@ -69,7 +88,7 @@ export const mountEngine = (options: IMountOptions): void => {
     if ((saved || (prefersLight ? 'light' : 'dark')) === 'light') {
       document.documentElement.setAttribute('data-theme', 'light');
     }
-  } catch (_e) { /* private mode */ }
+  } catch { /* private mode */ }
 
   startEngine(options.host);
 };

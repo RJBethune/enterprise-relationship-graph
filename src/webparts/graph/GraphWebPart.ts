@@ -11,7 +11,6 @@ import * as strings from 'GraphWebPartStrings';
 import GraphApp from './components/GraphApp';
 import { IGraphAppProps } from './components/IGraphAppProps';
 import { createSharePointServices, IErgServices } from '../../services/ServiceFactory';
-import { DEFAULT_ASSET_BASE } from '../../engine/mount';
 
 export interface IGraphWebPartProps {
   projectId: number;
@@ -51,12 +50,12 @@ export default class GraphWebPart extends BaseClientSideWebPart<IGraphWebPartPro
     try {
       const fromUrl = new URLSearchParams(window.location.search).get('project');
       if (fromUrl && !isNaN(Number(fromUrl))) { return Number(fromUrl); }
-    } catch (_e) { /* older browsers */ }
+    } catch { /* older browsers */ }
     if (this.properties.projectId) { return this.properties.projectId; }
     try {
       const remembered = window.localStorage.getItem(LAST_PROJECT_KEY);
       if (remembered && !isNaN(Number(remembered))) { return Number(remembered); }
-    } catch (_e) { /* private mode */ }
+    } catch { /* private mode */ }
     return null;
   }
 
@@ -70,9 +69,11 @@ export default class GraphWebPart extends BaseClientSideWebPart<IGraphWebPartPro
       initialProjectId: this.resolveInitialProject(),
       pollSeconds: this.properties.pollSeconds === undefined ? 8 : this.properties.pollSeconds,
       autosaveMs: this.properties.autosaveMs === undefined ? 2000 : this.properties.autosaveMs,
-      assetBaseUrl: this.properties.assetBaseUrl || DEFAULT_ASSET_BASE,
+      // Blank is the DEV default (public font CDNs). Production sites set this to the
+      // project's CDN folder — see loadEngineFonts.
+      assetBaseUrl: this.properties.assetBaseUrl || '',
       onProjectChanged: (projectId: number): void => {
-        try { window.localStorage.setItem(LAST_PROJECT_KEY, String(projectId)); } catch (_e) { /* private mode */ }
+        try { window.localStorage.setItem(LAST_PROJECT_KEY, String(projectId)); } catch { /* private mode */ }
       }
     });
 

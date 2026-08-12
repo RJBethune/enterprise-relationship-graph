@@ -88,7 +88,7 @@ class DocumentProject implements IOpenProject {
 
     try {
       await this.write(merge.merged, snapshots, etag);
-    } catch (e) {
+    } catch {
       // Losing the race twice means somebody is saving continuously. Report rather
       // than loop: an unbounded retry here is how you build a write storm.
       return {

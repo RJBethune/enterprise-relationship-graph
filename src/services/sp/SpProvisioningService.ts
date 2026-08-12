@@ -96,7 +96,7 @@ export class SpProvisioningService implements IProvisioningService {
         };
       }
       return { title, exists: true, verified: true, versioning: !!listInfo.EnableVersioning, fields: map };
-    } catch (_e) {
+    } catch {
       return { title, exists: true, verified: false, versioning: !!listInfo.EnableVersioning, fields: {} };
     }
   }
@@ -155,7 +155,7 @@ export class SpProvisioningService implements IProvisioningService {
         // by their graph id, not their label — a blank label must not fail the write.
         try {
           await this.sp.merge(this.fieldPath(action.list, 'Title'), { Required: false });
-        } catch (_e) { /* cosmetic; the list itself exists */ }
+        } catch { /* cosmetic; the list itself exists */ }
         return;
       }
 

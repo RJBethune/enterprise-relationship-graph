@@ -62,7 +62,7 @@ const nodesPath = (): string => `web/lists/getbytitle('${encodeURIComponent(NODE
 const edgesPath = (): string => `web/lists/getbytitle('${encodeURIComponent(EDGES_LIST)}')`;
 
 const parseData = <T>(json: string, fallback: T): T => {
-  try { return JSON.parse(json) as T; } catch (_e) { return fallback; }
+  try { return JSON.parse(json) as T; } catch { return fallback; }
 };
 
 export class ItemGraphStore implements IGraphStore {
@@ -150,7 +150,7 @@ export class ItemGraphStore implements IGraphStore {
         `${listPath}?$select=CurrentChangeToken`
       );
       return (res.CurrentChangeToken && res.CurrentChangeToken.StringValue) || null;
-    } catch (_e) {
+    } catch {
       return null;
     }
   }
@@ -380,7 +380,7 @@ class ItemProject implements IOpenProject {
         changes,
         token: (last && last.ChangeToken && last.ChangeToken.StringValue) || token
       };
-    } catch (_e) {
+    } catch {
       // A failed poll must never break editing — the next tick tries again.
       return { changes: [], token };
     }

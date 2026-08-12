@@ -8,6 +8,6 @@ define([], function () {
     ProjectIdFieldLabel: 'Graph to open by default (0 = last opened)',
     PollSecondsFieldLabel: 'Check for other people’s changes every (seconds, 0 = off)',
     AutosaveFieldLabel: 'Save after this much quiet (milliseconds)',
-    AssetBaseUrlFieldLabel: 'Font asset base URL (blank = the project CDN folder)'
+    AssetBaseUrlFieldLabel: 'Font asset base URL (blank = public CDN, for dev/test sites)'
   };
 });

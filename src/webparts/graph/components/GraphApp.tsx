@@ -6,7 +6,7 @@ import { mountEngine, unmountEngine, isMounted } from '../../../engine/mount';
 import { IErgHost, IEngineApi } from '../../../engine/hostContract';
 import { IGraph, IBundle, normalizeGraph } from '../../../model/bundle';
 import { IProjectSummary, IOpenProject, StorageMode } from '../../../services/IGraphStore';
-import { IProvisioningPlan, isHealthy } from '../../../provisioning/planner';
+import { IProvisioningPlan } from '../../../provisioning/planner';
 import { IProvisioningStepResult } from '../../../services/sp/SpProvisioningService';
 import { CORE_LISTS } from '../../../provisioning/schema';
 
@@ -282,7 +282,7 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
         'ok'
       );
       if (update.conflicts.length) { this.setSync('merged', `${update.conflicts.length} merged edit(s)`); }
-    } catch (_e) {
+    } catch {
       // A failed poll is not worth interrupting anyone over; the next tick retries.
     }
   }

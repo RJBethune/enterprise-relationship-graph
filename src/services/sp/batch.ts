@@ -126,7 +126,7 @@ export const parseBatchResponse = (text: string): IBatchPartResult[] => {
     const etagMatch = /^ETAG:\s*(.+)$/im.exec(headerBlock);
     let json: unknown = null;
     if (body && (body.charAt(0) === '{' || body.charAt(0) === '[')) {
-      try { json = JSON.parse(body); } catch (_e) { json = null; }
+      try { json = JSON.parse(body); } catch { json = null; }
     }
 
     const status = starts[i].status;

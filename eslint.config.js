@@ -21,7 +21,15 @@ module.exports = [
       '@typescript-eslint/no-floating-promises': 'off',
       // SharePoint REST returns null (not undefined) for empty columns; the
       // DTO layer models that honestly.
-      '@rushstack/no-new-null': 'off'
+      '@rushstack/no-new-null': 'off',
+      // `void somePromise()` is how this codebase marks a deliberately un-awaited
+      // async call (autosave flushes, poll ticks). Silence here would be worse than
+      // the operator: the alternative is a bare call that reads like an oversight.
+      'no-void': 'off',
+      // A class referenced inside a method body of a class declared above it is safe:
+      // the module is fully evaluated before any method runs. Functions and variables
+      // stay checked, where the rule catches real temporal-dead-zone bugs.
+      '@typescript-eslint/no-use-before-define': ['error', { classes: false }]
     }
   }
 ];
