@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.0.0] - 2026-08-12
+
+The tool becomes a SharePoint-hosted application with the graph stored in SharePoint
+lists, so one office-wide source of truth can be opened from anywhere. **The graph
+engine itself is unchanged** — identical look, iconography, canvas animations and
+interactions. Only where the data lives has moved.
+
+### Added
+- **SPFx web part** (`Enterprise Relationship Graph`, SPFx 1.23.2 / Heft lane) hosting
+  the existing engine. No Fluent React and therefore no §2b Fluent/Tabster pin contract;
+  the shell chrome borrows the engine's own CSS variables so it follows the light/dark
+  toggle.
+- **Deploy list / update schema** in-app, matching the Task Tracker and GSO Intake
+  pattern. A pure planner diffs the declared schema against the live site and shows
+  exactly what it will do before doing it; the executor applies it with per-step
+  progress and results. Additive only — wrong column types and unreadable lists are
+  reported for a human, never auto-fixed. Runs in the browser as the signed-in user
+  via `SPHttpClient`, so it needs no PnP connection.
+- **Multiple graphs per site, with a project switcher.** Each `ERG Projects` item is one
+  graph; `?project=<id>` deep-links to a specific one, and the last opened graph is
+  remembered per browser.
+- **Two storage models behind one interface**, chosen per project:
+  - *Document* (default) — the whole graph in one list item's payload columns. Every
+    save is one atomic, ETag-guarded write regardless of graph size, with SharePoint
+    version history as a free save ladder.
+  - *Items* — one row per node and relationship, with change-log sync so several people
+    can edit at once and see each other's changes. Node positions travel as a single
+    layout blob rather than as item writes, so a full re-layout costs one operation
+    instead of one per node.
+- **Autosave replaces the Save button.** Edits are written after a short quiet period,
+  and always flushed when the tab is hidden or closed.
+- **Conflict resolution by three-way merge.** Two people editing different parts of a
+  graph merge silently; only a genuine same-entity collision is reported. An edit always
+  beats a concurrent delete, because a resurrected node is recoverable and a discarded
+  edit is not.
+- **Throttle-aware write queue** — coalescing per entity, bounded concurrency, batching,
+  and backoff that honours the server's `Retry-After` exactly.
+- **Test suite that runs without a tenant**: 103 checks covering the pure logic plus
+  full end-to-end integration against an in-memory SharePoint (`tests/fakes/`) that
+  enforces ETags, change logs including deletes, cascade delete and unique columns.
+  Compiled with the project's own TypeScript and run on plain Node, chained into
+  `check` / `test` / `ship`.
+- `scripts/extract-engine.py` regenerates the engine modules from the single-file HTML
+  with asserted seams, and `scripts/build-preview.mjs` reassembles them into a page you
+  can open to verify the extraction.
+
+### Changed
+- The `.json` file is now a portability and backup format rather than the source of
+  truth. Export and import are unchanged.
+- `localStorage` remains the offline draft cache; the header chip now reports save state
+  against SharePoint instead of a file name.
+- Font Awesome and Inter load from the project's CDN folder rather than public CDNs, so
+  the CDN handoff must include the font files.
+
+### Notes
+- The web part expects a **single-part app page**: the engine addresses its DOM by
+  element id, so a second instance on the same page is refused with an explanation.
+- Storage is not transactional in per-item mode. Write ordering plus an orphan sweep on
+  load is a mitigation, not a guarantee — which is why Document mode is the default.
+
 ## [1.7.0] - 2026-06-16
 
 ### Added

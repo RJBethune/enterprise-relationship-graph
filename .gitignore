@@ -16,9 +16,20 @@ desktop.ini
 *.bak
 *~
 
-# Node (browser-test tooling only — the app itself has no build)
+# Node / SPFx build output
 node_modules/
 package-lock.json
+lib/
+lib-commonjs/
+lib-amd/
+dist/
+temp/
+solution/
+sharepoint/solution/
+release/assets/
+cdn-handoff/
+*.sppkg
+.heft/
 
 # Local working files (don't commit personal graph data)
 my-*.json

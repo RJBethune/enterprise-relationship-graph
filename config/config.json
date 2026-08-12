@@ -1,0 +1,18 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx-build/config.2.0.schema.json",
+  "version": "2.0",
+  "bundles": {
+    "enterprise-relationship-graph-web-part": {
+      "components": [
+        {
+          "entrypoint": "./lib/webparts/graph/GraphWebPart.js",
+          "manifest": "./src/webparts/graph/GraphWebPart.manifest.json"
+        }
+      ]
+    }
+  },
+  "externals": {},
+  "localizedResources": {
+    "GraphWebPartStrings": "lib/webparts/graph/loc/{locale}.js"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx-build/package-solution.schema.json",
+  "solution": {
+    "name": "Enterprise Relationship Graph",
+    "id": "e7c41d92-3b6a-4f18-9a52-8d3c07b41e6f",
+    "version": "2.0.0.0",
+    "includeClientSideAssets": true,
+    "skipFeatureDeployment": true,
+    "isDomainIsolated": false,
+    "developer": {
+      "name": "M/EX - Executive Office",
+      "websiteUrl": "",
+      "privacyUrl": "",
+      "termsOfUseUrl": "",
+      "mpnId": ""
+    },
+    "metadata": {
+      "shortDescription": {
+        "default": "Interactive relationship graph of offices, systems, platforms, sites, teams, and dependencies. Built by M/EX - Executive Office."
+      },
+      "longDescription": {
+        "default": "Maps and explores the relationships between offices, directorates, people, systems, platforms, SharePoint sites, Teams, O365 groups, mailboxes, workflows, and datasets. Graph data lives in SharePoint lists as the single source of truth, with in-app schema provisioning, multi-project switching, snapshots, path finding, impact analysis, metrics, and Section 508 accessibility. Built and maintained by M/EX - Executive Office."
+      },
+      "screenshotPaths": [],
+      "videoUrl": "",
+      "categories": []
+    },
+    "features": [
+      {
+        "title": "Enterprise Relationship Graph - web part",
+        "description": "Deploys the Enterprise Relationship Graph client-side web part.",
+        "id": "5a2f8c11-96d4-4e73-b8a1-c2f409d7e5b3",
+        "version": "2.0.0.0"
+      }
+    ]
+  },
+  "paths": {
+    "zippedPackage": "solution/enterprise-relationship-graph.sppkg"
+  }
+}

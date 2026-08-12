@@ -1,0 +1,9490 @@
+// @ts-nocheck
+/* eslint-disable */
+/* ==========================================================================
+   Enterprise Relationship Graph — GRAPH ENGINE
+   ==========================================================================
+   Extracted VERBATIM from the v1.7.0 single-file application
+   (enterprise-relationship-graph.html) by scripts/extract-engine.py.
+
+   DO NOT hand-edit this file. Change the source HTML and re-run the extractor,
+   or the two copies drift and the extractor's seam assertions stop protecting
+   anything.
+
+   The only modifications the extractor makes are the host seams: persistence
+   (persist / snapshots / editor name / status chip) routes through the `host`
+   object instead of localStorage, and boot() hands back a control API. Rendering,
+   layout, interaction, iconography and animation are untouched.
+
+   Typing is deliberately suppressed (@ts-nocheck): this is ~9,400 lines of
+   working, shipped, browser-tested JavaScript whose value is that it is
+   IDENTICAL to the original. Retyping it would be a rewrite wearing a port's
+   clothes.
+   ========================================================================== */
+import { IErgHost, IEngineApi } from './hostContract';
+
+export function startEngine(host: IErgHost): void {
+  // --- extractor-injected scaffolding -------------------------------------
+  // Frame scheduling is shadowed so destroy() can stop the render loop within
+  // one frame: every internal requestAnimationFrame call routes through here.
+  var __ergDestroyed = false;
+  var __ergRaf = window.requestAnimationFrame.bind(window);
+  function requestAnimationFrame(cb){ return __ergDestroyed ? 0 : __ergRaf(cb); }
+  // Listener recorder — see destroy() in buildEngineApi().
+  var __ergListeners = [];
+  function __ergOn(target, evt, fn, opts){
+    __ergListeners.push({ t: target, e: evt, f: fn, o: opts });
+    return target.addEventListener(evt, fn, opts);
+  }
+  // ------------------------------------------------------------------------
+
+/* ============================================================================
+   ENTERPRISE RELATIONSHIP GRAPH — v3
+   Single-file, offline-capable. CDN: Font Awesome 6 + Inter.
+
+   ----------------------------------------------------------------------------
+   TABLE OF CONTENTS  (jump targets — search for the exact section banner)
+   ----------------------------------------------------------------------------
+     TYPE METADATA              — NODE_TYPES, EDGE_TYPES, TYPE_STYLE, EDGE_STYLE
+     ICON REGISTRY              — FA brand glyphs + inline SVG brand icons
+     SAMPLE DATA                — 80-node demo graph (the sample button loads this)
+     STATE                      — the central `state` object + localStorage keys
+     RENDERING                  — Canvas2D draw loop, hit-testing, transforms
+     LAYOUT ALGORITHMS          — force, hierarchical, radial, concentric, grid,
+                                  org-chart (alias of hierarchical with filter snapshot)
+     FILTERS & VISIBILITY       — isVisibleNode/Edge, collapse, neighborhood, search
+     PROFILE PANELS             — renderNodeProfile, renderEdgeProfile (inline edit)
+     MODALS                     — openModal/closeModal contract + per-feature modals
+     AUTO-EDGE SYNC             — SYNC_RULES + syncStructuralEdges
+     QUICK-CONNECT              — guessEdgeType + Quick-Connect mode
+     SAVE / LOAD                — currentBundle, parseBundle (accepts v2 + v3)
+     EXPORTS                    — CSV / XLSX / PNG / Mermaid
+     LEADERSHIP METRICS         — computeLeadershipMetrics + 8-tab modal
+     IMPACT ANALYSIS            — pure dependency cascade (no ownership leak)
+     DATA QUALITY VALIDATION    — type-aware + structural-integrity rules, severity-grouped modal
+     ORG INTELLIGENCE           — span of control, bridges, knowledge concentration
+     RECENTLY VIEWED            — popover with last 15 selected entities
+     UI STATE PERSISTENCE       — sidebar collapse + legend + recent in localStorage
+     WIRE UP                    — DOM event listeners attached on boot
+     BOOT                       — boot() initializes everything
+
+   ----------------------------------------------------------------------------
+   ARCHITECTURE — how things connect
+   ----------------------------------------------------------------------------
+     State lives in a single `state` object (graph, filters, layout, selection,
+       collapse, recent, etc.). LocalStorage mirrors graph (STORAGE_KEY) + UI
+       preferences (UI_STATE_KEY). The JSON file on disk is the source of truth.
+
+     Rendering runs through requestAnimationFrame. Most mutations call
+       afterMutate() which: pushes history (undo), persists to localStorage,
+       updates the file-chip dirty indicator, recomputes collapse-hidden set,
+       and calls requestRedraw().
+
+     Auto-edges: filling Parent / Directorate / Office / Team / Platform / Owner
+       / Lead / Reports-to on a node form auto-creates the matching graph edge.
+       SYNC_RULES declares which field maps to which edge type and direction.
+
+     Modals: all share `openModal(title, html, onSave, wide)` / closeModal().
+       Info-style modals hide the Save button and rename Cancel to "Done".
+       The Metrics modal adds `.xl` for an extra-wide layout.
+
+     Save / load: currentBundle() produces a v3 envelope { version, exportedAt,
+       lastModifiedBy, lastModifiedAt, graph, snapshots }. parseBundle() accepts
+       v2 (no email/phone/team fields) and v3, defaulting missing fields.
+   ============================================================================ */
+
+/* ---------- TYPE METADATA ---------- */
+const NODE_TYPES = [
+  "Under Secretary","Bureau",
+  "Executive Office","Front Office","Directorate","Office","Team","Person","Role",
+  "System","Platform","Application","SPFx Application","Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group",
+  "Distribution List","Mailbox","Microsoft Form","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset","Dataverse Table",
+  "Document","Requirement","Decision","Vendor","Service","Environment","Other"
+];
+const EDGE_TYPES = [
+  "CONTAINS","REPORTS_TO","OWNS","MANAGES","SUPPORTS","USES","DEPENDS_ON",
+  "HOSTED_ON","CONNECTED_TO","INTEGRATES_WITH","HAS_SITE","HAS_TEAM",
+  "HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST","SECURES","SENDS_TO","RECEIVES_FROM","AUTOMATES",
+  "STORES_DATA_IN","VISUALIZED_IN","DOCUMENTED_IN","APPROVED_BY","REQUESTED_BY",
+  "RESPONSIBLE_FOR","BACKUP_FOR","PART_OF","OTHER"
+];
+
+// Per-type style: color, size, shape, FA icon unicode
+const TYPE_STYLE = {
+  "Under Secretary":       { color:"#E11D48", size:34, shape:"hex",     icon:"" }, // landmark-dome
+  "Bureau":                { color:"#D946EF", size:31, shape:"hex",     icon:"" }, // building-columns
+  "Executive Office":      { color:"#FBBF24", size:30, shape:"hex",     icon:"" }, // crown
+  "Front Office":          { color:"#A78BFA", size:25, shape:"hex",     icon:"" }, // building
+  "Directorate":           { color:"#38BDF8", size:23, shape:"hex",     icon:"" }, // sitemap
+  "Office":                { color:"#60A5FA", size:20, shape:"round",   icon:"" }, // briefcase
+  "Team":                  { color:"#7DD3FC", size:17, shape:"round",   icon:"" }, // people-group
+  "Person":                { color:"#34D399", size:14, shape:"round",   icon:"" }, // user
+  "Role":                  { color:"#5EEAD4", size:13, shape:"round",   icon:"" }, // id-badge
+  "System":                { color:"#FB923C", size:19, shape:"square",  icon:"" }, // server
+  "Platform":              { color:"#818CF8", size:23, shape:"square",  icon:"" }, // cubes
+  "Application":           { color:"#F472B6", size:20, shape:"square",  icon:"" }, // window
+  "SPFx Application":       { color:"#2563EB", size:18, shape:"square",  icon:"" }, // puzzle-piece
+  "Site Collection":       { color:"#06B6D4", size:18, shape:"square",  icon:"" }, // folder-tree
+  "SharePoint Site":       { color:"#22D3EE", size:15, shape:"diamond", icon:"" }, // share
+  "SharePoint List":       { color:"#14B8A6", size:13, shape:"diamond", icon:"" }, // list
+  "Microsoft Team":        { color:"#C084FC", size:15, shape:"diamond", icon:"" }, // users
+  "O365 Group":            { color:"#DDD6FE", size:14, shape:"diamond", icon:"" }, // user-friends
+  "Distribution List":     { color:"#F0ABFC", size:13, shape:"diamond", icon:"" }, // envelopes-bulk
+  "Mailbox":               { color:"#FDE68A", size:12, shape:"diamond", icon:"" }, // envelope
+  "Microsoft Form":        { color:"#8B5CF6", size:13, shape:"diamond", icon:"" }, // clipboard-list
+  "Workflow":              { color:"#A3E635", size:13, shape:"tri",     icon:"" }, // diagram-project
+  "Power Automate Flow":   { color:"#A3E635", size:13, shape:"tri",     icon:"" }, // bolt
+  "Power BI Dashboard":    { color:"#FACC15", size:14, shape:"tri",     icon:"" }, // chart-bar
+  "API":                   { color:"#FB7185", size:13, shape:"tri",     icon:"" }, // plug
+  "Dataset":               { color:"#10B981", size:13, shape:"tri",     icon:"" }, // database
+  "Dataverse Table":       { color:"#9333EA", size:13, shape:"tri",     icon:"" }, // table
+  "Document":              { color:"#94A3B8", size:12, shape:"square",  icon:"" }, // file-lines
+  "Requirement":           { color:"#FCD34D", size:13, shape:"square",  icon:"" }, // clipboard-list
+  "Decision":              { color:"#F59E0B", size:13, shape:"square",  icon:"" }, // gavel
+  "Vendor":                { color:"#EF4444", size:15, shape:"round",   icon:"" }, // handshake
+  "Service":               { color:"#B45309", size:15, shape:"round",   icon:"" }, // gear
+  "Environment":           { color:"#64748B", size:14, shape:"round",   icon:"" }, // globe
+  "Other":                 { color:"#9CA3AF", size:13, shape:"round",   icon:"" }  // circle
+};
+// Type-style lookup. Built-in types use TYPE_STYLE directly; user-defined
+// custom types are looked up from state.graph.customNodeTypes.
+function typeStyle(name){
+  if (TYPE_STYLE[name]) return TYPE_STYLE[name];
+  const custom = (state.graph && state.graph.customNodeTypes || []).find(t => t.name === name);
+  if (custom){
+    // Sanitize: custom types arrive verbatim from imported JSON and are
+    // interpolated into innerHTML/style attributes in several places, so
+    // reject anything that isn't a plain hex color or a short glyph.
+    const safeColor = (typeof custom.color === "string" && /^#[0-9a-fA-F]{3,8}$/.test(custom.color)) ? custom.color : TYPE_STYLE.Other.color;
+    const rawIcon = (typeof custom.icon === "string") ? custom.icon : "";
+    const safeIcon = (rawIcon.length <= 4 && !/[<>&"'`]/.test(rawIcon)) ? rawIcon : "";
+    return {
+      color: safeColor,
+      size:  custom.size  || 16,
+      shape: custom.shape || "round",
+      icon:  safeIcon
+    };
+  }
+  return TYPE_STYLE.Other;
+}
+function isBuiltInType(name){ return Object.prototype.hasOwnProperty.call(TYPE_STYLE, name); }
+function getCustomType(name){
+  return (state.graph && state.graph.customNodeTypes || []).find(t => t.name === name) || null;
+}
+function allNodeTypes(){
+  // Custom types appear at the end; built-in names take precedence to avoid
+  // duplicate entries in filter UIs / pickers when custom types collide with
+  // built-ins promoted later.
+  const builtinLower = new Set(NODE_TYPES.map(t => t.toLowerCase()));
+  const custom = (state.graph && state.graph.customNodeTypes || [])
+    .map(t => t.name)
+    .filter(n => n && !builtinLower.has(n.toLowerCase()));
+  return [...NODE_TYPES, ...custom];
+}
+function countNodesOfType(name){
+  return state.graph.nodes.filter(n => n.type === name).length;
+}
+// Built-in edge types plus any unrecognized types present in the loaded graph.
+// Without this, imported edges with custom types (e.g. "FUNDED_BY") were never
+// seeded into the filter set and could never be displayed or re-enabled.
+function allEdgeTypes(){
+  const extra = new Set();
+  (state.graph && state.graph.edges || []).forEach(e => {
+    if (e.type && !EDGE_TYPES.includes(e.type)) extra.add(e.type);
+  });
+  return [...EDGE_TYPES, ...extra];
+}
+
+/* ---------- Group/branch collapse ----------
+   Collapsing a node hides all its descendants reached via containment-type
+   edges. The original graph data is untouched; this is a view operation.
+   Stored on state.graph.collapsedNodes (array of node IDs) so a collapsed
+   view travels with the file. */
+// Edges traversed when collapsing a branch. CONTAINS + HAS_* cover the
+// structural / collaboration-artifact hierarchy; OWNS and MANAGES extend it
+// to applications, systems, and platforms a node is responsible for, so
+// "collapse Customer Engagement Office" hides CE's whole purview.
+const COLLAPSE_EDGE_TYPES = [
+  "CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST",
+  "OWNS","MANAGES"
+];
+function getCollapseChildren(nodeId){
+  const out = [];
+  state.graph.edges.forEach(e => {
+    if (e.source === nodeId && COLLAPSE_EDGE_TYPES.includes(e.type)){
+      out.push(e.target);
+    }
+  });
+  return out;
+}
+function getCollapseDescendants(nodeId, acc, visited){
+  acc = acc || new Set();
+  visited = visited || new Set();
+  if (visited.has(nodeId)) return acc;
+  visited.add(nodeId);
+  getCollapseChildren(nodeId).forEach(child => {
+    if (!acc.has(child)){
+      acc.add(child);
+      getCollapseDescendants(child, acc, visited);
+    }
+  });
+  return acc;
+}
+function recomputeHiddenByCollapse(){
+  state.hiddenByCollapse = new Set();
+  state.collapseCounts = new Map();
+  const collapsed = state.graph.collapsedNodes || [];
+  collapsed.forEach(id => {
+    if (!findNode(id)) return; // tolerate stale references
+    const desc = getCollapseDescendants(id);
+    state.collapseCounts.set(id, desc.size);
+    desc.forEach(d => state.hiddenByCollapse.add(d));
+  });
+}
+function isCollapsed(nodeId){
+  return (state.graph.collapsedNodes || []).indexOf(nodeId) !== -1;
+}
+function isHiddenByCollapse(nodeId){
+  return state.hiddenByCollapse.has(nodeId);
+}
+function collapseNodeBranch(nodeId){
+  if (!state.graph.collapsedNodes) state.graph.collapsedNodes = [];
+  if (state.graph.collapsedNodes.indexOf(nodeId) !== -1) return;
+  if (getCollapseChildren(nodeId).length === 0){
+    showToast("This node has no containment children to collapse", "err");
+    return;
+  }
+  state.graph.collapsedNodes.push(nodeId);
+  recomputeHiddenByCollapse();
+  afterMutate();
+  const n = findNode(nodeId);
+  showToast("Collapsed " + (n?n.label:"branch"), "ok");
+}
+function expandNodeBranch(nodeId){
+  if (!state.graph.collapsedNodes) return;
+  if (state.graph.collapsedNodes.indexOf(nodeId) === -1) return;
+  state.graph.collapsedNodes = state.graph.collapsedNodes.filter(id => id !== nodeId);
+  recomputeHiddenByCollapse();
+  afterMutate();
+  const n = findNode(nodeId);
+  showToast("Expanded " + (n?n.label:"branch"), "ok");
+}
+function collapseAllParents(){
+  if (!state.graph.collapsedNodes) state.graph.collapsedNodes = [];
+  // Collapse only the topmost parents in each branch so we get a clean
+  // single-level view rather than double-counting nested collapses.
+  const parentCandidates = ["Under Secretary","Bureau","Executive Office","Front Office","Directorate","Office","Team"];
+  let added = 0;
+  state.graph.nodes.forEach(n => {
+    if (!parentCandidates.includes(n.type)) return;
+    if (getCollapseChildren(n.id).length === 0) return;
+    if (state.graph.collapsedNodes.indexOf(n.id) === -1){
+      state.graph.collapsedNodes.push(n.id);
+      added++;
+    }
+  });
+  recomputeHiddenByCollapse();
+  afterMutate();
+  if (added) showToast("Collapsed " + added + " parent branch" + (added===1?"":"es"), "ok");
+  else showToast("Already collapsed", "err");
+}
+function expandAllBranches(){
+  if (!state.graph.collapsedNodes || !state.graph.collapsedNodes.length){
+    showToast("Nothing is collapsed", "err"); return;
+  }
+  const count = state.graph.collapsedNodes.length;
+  state.graph.collapsedNodes = [];
+  recomputeHiddenByCollapse();
+  afterMutate();
+  showToast("Expanded " + count + " branch" + (count===1?"":"es"), "ok");
+}
+
+// Curated icon palette for custom types (FA Free unicodes, solid weight)
+const CUSTOM_TYPE_ICONS = [
+  { u:"", label:"Cloud" },     { u:"", label:"Rocket" },
+  { u:"", label:"Gear" },      { u:"", label:"Bolt" },
+  { u:"", label:"Star" },      { u:"", label:"Flag" },
+  { u:"", label:"Users" },     { u:"", label:"User" },
+  { u:"", label:"Building" },  { u:"", label:"Server" },
+  { u:"", label:"Database" },  { u:"", label:"Cubes" },
+  { u:"", label:"Globe" },     { u:"", label:"Envelope" },
+  { u:"", label:"Calendar" },  { u:"", label:"Chart" },
+  { u:"", label:"Lightbulb" }, { u:"", label:"Flask" },
+  { u:"", label:"Link" },      { u:"", label:"Puzzle" },
+  { u:"", label:"Gem" },       { u:"", label:"Tags" },
+  { u:"", label:"Book" },      { u:"", label:"Shield" },
+  { u:"", label:"Shield Alt" },{ u:"", label:"Fire" },
+  { u:"", label:"Key" },       { u:"", label:"Heart" }
+];
+// Curated color palette for custom types
+const CUSTOM_TYPE_COLORS = [
+  "#38BDF8","#7DD3FC","#60A5FA","#818CF8","#A78BFA","#C084FC","#F472B6",
+  "#FB7185","#F87171","#FB923C","#FBBF24","#FDE68A","#A3E635","#34D399",
+  "#10B981","#5EEAD4","#94A3B8"
+];
+const SHAPE_OPTIONS = [
+  { value:"round",   label:"Circle"   },
+  { value:"square",  label:"Square"   },
+  { value:"diamond", label:"Diamond"  },
+  { value:"tri",     label:"Triangle" },
+  { value:"hex",     label:"Hexagon"  }
+];
+
+// Categorize edges for visual line styles
+const EDGE_CATEGORY = {
+  "CONTAINS":"hierarchy", "PART_OF":"hierarchy", "REPORTS_TO":"hierarchy",
+  "OWNS":"ownership", "MANAGES":"ownership", "RESPONSIBLE_FOR":"ownership", "SUPPORTS":"ownership",
+  "USES":"usage", "AUTOMATES":"usage",
+  "DEPENDS_ON":"dependency", "BACKUP_FOR":"dependency",
+  "INTEGRATES_WITH":"integration", "CONNECTED_TO":"integration", "SENDS_TO":"integration", "RECEIVES_FROM":"integration",
+  "HOSTED_ON":"hosting", "STORES_DATA_IN":"hosting", "VISUALIZED_IN":"hosting",
+  "DOCUMENTED_IN":"docs", "APPROVED_BY":"docs", "REQUESTED_BY":"docs",
+  "HAS_SITE":"composition", "HAS_TEAM":"composition", "HAS_O365_GROUP":"composition", "HAS_MAILBOX":"composition",
+  "SECURES":"access",
+  "OTHER":"other"
+};
+// Per-category line style. `color` is the dark-theme stroke; `colorLight` is
+// the light-theme stroke (saturated darks — the dark theme's translucent
+// pastels were nearly invisible on the cream canvas). Dark alphas sit at
+// 0.55–0.75 so default edges clear the WCAG 1.4.11 3:1 minimum against the
+// canvas background.
+const EDGE_STYLE = {
+  hierarchy:   { dash:[],          width:1.6, color:"rgba(165,180,252,0.70)", colorLight:"rgba(67,56,202,0.75)",   label:"Hierarchy"   },
+  ownership:   { dash:[],          width:1.3, color:"rgba(167,139,250,0.70)", colorLight:"rgba(109,40,217,0.75)",  label:"Ownership"   },
+  composition: { dash:[],          width:1.2, color:"rgba(196,181,253,0.70)", colorLight:"rgba(124,58,237,0.70)",  label:"Composition" },
+  access:      { dash:[10,4],      width:1.4, color:"rgba(74,222,128,0.72)",  colorLight:"rgba(21,128,61,0.80)",   label:"Access"      },
+  usage:       { dash:[],          width:1.0, color:"rgba(148,163,184,0.65)", colorLight:"rgba(71,85,105,0.70)",   label:"Usage"       },
+  dependency:  { dash:[6,4],       width:1.4, color:"rgba(248,113,113,0.75)", colorLight:"rgba(185,28,28,0.80)",   label:"Dependency"  },
+  integration: { dash:[2,3],       width:1.2, color:"rgba(94,234,212,0.70)",  colorLight:"rgba(15,118,110,0.75)",  label:"Integration" },
+  hosting:     { dash:[8,3,2,3],   width:1.2, color:"rgba(251,146,60,0.70)",  colorLight:"rgba(194,65,12,0.75)",   label:"Hosting"     },
+  docs:        { dash:[1,4],       width:1.0, color:"rgba(203,213,225,0.60)", colorLight:"rgba(100,116,139,0.70)", label:"Docs/Decisions" },
+  other:       { dash:[3,3],       width:1.0, color:"rgba(148,163,184,0.55)", colorLight:"rgba(100,116,139,0.60)", label:"Other"       }
+};
+const edgeCategoryStyle = cat => {
+  const s = EDGE_STYLE[cat] || EDGE_STYLE.other;
+  if (s.colorLight && document.documentElement.getAttribute("data-theme") === "light"){
+    return { dash: s.dash, width: s.width, color: s.colorLight, label: s.label };
+  }
+  return s;
+};
+const edgeStyle = t => edgeCategoryStyle(EDGE_CATEGORY[t] || "other");
+
+/* ---------- CANVAS PAINT TOKENS ----------
+   Color values used directly by the Canvas renderer (which can't read CSS vars).
+   Keep these in sync with the CSS custom properties above. */
+const CANVAS_COLORS_DARK = {
+  nodeBorder:        "rgba(15, 23, 42, 0.85)",
+  edgeHighlight:     "rgba(165, 180, 252, 0.90)",
+  edgeHover:         "rgba(165, 180, 252, 0.98)",
+  edgeSelected:      "#FBBF24",
+  edgeDim:           "rgba(148, 163, 184, 0.10)",
+  labelBg:           "rgba(13, 14, 17, 0.85)",
+  labelBgEdge:       "rgba(13, 14, 17, 0.88)",
+  labelText:         "#F8FAFC",
+  labelTextSelected: "#FDE68A",
+  labelTextDim:      "rgba(203, 213, 225, 0.5)",
+  labelTextEdge:     "#CBD5E1",
+  labelTextEdgeSel:  "#FCD34D",
+  ringSelected:      "rgba(251, 191, 36, 0.85)",
+  ringHover:         "rgba(165, 180, 252, 0.7)",
+  ringConnecting:    "rgba(99, 102, 241, 0.95)",
+  connectingLine:    "rgba(99, 102, 241, 0.8)",
+  nodeDim:           "rgba(148, 163, 184, 0.35)"
+};
+const CANVAS_COLORS_LIGHT = {
+  nodeBorder:        "rgba(40, 36, 30, 0.45)",
+  edgeHighlight:     "rgba(67, 56, 202, 0.95)",
+  edgeHover:         "rgba(67, 56, 202, 1)",
+  edgeSelected:      "#B45309",
+  edgeDim:           "rgba(90, 86, 78, 0.18)",
+  labelBg:           "rgba(252, 251, 248, 0.90)",
+  labelBgEdge:       "rgba(252, 251, 248, 0.93)",
+  labelText:         "#1A1916",
+  labelTextSelected: "#7A4E0A",
+  labelTextDim:      "rgba(60, 58, 54, 0.55)",
+  labelTextEdge:     "#46443E",
+  labelTextEdgeSel:  "#8A5E12",
+  ringSelected:      "rgba(180, 83, 9, 0.80)",
+  ringHover:         "rgba(67, 56, 202, 0.7)",
+  ringConnecting:    "rgba(67, 56, 202, 0.95)",
+  connectingLine:    "rgba(67, 56, 202, 0.85)",
+  nodeDim:           "rgba(90, 86, 78, 0.35)"
+};
+let CANVAS_COLORS = CANVAS_COLORS_DARK;
+
+/* ---------- ICON REGISTRY (per-node override) ---------- */
+// Maps a friendly key to a Font Awesome glyph + the font face needed to render it.
+// Free FA Brands covers Microsoft (generic), Salesforce, GitHub, Slack, AWS, Google, etc.
+// Specific product logos (SharePoint, Power BI, ServiceNow, ArcGIS) are NOT in FA;
+// for those, fall back to a meaningful solid icon.
+const FA_BRANDS_FONT = '"Font Awesome 6 Brands"';
+const FA_SOLID_FONT  = '"Font Awesome 6 Free"';
+const ICON_REGISTRY = {
+  // Brand icons (free)
+  "microsoft":  { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Microsoft" },
+  "windows":    { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Windows" },
+  "salesforce": { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Salesforce" },
+  "github":     { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"GitHub" },
+  "gitlab":     { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"GitLab" },
+  "slack":      { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Slack" },
+  "aws":        { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"AWS" },
+  "google":     { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Google" },
+  "jira":       { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Jira" },
+  "confluence": { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Confluence" },
+  "docker":     { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Docker" },
+  "apple":      { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Apple" },
+  "linux":      { font:FA_BRANDS_FONT, weight:400, unicode:"", label:"Linux" },
+  // SVG brand icons for the M365 stack. brandColor (optional) renders the icon
+  // on a small white badge in the product's brand color, matching the M365
+  // launcher look. If omitted, icon renders in iconFgFor color.
+  "microsoft-365":  { kind:"svg", viewBox:"0 0 24 24", paths:[
+                      { d:"M3 3h8.5v8.5H3z", color:"#F25022" },
+                      { d:"M12.5 3h8.5v8.5h-8.5z", color:"#7FBA00" },
+                      { d:"M3 12.5h8.5v8.5H3z", color:"#00A4EF" },
+                      { d:"M12.5 12.5h8.5v8.5h-8.5z", color:"#FFB900" }
+                    ], label:"Microsoft 365" },
+  "sharepoint":     { font:'system-ui, -apple-system, "Segoe UI", sans-serif', weight:700, unicode:"S", label:"SharePoint" },
+  "teams":          { kind:"svg", viewBox:"0 0 24 24", brandColor:"#5059C9", noBadge:true, svg:"M8.5 4a2.8 2.8 0 100 5.6 2.8 2.8 0 000-5.6zM15.5 5.5a2.3 2.3 0 100 4.6 2.3 2.3 0 000-4.6zM4 15c0-2.5 2-4.5 4.5-4.5S13 12.5 13 15v3H4v-3zM14 13c0-1.7 1.3-3 3-3s3 1.3 3 3v5h-6v-5z", label:"Microsoft Teams" },
+  "onedrive":       { kind:"svg", viewBox:"0 0 24 24", brandColor:"#0078D4", svg:"M7 18a4 4 0 010-8c.2 0 .4 0 .6.1A5.5 5.5 0 0118 9a3.5 3.5 0 011 6.9c-.2.1-.4.1-.7.1H7z", label:"OneDrive" },
+  "outlook":        { kind:"svg", viewBox:"0 0 24 24", brandColor:"#0078D4", svg:"M3 6h18v12H3V6zm1.5 1.5l7.5 5.5 7.5-5.5h-15z", label:"Outlook" },
+  "exchange":       { kind:"svg", viewBox:"0 0 24 24", brandColor:"#0072C6", svg:"M3 5h18v4H3V5zm0 5h18v4H3v-4zm0 5h18v4H3v-4zM5 6h2v2H5V6zm0 5h2v2H5v-2zm0 5h2v2H5v-2zm12 0l-2-2v1.5h-3v1h3v1.5z", label:"Exchange Online" },
+  "word":           { kind:"svg", viewBox:"0 0 24 24", brandColor:"#2B579A", svg:"M5 3h11l4 4v14H5V3zm2 7v2h10v-2H7zm0 4v2h10v-2H7zm0 4v2h7v-2H7z", label:"Word" },
+  "excel":          { kind:"svg", viewBox:"0 0 24 24", brandColor:"#217346", svg:"M3 5h18v14H3V5zm0 3.5h18v1H3v-1zm0 4h18v1H3v-1zm0 4h18v1H3v-1zM7.5 5h1v14h-1V5zm5 0h1v14h-1V5zm5 0h1v14h-1V5z", label:"Excel" },
+  "powerpoint":     { kind:"svg", viewBox:"0 0 24 24", brandColor:"#B7472A", svg:"M4 3h16v18H4V3zm3 14v-5h2v5H7zm4 0V8h2v9h-2zm4 0v-3h2v3h-2z", label:"PowerPoint" },
+  "onenote":        { kind:"svg", viewBox:"0 0 24 24", brandColor:"#80397B", svg:"M5 3h13v18H5V3zM2 5.5h2v2H2v-2zm0 4.5h2v2H2v-2zm0 4.5h2v2H2v-2zm0 4.5h2v2H2v-2z", label:"OneNote" },
+  "power-platform": { kind:"svg", viewBox:"0 0 24 24", brandColor:"#742774", svg:"M3 9h6v6H3V9zm6-6h6v6H9V3zm0 12h6v6H9v-6zm6-6h6v6h-6V9z", label:"Power Platform" },
+  "power-bi":       { kind:"svg", viewBox:"0 0 24 24", brandColor:"#F2C811", svg:"M5 19V9h3v10H5zm6 0V4h3v15h-3zm6 0v-7h3v7h-3z", label:"Power BI" },
+  "power-automate": { kind:"svg", viewBox:"0 0 24 24", svg:"M13 2L4 13h6l-1 9 9-12h-6l1-8z", label:"Power Automate" },
+  "power-apps":     { kind:"svg", viewBox:"0 0 24 24", brandColor:"#742774", svg:"M12 2l8.66 5v10L12 22l-8.66-5V7L12 2zm0 4.5L6.93 9.5v5L12 17.5l5.07-3v-5L12 6.5zm-1 3h2v2h2v2h-2v2h-2v-2H9v-2h2V9.5z", label:"Power Apps" },
+  "dataverse":      { kind:"svg", viewBox:"0 0 24 24", brandColor:"#5C2D91", svg:"M12 3c-4.5 0-7 1.2-7 2.5v13C5 19.8 7.5 21 12 21s7-1.2 7-2.5v-13C19 4.2 16.5 3 12 3zm0 2c3.4 0 5 .8 5 .5S15.4 6 12 6s-5-.2-5-.5S8.6 5 12 5zm5 13.5C17 18.8 15.4 19 12 19s-5-.2-5-.5v-2.7c1.3.4 3 .7 5 .7s3.7-.3 5-.7v2.7zm0-5C17 13.8 15.4 14 12 14s-5-.2-5-.5v-2.7c1.3.4 3 .7 5 .7s3.7-.3 5-.7v2.7zm0-5C17 8.8 15.4 9 12 9s-5-.2-5-.5V6.7c0 .3 1.6 1.3 5 1.3s5-1 5-1.3v2z", label:"Dataverse" },
+  "copilot-studio": { kind:"svg", viewBox:"0 0 24 24", brandColor:"#6B5BE0", svg:"M12 2l1.6 6.4 6.4 1.6-6.4 1.6L12 18l-1.6-6.4L4 10l6.4-1.6L12 2zm6 12l.7 2.8L21.5 17.5l-2.8.7L18 21l-.7-2.8-2.8-.7 2.8-.7L18 14zm-13 4l.5 2 2 .5-2 .5L5 21l-.5-2-2-.5 2-.5L5 16z", label:"Copilot Studio" },
+  "forms":          { font:'system-ui, -apple-system, "Segoe UI", sans-serif', weight:700, unicode:"F", label:"Microsoft Forms" },
+  // Other product stand-ins (still using FA solid icons)
+  "servicenow":     { font:FA_SOLID_FONT, weight:900, unicode:"", label:"ServiceNow (gears)" },
+  "arcgis":         { font:FA_SOLID_FONT, weight:900, unicode:"", label:"ArcGIS (map)" }
+};
+// Resolve a node's icon. Returns either:
+//   { kind:"fa",  font, weight, unicode }   - Font Awesome glyph
+//   { kind:"svg", svg, viewBox }             - inline SVG path data
+function iconSpec(node){
+  const normalize = entry => {
+    if (entry && entry.kind === "svg"){
+      return { kind:"svg", svg:entry.svg, paths:entry.paths,
+               viewBox:entry.viewBox || "0 0 24 24",
+               brandColor: entry.brandColor, noBadge: entry.noBadge };
+    }
+    return { kind:"fa", font:entry.font, weight:entry.weight, unicode:entry.unicode };
+  };
+  if (node && node.icon){
+    const key = String(node.icon).trim().toLowerCase();
+    if (ICON_REGISTRY[key]) return normalize(ICON_REGISTRY[key]);
+    const m = key.match(/fa-(?:brands|solid|regular)\s+fa-([\w-]+)/);
+    if (m && ICON_REGISTRY[m[1]]) return normalize(ICON_REGISTRY[m[1]]);
+  }
+  // fall back to type default (always FA solid)
+  const ts = typeStyle(node ? node.type : "Other");
+  return { kind:"fa", font: FA_SOLID_FONT, weight: 900, unicode: ts.icon };
+}
+
+// Path2D cache so we don't re-parse SVG strings on every frame
+const _iconPathCache = new Map();
+function getIconPath(svgString){
+  if (!_iconPathCache.has(svgString)){
+    try { _iconPathCache.set(svgString, new Path2D(svgString)); }
+    catch (e){ console.warn("Bad SVG path:", e); _iconPathCache.set(svgString, null); }
+  }
+  return _iconPathCache.get(svgString);
+}
+
+// Draw an SVG-kind icon spec on a canvas context, centered at (x, y) and
+// scaled so its viewBox fits within iconSize. fillStyle is set to color.
+function drawIconSvg(ctx, spec, x, y, iconSize, color){
+  const hasMulti = Array.isArray(spec.paths) && spec.paths.length > 0;
+  const hasSingle = !!spec.svg;
+  if (!hasMulti && !hasSingle) return;
+  const useBadge = (!!spec.brandColor || hasMulti) && !spec.noBadge;
+  const vb = (spec.viewBox || "0 0 24 24").split(/\s+/).map(Number);
+  const vbX = vb[0], vbY = vb[1], vbW = vb[2], vbH = vb[3];
+  // Multi-color and brand-color icons render on a white circular badge so
+  // brand colors read against any node background — M365 app launcher style.
+  if (useBadge){
+    // Rounded-square "app tile" badge (matches the square node shape) instead of
+    // a circle, sized to read clearly against the node's brand color.
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.96)";
+    const h = iconSize * 0.74, rad = iconSize * 0.3, x0 = x - h, y0 = y - h, w = h * 2;
+    ctx.beginPath();
+    if (ctx.roundRect){ ctx.roundRect(x0, y0, w, w, rad); }
+    else {
+      ctx.moveTo(x0 + rad, y0);
+      ctx.arcTo(x0 + w, y0, x0 + w, y0 + w, rad);
+      ctx.arcTo(x0 + w, y0 + w, x0, y0 + w, rad);
+      ctx.arcTo(x0, y0 + w, x0, y0, rad);
+      ctx.arcTo(x0, y0, x0 + w, y0, rad);
+      ctx.closePath();
+    }
+    ctx.fill();
+    ctx.restore();
+  }
+  const drawSize = useBadge ? iconSize * 1.05 : iconSize;
+  const drawScale = drawSize / Math.max(vbW, vbH);
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(drawScale, drawScale);
+  ctx.translate(-(vbX + vbW/2), -(vbY + vbH/2));
+  if (hasMulti){
+    // Multi-path: each path renders in its own color (or default if not set)
+    for (const p of spec.paths){
+      const path = getIconPath(p.d);
+      if (!path) continue;
+      ctx.fillStyle = p.color || color;
+      ctx.fill(path);
+    }
+  } else {
+    // Single-path: render in brandColor if specified, else default
+    const path = getIconPath(spec.svg);
+    if (path){
+      ctx.fillStyle = spec.brandColor || color;
+      ctx.fill(path);
+    }
+  }
+  ctx.restore();
+}
+
+/* ---------- SAMPLE DATA ---------- */
+const SAMPLE_DATA = (function(){
+  const nodes=[], edges=[];
+  const n=(id,label,type,extra={})=>nodes.push(Object.assign({
+    id,label,type,description:"",owner:"",lead:"",parent:"",office:"",team:"",
+    directorate:"",platform:"",url:"",email:"",phone:"",status:"Active",tags:[],notes:""
+  },extra));
+  let ei=1; const e=(s,t,ty,extra={})=>edges.push(Object.assign({id:"e"+(ei++),source:s,target:t,type:ty,description:"",notes:""},extra));
+
+  n("exec-office","Executive Office","Executive Office",{description:"Top-level executive leadership.",lead:"Chief Executive",tags:["leadership"]});
+  n("front-office","Front Office","Front Office",{description:"Executive support staff coordinating the executive office.",lead:"Chief of Staff",parent:"Executive Office"});
+  n("dir-platform","Platform Services Directorate","Directorate",{description:"Owns enterprise collaboration platforms.",lead:"Director, Platform Services",parent:"Front Office"});
+  n("dir-data","Data and Analytics Directorate","Directorate",{description:"Enterprise data and BI services.",lead:"Director, Data & Analytics",parent:"Front Office"});
+  n("dir-ops","Operations Support Directorate","Directorate",{description:"Day-to-day operational delivery.",lead:"Director, Operations",parent:"Front Office"});
+  n("dir-gov","Governance and Strategy Directorate","Directorate",{description:"Governance, architecture, portfolio.",lead:"Director, Governance",parent:"Front Office"});
+  n("off-ce","Customer Engagement Office","Office",{description:"Engages customers and stakeholders.",directorate:"Operations Support Directorate",lead:"CE Lead",tags:["customer"]});
+  n("off-intake","Intake & Demand Office","Office",{description:"Manages incoming requests and demand triage.",directorate:"Operations Support Directorate",lead:"Intake Lead"});
+  n("off-arch","Architecture Office","Office",{description:"Enterprise architecture review and standards.",directorate:"Governance and Strategy Directorate",lead:"Chief Architect",tags:["arb"]});
+  n("off-portfolio","Portfolio Management Office","Office",{description:"Portfolio and investment management.",directorate:"Governance and Strategy Directorate",lead:"Portfolio Manager"});
+  n("off-data","Data Stewardship Office","Office",{description:"Enterprise data standards and stewardship.",directorate:"Data and Analytics Directorate",lead:"Chief Data Steward"});
+  n("off-bi","Business Intelligence Office","Office",{description:"Reporting, dashboards, analytic products.",directorate:"Data and Analytics Directorate",lead:"BI Lead"});
+  n("off-collab","Collaboration Services Office","Office",{description:"Owns Microsoft 365 collaboration services.",directorate:"Platform Services Directorate",lead:"Collab Lead"});
+  n("off-itops","IT Operations Office","Office",{description:"Service operations, monitoring, support.",directorate:"Operations Support Directorate",lead:"IT Ops Manager"});
+
+  ["Avery Chen","Morgan Patel","Riley Nakamura","Jordan Alvarez","Casey Brooks",
+   "Drew Okafor","Sam Rivera","Taylor Johansson","Quinn Park","Reese Bell"]
+   .forEach((nm,i)=>n("p-"+(i+1),nm,"Person",{description:"Staff member."}));
+  n("role-archlead","ARB Chair","Role",{description:"Architecture Review Board chair."});
+
+  n("plat-m365","Microsoft 365","Platform",{description:"Enterprise Microsoft 365 platform.",owner:"Collaboration Services Office",tags:["m365"],icon:"microsoft"});
+  n("plat-spo","SharePoint Online","Platform",{description:"Enterprise SharePoint Online.",owner:"Collaboration Services Office",parent:"Microsoft 365",icon:"sharepoint"});
+  n("plat-teams","Microsoft Teams","Platform",{description:"Enterprise Microsoft Teams.",owner:"Collaboration Services Office",parent:"Microsoft 365",icon:"teams"});
+  n("plat-pa","Power Automate","Platform",{description:"Workflow automation platform.",owner:"Platform Services Directorate",parent:"Microsoft 365",icon:"power-automate"});
+  n("plat-pbi","Power BI","Platform",{description:"Enterprise BI platform.",owner:"Business Intelligence Office",icon:"power-bi"});
+  n("sys-snow","ServiceNow","System",{description:"Enterprise IT service management.",owner:"IT Operations Office",icon:"servicenow"});
+  n("sys-sf","Salesforce","System",{description:"CRM platform.",owner:"Customer Engagement Office",icon:"salesforce"});
+  n("sys-arcgis","ArcGIS","System",{description:"Geospatial information system.",owner:"Operations Support Directorate",icon:"arcgis"});
+  n("sys-jira","Jira","System",{description:"Issue tracking and agile project management.",owner:"IT Operations Office",icon:"jira"});
+
+  n("app-intake","Intake Portal","Application",{description:"Customer-facing intake portal.",owner:"Intake & Demand Office",platform:"Microsoft 365"});
+  n("app-demand","Demand Management Dashboard","Application",{description:"Demand triage dashboard.",owner:"Intake & Demand Office",platform:"Power BI"});
+  n("app-arb","Architecture Review Tracker","Application",{description:"Tracks ARB reviews and decisions.",owner:"Architecture Office",platform:"SharePoint Online"});
+  n("app-ops","Operations Dashboard","Application",{description:"Enterprise operations status dashboard.",owner:"IT Operations Office",platform:"Power BI"});
+  n("app-crm","CRM Workspace","Application",{description:"Workspace within Salesforce.",owner:"Customer Engagement Office",platform:"Salesforce"});
+  n("app-portfolio","Portfolio Tracker","Application",{description:"Portfolio and investment tracker.",owner:"Portfolio Management Office",platform:"SharePoint Online"});
+  n("app-datacat","Data Catalog","Application",{description:"Enterprise data catalog.",owner:"Data Stewardship Office"});
+  n("app-incident","Incident Console","Application",{description:"Incident management console.",owner:"IT Operations Office",platform:"ServiceNow"});
+
+  n("site-exec","Executive Office Site","SharePoint Site",{description:"Executive Office SharePoint site.",platform:"SharePoint Online"});
+  n("site-front","Front Office Site","SharePoint Site",{description:"Front Office SharePoint site.",platform:"SharePoint Online"});
+  n("site-ce","Customer Engagement Team Site","SharePoint Site",{description:"CE site.",platform:"SharePoint Online"});
+  n("site-intake","Intake Operations Site","SharePoint Site",{description:"Intake operations site.",platform:"SharePoint Online"});
+  n("site-arb","Architecture Review Site","SharePoint Site",{description:"ARB documentation site.",platform:"SharePoint Online"});
+  n("site-portfolio","Portfolio Site","SharePoint Site",{description:"Portfolio Management site.",platform:"SharePoint Online"});
+  n("site-data","Data Stewardship Site","SharePoint Site",{description:"Data stewardship site.",platform:"SharePoint Online"});
+  n("site-itops","IT Operations Site","SharePoint Site",{description:"IT Operations site.",platform:"SharePoint Online"});
+
+  n("team-exec","Executive Office Team","Microsoft Team",{description:"Teams workspace for executive office.",platform:"Microsoft Teams"});
+  n("team-ce","Customer Engagement Team","Microsoft Team",{description:"Teams workspace for CE.",platform:"Microsoft Teams"});
+  n("team-arb","Architecture Review Team","Microsoft Team",{description:"Teams workspace for ARB.",platform:"Microsoft Teams"});
+  n("team-ops","Operations Team","Microsoft Team",{description:"Teams workspace for Ops.",platform:"Microsoft Teams"});
+  n("team-data","Data & Analytics Team","Microsoft Team",{description:"Teams workspace for D&A.",platform:"Microsoft Teams"});
+
+  n("grp-ce","Customer Engagement O365 Group","O365 Group",{description:"M365 group for CE."});
+  n("grp-arb","ARB Members O365 Group","O365 Group",{description:"M365 group for ARB members."});
+  n("grp-leadership","Leadership O365 Group","O365 Group",{description:"M365 group for leadership."});
+  n("grp-data","Data Stewards O365 Group","O365 Group",{description:"M365 group for stewards."});
+  n("grp-ops","Operations O365 Group","O365 Group",{description:"M365 group for operations."});
+
+  n("mb-intake","Intake Mailbox","Mailbox",{description:"Shared intake mailbox.",url:"mailto:intake@enterprise.example"});
+  n("mb-arb","ARB Mailbox","Mailbox",{description:"Shared ARB mailbox.",url:"mailto:arb@enterprise.example"});
+  n("mb-exec","Executive Mailbox","Mailbox",{description:"Shared exec mailbox."});
+  n("mb-ops","Operations Mailbox","Mailbox",{description:"Shared ops mailbox."});
+  n("mb-ce","Customer Engagement Mailbox","Mailbox",{description:"Shared CE mailbox."});
+
+  n("wf-intake","Intake Triage Flow","Power Automate Flow",{description:"Triages intake requests.",platform:"Power Automate"});
+  n("wf-arb","ARB Submission Flow","Power Automate Flow",{description:"Routes ARB submissions.",platform:"Power Automate"});
+  n("wf-onboard","Onboarding Workflow","Workflow",{description:"Employee onboarding."});
+  n("wf-decision","Decision Logging Flow","Power Automate Flow",{description:"Logs architecture decisions.",platform:"Power Automate"});
+  n("wf-incident","Incident Escalation","Workflow",{description:"Escalates incidents."});
+  n("wf-status","Status Roll-up","Power Automate Flow",{description:"Rolls up status reports.",platform:"Power Automate"});
+
+  n("api-snow","ServiceNow REST API","API",{description:"REST API exposed by ServiceNow."});
+  n("api-sf","Salesforce API","API",{description:"Salesforce REST API."});
+  n("ds-portfolio","Portfolio Dataset","Dataset",{description:"Portfolio dataset for BI."});
+  n("ds-intake","Intake Dataset","Dataset",{description:"Aggregated intake dataset."});
+  n("ds-arb","ARB Decisions Dataset","Dataset",{description:"All ARB decisions and outcomes."});
+
+  n("doc-charter","Executive Office Charter","Document",{description:"Charter of the Executive Office."});
+  n("doc-arb","ARB Standards","Document",{description:"Standards published by the ARB."});
+  n("doc-intake","Intake Playbook","Document",{description:"Intake operations playbook."});
+  n("dec-platform","Decision: Adopt M365","Decision",{description:"Decision to adopt Microsoft 365."});
+  n("dec-bi","Decision: Power BI Standard","Decision",{description:"Decision to standardize on Power BI."});
+
+  // Relationships
+  e("exec-office","front-office","CONTAINS");
+  ["dir-platform","dir-data","dir-ops","dir-gov"].forEach(d=>e("front-office",d,"CONTAINS"));
+  e("dir-ops","off-ce","CONTAINS"); e("dir-ops","off-intake","CONTAINS"); e("dir-ops","off-itops","CONTAINS");
+  e("dir-gov","off-arch","CONTAINS"); e("dir-gov","off-portfolio","CONTAINS");
+  e("dir-data","off-data","CONTAINS"); e("dir-data","off-bi","CONTAINS");
+  e("dir-platform","off-collab","CONTAINS");
+  e("front-office","exec-office","REPORTS_TO");
+  ["dir-ops","dir-data","dir-gov","dir-platform"].forEach(d=>e(d,"front-office","REPORTS_TO"));
+  e("off-arch","p-1","CONTAINS"); e("p-1","role-archlead","RESPONSIBLE_FOR");
+  e("off-intake","p-2","CONTAINS"); e("off-ce","p-3","CONTAINS");
+  e("off-bi","p-4","CONTAINS"); e("off-data","p-5","CONTAINS");
+  e("off-collab","p-6","CONTAINS"); e("off-itops","p-7","CONTAINS");
+  e("off-portfolio","p-8","CONTAINS"); e("front-office","p-9","CONTAINS");
+  e("exec-office","p-10","CONTAINS");
+  e("off-collab","plat-m365","OWNS"); e("off-collab","plat-spo","MANAGES");
+  e("off-collab","plat-teams","MANAGES"); e("dir-platform","plat-pa","OWNS");
+  e("off-bi","plat-pbi","OWNS"); e("off-itops","sys-snow","OWNS");
+  e("off-ce","sys-sf","OWNS"); e("dir-ops","sys-arcgis","OWNS"); e("off-itops","sys-jira","OWNS");
+  e("plat-spo","plat-m365","PART_OF"); e("plat-teams","plat-m365","PART_OF"); e("plat-pa","plat-m365","PART_OF");
+  e("app-intake","plat-spo","HOSTED_ON"); e("app-arb","plat-spo","HOSTED_ON");
+  e("app-portfolio","plat-spo","HOSTED_ON"); e("app-demand","plat-pbi","HOSTED_ON");
+  e("app-ops","plat-pbi","HOSTED_ON"); e("app-crm","sys-sf","HOSTED_ON");
+  e("app-incident","sys-snow","HOSTED_ON");
+  e("off-intake","app-intake","OWNS"); e("off-intake","app-demand","OWNS");
+  e("off-arch","app-arb","OWNS"); e("off-itops","app-ops","OWNS");
+  e("off-ce","app-crm","OWNS"); e("off-portfolio","app-portfolio","OWNS");
+  e("off-data","app-datacat","OWNS"); e("off-itops","app-incident","MANAGES");
+  e("exec-office","app-ops","USES"); e("front-office","app-portfolio","USES");
+  e("dir-gov","app-arb","USES"); e("dir-ops","app-demand","USES"); e("off-ce","app-intake","SUPPORTS");
+  e("exec-office","site-exec","HAS_SITE"); e("front-office","site-front","HAS_SITE");
+  e("off-ce","site-ce","HAS_SITE"); e("off-intake","site-intake","HAS_SITE");
+  e("off-arch","site-arb","HAS_SITE"); e("off-portfolio","site-portfolio","HAS_SITE");
+  e("off-data","site-data","HAS_SITE"); e("off-itops","site-itops","HAS_SITE");
+  e("exec-office","team-exec","HAS_TEAM"); e("off-ce","team-ce","HAS_TEAM");
+  e("off-arch","team-arb","HAS_TEAM"); e("off-itops","team-ops","HAS_TEAM");
+  e("dir-data","team-data","HAS_TEAM");
+  e("off-ce","grp-ce","HAS_O365_GROUP"); e("off-arch","grp-arb","HAS_O365_GROUP");
+  e("exec-office","grp-leadership","HAS_O365_GROUP"); e("off-data","grp-data","HAS_O365_GROUP");
+  e("off-itops","grp-ops","HAS_O365_GROUP");
+  e("off-intake","mb-intake","HAS_MAILBOX"); e("off-arch","mb-arb","HAS_MAILBOX");
+  e("exec-office","mb-exec","HAS_MAILBOX"); e("off-itops","mb-ops","HAS_MAILBOX");
+  e("off-ce","mb-ce","HAS_MAILBOX");
+  e("wf-intake","plat-pa","HOSTED_ON"); e("wf-arb","plat-pa","HOSTED_ON");
+  e("wf-decision","plat-pa","HOSTED_ON"); e("wf-status","plat-pa","HOSTED_ON");
+  e("app-intake","wf-intake","AUTOMATES"); e("app-arb","wf-arb","AUTOMATES");
+  e("app-arb","wf-decision","AUTOMATES"); e("app-incident","wf-incident","AUTOMATES");
+  e("front-office","wf-status","USES"); e("off-itops","wf-onboard","RESPONSIBLE_FOR");
+  e("app-incident","api-snow","INTEGRATES_WITH"); e("app-crm","api-sf","INTEGRATES_WITH");
+  e("app-demand","ds-intake","STORES_DATA_IN"); e("app-portfolio","ds-portfolio","STORES_DATA_IN");
+  e("app-arb","ds-arb","STORES_DATA_IN"); e("ds-arb","app-demand","VISUALIZED_IN");
+  e("ds-portfolio","app-ops","VISUALIZED_IN");
+  e("exec-office","doc-charter","DOCUMENTED_IN"); e("off-arch","doc-arb","DOCUMENTED_IN");
+  e("off-intake","doc-intake","DOCUMENTED_IN");
+  e("dec-platform","exec-office","APPROVED_BY"); e("dec-bi","exec-office","APPROVED_BY");
+  e("dec-platform","plat-m365","CONNECTED_TO"); e("dec-bi","plat-pbi","CONNECTED_TO");
+  e("app-intake","plat-m365","DEPENDS_ON"); e("app-arb","plat-m365","DEPENDS_ON");
+  e("app-demand","ds-intake","DEPENDS_ON"); e("app-ops","sys-snow","DEPENDS_ON");
+  e("team-ce","grp-ce","CONNECTED_TO"); e("team-arb","grp-arb","CONNECTED_TO");
+  e("team-exec","grp-leadership","CONNECTED_TO"); e("team-ops","grp-ops","CONNECTED_TO");
+  e("team-data","grp-data","CONNECTED_TO");
+  e("mb-intake","wf-intake","SENDS_TO"); e("mb-arb","wf-arb","SENDS_TO");
+
+  return { nodes, edges };
+})();
+
+/* ---------- STATE ---------- */
+const STORAGE_KEY = "enterprise-relationship-graph.v2";
+const SNAP_KEY = "enterprise-relationship-graph.snapshots.v2";
+const UI_STATE_KEY = "erg.uiState.v1";
+
+// Persisted UI preferences: which sidebar sections are collapsed, plus the
+// legend show/hide state. Stored as one object under UI_STATE_KEY so adding
+// new keys later doesn't fragment localStorage.
+function loadUIState(){
+  try {
+    const raw = localStorage.getItem(UI_STATE_KEY);
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    return (obj && typeof obj === "object") ? obj : {};
+  } catch(_){ return {}; }
+}
+function saveUIState(patch){
+  try {
+    const cur = loadUIState();
+    const merged = Object.assign({}, cur, patch);
+    localStorage.setItem(UI_STATE_KEY, JSON.stringify(merged));
+  } catch(_){}
+}
+function captureSidebarCollapse(){
+  const collapsed = [];
+  document.querySelectorAll(".section[data-section]").forEach(sec => {
+    if (sec.classList.contains("collapsed")) collapsed.push(sec.dataset.section);
+  });
+  saveUIState({ collapsedSections: collapsed });
+}
+function restoreSidebarCollapse(){
+  const ui = loadUIState();
+  const collapsed = new Set(Array.isArray(ui.collapsedSections) ? ui.collapsedSections : []);
+  document.querySelectorAll(".section[data-section]").forEach(sec => {
+    const want = collapsed.has(sec.dataset.section);
+    sec.classList.toggle("collapsed", want);
+    const head = sec.querySelector(".section-head");
+    if (head) head.setAttribute("aria-expanded", want ? "false" : "true");
+  });
+}
+function captureLegendCollapse(){
+  const lg = document.getElementById("legend");
+  if (!lg) return;
+  saveUIState({ legendCollapsed: lg.classList.contains("collapsed") });
+}
+function restoreLegendCollapse(){
+  const ui = loadUIState();
+  if (typeof ui.legendCollapsed !== "boolean") return;
+  const lg = document.getElementById("legend");
+  if (!lg) return;
+  lg.classList.toggle("collapsed", ui.legendCollapsed);
+  const btn = document.getElementById("legend-toggle");
+  if (btn){
+    btn.textContent = ui.legendCollapsed ? "show" : "hide";
+    btn.setAttribute("aria-label", ui.legendCollapsed ? "Show legend" : "Hide legend");
+    btn.setAttribute("aria-expanded", ui.legendCollapsed ? "false" : "true");
+  }
+}
+function restoreUIState(){
+  restoreSidebarCollapse();
+  restoreLegendCollapse();
+}
+const HISTORY_LIMIT = 30;
+
+// WCAG 2.3.3 / 2.2.2: honor the OS reduced-motion preference for JS-driven
+// animation (canvas dash-march, camera tweens). CSS has a matching media block.
+const PREFERS_REDUCED_MOTION = !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+const state = {
+  graph: { nodes: [], edges: [] },
+  positions: new Map(),
+  transform: { x:0, y:0, scale:1 },
+  selectedNode: null, selectedEdge: null,
+  hoveredNode: null, hoveredEdge: null,
+  draggedNode: null, dragMode: null,
+  lastMouse: { x:0, y:0 },
+  layout: "force",
+  clusterAttr: "type",
+  filtersNode: new Set(), filtersEdge: new Set(),
+  search: "",
+  showNeighborhoodOnly: false,
+  searchPulseUntil: 0,
+  connectingFrom: null,
+  history: [], historyIndex: -1,
+  fontsReady: false,
+  showAllEdgeLabels: localStorage.getItem("erg.alwaysLabels") === "1",
+  layoutMode: false,  // when true, clicks on nodes only reposition (no selection change)
+  // ----- File-as-source-of-truth state -----
+  fileHandle: null,   // FileSystemFileHandle when FSA available and a file is open
+  fileName: null,     // display name of the currently open file
+  dirty: false,       // true when changes exist that aren't saved to file
+  // ----- Last-save stamp (for multi-user "who edited last" awareness) -----
+  lastModifiedBy: null,   // string, surfaced in the header chip
+  lastModifiedAt: null,   // ISO timestamp, surfaced in the header chip
+  pathFinding: {
+    active: false,        // listening for source/target clicks?
+    source: null,         // source node id (once picked)
+    pathNodes: new Set(), // node ids along the found path
+    pathEdges: new Set(), // edge ids along the found path
+    steps: null           // array of { type:"node"|"edge", id|edge, dir } for details panel
+  },
+  // Collapsed-branch tracking (parent-of-children, computed from collapsedNodes)
+  hiddenByCollapse: new Set(),
+  orgChartMode: false,
+  orgChartSnapshot: null,
+  recentNodes: [],
+  collapseCounts: new Map(),
+  // ----- v1.1 feature state -----
+  multiSelect: new Set(),     // node ids in the multi-selection
+  selectBox: null,            // {x0,y0,x1,y1} during a lasso drag (screen coords)
+  heatmap: false,             // staleness heatmap on/off
+  dimEdges: localStorage.getItem("erg.dimEdges") === "1",  // shade relationships darker to calm the base view
+  whatif: { active:false, disabled:new Set(), affected:new Set(), orphaned:new Set() },
+  spof: new Set(),            // articulation-point node ids currently highlighted
+  present: { active:false, steps:[], idx:0, playing:false, timer:null, isolate:true, focusIds:null }
+};
+
+function loadInitial(){
+  let loaded=null;
+  if (host && host.initialGraph) { loaded = host.initialGraph; }
+  else { try { const s=localStorage.getItem(STORAGE_KEY); if(s) loaded=JSON.parse(s); } catch(_){} }
+  state.graph = (loaded && Array.isArray(loaded.nodes) && Array.isArray(loaded.edges))
+    ? loaded : JSON.parse(JSON.stringify(SAMPLE_DATA));
+  if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
+  if (!Array.isArray(state.graph.collapsedNodes)) state.graph.collapsedNodes = [];
+  // Run dedup cleanups on the restored data BEFORE filters are computed,
+  // otherwise the filter Sets will include the about-to-be-removed dupes.
+  const edgeDupes = removeDuplicateEdges();
+  const typeDupes = removeDuplicateCustomTypes();
+  // Persist the cleaned state so the bad data is gone on next reload too
+  if (edgeDupes > 0 || typeDupes > 0){
+    persist();
+    // Toast after boot settles so it's visible
+    setTimeout(() => {
+      const msgs = [];
+      if (edgeDupes > 0) msgs.push(`${edgeDupes} duplicate edge${edgeDupes===1?"":"s"}`);
+      if (typeDupes > 0) msgs.push(`${typeDupes} redundant custom type${typeDupes===1?"":"s"} (now built-in)`);
+      showToast("Cleaned up " + msgs.join(" and "), "ok");
+    }, 800);
+  }
+  resetFiltersFromGraph();
+  recomputeHiddenByCollapse();
+}
+function resetFiltersFromGraph(){
+  state.filtersNode = new Set(allNodeTypes());
+  state.filtersEdge = new Set(allEdgeTypes());
+  applyStoredFilters();
+}
+/* Filter selections persist in localStorage. We store the DESELECTED types so
+   any node/edge type added later still shows by default (only explicitly hidden
+   types stay hidden across reloads). */
+function persistFilters(){
+  const hiddenNodeTypes = allNodeTypes().filter(t => !state.filtersNode.has(t));
+  const hiddenEdgeTypes = allEdgeTypes().filter(t => !state.filtersEdge.has(t));
+  saveUIState({ hiddenNodeTypes, hiddenEdgeTypes });
+}
+function applyStoredFilters(){
+  try {
+    const ui = loadUIState();
+    if (Array.isArray(ui.hiddenNodeTypes)) ui.hiddenNodeTypes.forEach(t => state.filtersNode.delete(t));
+    if (Array.isArray(ui.hiddenEdgeTypes)) ui.hiddenEdgeTypes.forEach(t => state.filtersEdge.delete(t));
+  } catch(_){}
+}
+function persist(){
+  try { syncPositionsToGraph(); } catch(_){}
+  if (host && typeof host.onGraphChanged === "function"){
+    try { host.onGraphChanged(state.graph); } catch(_){}
+    return;
+  }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)); } catch(_){}
+}
+
+/* ---------- HELPERS ---------- */
+const uid = p => p+"-"+Math.random().toString(36).slice(2,8)+"-"+Date.now().toString(36).slice(-4);
+const findNode = id => state.graph.nodes.find(n=>n.id===id);
+const findEdge = id => state.graph.edges.find(e=>e.id===id);
+function neighborsOf(id){
+  return {
+    inE: state.graph.edges.filter(e=>e.target===id),
+    outE: state.graph.edges.filter(e=>e.source===id)
+  };
+}
+/* ----- Structured search -----
+   The search box accepts field operators alongside free text, e.g.:
+     type:Person owner:"Jane Smith" status:retired sharepoint
+   Known fields: type, tag, owner, lead, status, platform, office,
+   directorate, id. Quoted values may contain spaces. All clauses must match
+   (AND). Plain terms keep the original behavior: label / type / tags. */
+const SEARCH_FIELDS = { type:1, tag:1, owner:1, lead:1, status:1, platform:1, office:1, directorate:1, id:1 };
+function parseSearchQuery(q){
+  const clauses = [];
+  const re = /(\w+):"([^"]*)"|(\w+):(\S+)|"([^"]*)"|(\S+)/g;
+  let m;
+  while ((m = re.exec(q)) !== null){
+    if (m[1] !== undefined || m[3] !== undefined){
+      const field = (m[1] !== undefined ? m[1] : m[3]).toLowerCase();
+      const value = (m[1] !== undefined ? m[2] : m[4]).toLowerCase();
+      if (SEARCH_FIELDS[field] && value){ clauses.push({ field, value }); continue; }
+      clauses.push({ field: null, value: m[0].toLowerCase() }); // unknown field -> free text
+    } else {
+      const value = (m[5] !== undefined ? m[5] : m[6]).toLowerCase();
+      if (value) clauses.push({ field: null, value });
+    }
+  }
+  return clauses;
+}
+// Parse cache — the canvas render path calls nodeMatchesSearch per node per frame.
+function searchClauses(){
+  if (searchClauses._q !== state.search){
+    searchClauses._q = state.search;
+    searchClauses._c = parseSearchQuery(state.search);
+  }
+  return searchClauses._c;
+}
+function nodeMatchesSearch(n){
+  if (!state.search) return true;
+  const clauses = searchClauses();
+  if (!clauses.length) return true;
+  const f = v => String(v == null ? "" : v).toLowerCase();
+  return clauses.every(c => {
+    if (!c.field){
+      return f(n.label).includes(c.value) || f(n.type).includes(c.value) ||
+             (n.tags||[]).join(",").toLowerCase().includes(c.value);
+    }
+    if (c.field === "tag")      return (n.tags||[]).some(t => f(t).includes(c.value));
+    if (c.field === "owner")    return f(typeof effectiveOwner === "function" ? effectiveOwner(n) : n.owner).includes(c.value);
+    if (c.field === "lead")     return f(typeof effectiveLead === "function" ? effectiveLead(n) : n.lead).includes(c.value);
+    if (c.field === "platform") return f(typeof effectivePlatform === "function" ? effectivePlatform(n) : n.platform).includes(c.value);
+    return f(n[c.field]).includes(c.value);
+  });
+}
+function isVisibleNode(n){
+  if (state.present.active && state.present.isolate && state.present.focusIds && !state.present.focusIds.has(n.id)) return false;
+  if (state.scopeIds && !state.scopeIds.has(n.id)) return false;
+  if (!state.filtersNode.has(n.type)) return false;
+  // Hidden by an ancestor's collapse — the parent stays visible to act as the proxy
+  if (isHiddenByCollapse(n.id)) return false;
+  if (state.search){
+    if (!nodeMatchesSearch(n) && !isNeighborhoodInclude(n)) return false;
+  }
+  if (state.showNeighborhoodOnly && state.selectedNode){
+    return n.id===state.selectedNode || isNeighborhoodInclude(n);
+  }
+  return true;
+}
+function isNeighborhoodInclude(n){
+  if (!state.selectedNode) return false;
+  if (n.id===state.selectedNode) return true;
+  const { inE, outE } = neighborsOf(state.selectedNode);
+  return inE.some(e=>e.source===n.id) || outE.some(e=>e.target===n.id);
+}
+function isVisibleEdge(e){
+  if (!state.filtersEdge.has(e.type)) return false;
+  const s=findNode(e.source), t=findNode(e.target);
+  if (!s||!t) return false;
+  return isVisibleNode(s) && isVisibleNode(t);
+}
+const visibleNodes = () => state.graph.nodes.filter(isVisibleNode);
+const visibleEdges = () => state.graph.edges.filter(isVisibleEdge);
+/* ----- Scope to a branch: isolate the view to a node and everything it
+   owns/contains (walks down-hierarchy + ownership edges). ----- */
+function computeBranchScope(rootId){
+  const scope = new Set([rootId]);
+  const queue = [rootId];
+  while (queue.length){
+    const id = queue.shift();
+    for (const e of state.graph.edges){
+      if (e.source === id && HIER_DOWN_TYPES.includes(e.type) && !scope.has(e.target)){
+        scope.add(e.target); queue.push(e.target);
+      }
+    }
+  }
+  return scope;
+}
+function scopeToBranch(rootId){
+  const root = findNode(rootId);
+  if (!root){ clearScope(); return; }
+  state.scopeRoot = rootId;
+  state.scopeIds = computeBranchScope(rootId);
+  updateScopeBanner();
+  buildLegend(); updateStats(); requestRedraw();
+  setTimeout(() => { if (typeof fitGraph === "function") fitGraph(); }, 60);
+  showToast("Scoped to " + root.label + " — " + state.scopeIds.size + " node" + (state.scopeIds.size === 1 ? "" : "s"), "ok");
+}
+function clearScope(){
+  if (!state.scopeRoot) return;
+  state.scopeRoot = null; state.scopeIds = null;
+  updateScopeBanner();
+  buildLegend(); updateStats(); requestRedraw();
+  setTimeout(() => { if (typeof fitGraph === "function") fitGraph(); }, 60);
+}
+function updateScopeBanner(){
+  const b = document.getElementById("scope-banner");
+  if (!b) return;
+  if (state.scopeRoot){
+    const n = findNode(state.scopeRoot);
+    const txt = document.getElementById("scope-banner-text");
+    if (txt) txt.textContent = "Scoped to " + (n ? n.label : "branch");
+    b.style.display = "flex";
+  } else {
+    b.style.display = "none";
+  }
+}
+function buildScopePicker(){
+  const sel = document.getElementById("scope-select");
+  if (!sel) return;
+  if (state.scopeRoot && !findNode(state.scopeRoot)){ state.scopeRoot = null; state.scopeIds = null; updateScopeBanner(); }
+  const hasChildren = new Set();
+  for (const e of state.graph.edges){ if (HIER_DOWN_TYPES.includes(e.type)) hasChildren.add(e.source); }
+  const tr = t => { const i = NODE_TYPES.indexOf(t); return i < 0 ? 99 : i; };
+  const roots = state.graph.nodes.filter(n => hasChildren.has(n.id))
+    .sort((a,b) => (tr(a.type) - tr(b.type)) || a.label.localeCompare(b.label));
+  sel.innerHTML = '<option value="">Whole graph</option>' +
+    roots.map(n => '<option value="' + escapeHtml(n.id) + '"' + (n.id === state.scopeRoot ? " selected" : "") + '>' + escapeHtml(n.label) + " (" + escapeHtml(n.type) + ")</option>").join("");
+}
+
+function showToast(msg, kind){
+  const el = document.getElementById("toast");
+  el.classList.remove("err","ok");
+  if (kind) el.classList.add(kind);
+  // Errors (incl. form validation) should interrupt screen readers; info/ok
+  // announcements can wait politely.
+  el.setAttribute("aria-live", kind === "err" ? "assertive" : "polite");
+  el.setAttribute("role", kind === "err" ? "alert" : "status");
+  const icon = kind==="err" ? "circle-exclamation" : kind==="ok" ? "circle-check" : "circle-info";
+  el.innerHTML = `<i class="fa-solid fa-${icon}" aria-hidden="true"></i> ${escapeHtml(msg)}`;
+  el.classList.add("show");
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(()=>el.classList.remove("show"), 2400);
+}
+function escapeHtml(s){
+  if (s==null) return "";
+  return String(s).replace(/[&<>"']/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+}
+function luminance(hex){
+  const h = hex.replace("#","");
+  const r=parseInt(h.substr(0,2),16),g=parseInt(h.substr(2,2),16),b=parseInt(h.substr(4,2),16);
+  return (0.299*r + 0.587*g + 0.114*b) / 255;
+}
+function iconFgFor(hex){ return luminance(hex) > 0.6 ? "#04101F" : "#FFFFFF"; }
+
+/* ---------- HISTORY (Undo/Redo) ----------
+   Snapshot captures the FULL graph (nodes, edges, customNodeTypes, collapsedNodes)
+   so navigating history restores every facet, not just nodes and edges.
+   Snapshots are taken AFTER each mutation (via afterMutate) so redo can return
+   you to the state you just left. */
+function snapshot(){
+  return JSON.parse(JSON.stringify({
+    nodes: state.graph.nodes,
+    edges: state.graph.edges,
+    customNodeTypes: state.graph.customNodeTypes || [],
+    collapsedNodes: state.graph.collapsedNodes || []
+  }));
+}
+function pushHistory(){
+  // Drop any redo branch beyond the current index
+  state.history = state.history.slice(0, state.historyIndex + 1);
+  state.history.push(snapshot());
+  if (state.history.length > HISTORY_LIMIT) state.history.shift();
+  state.historyIndex = state.history.length - 1;
+  updateUndoRedo();
+}
+function restoreFromHistory(snap){
+  // Replace graph wholesale; ensure required collections exist
+  state.graph.nodes = JSON.parse(JSON.stringify(snap.nodes || []));
+  state.graph.edges = JSON.parse(JSON.stringify(snap.edges || []));
+  state.graph.customNodeTypes = JSON.parse(JSON.stringify(snap.customNodeTypes || []));
+  state.graph.collapsedNodes  = JSON.parse(JSON.stringify(snap.collapsedNodes || []));
+  // Give restored nodes default positions (deleted nodes lose their positions
+  // when deleted; this puts them back on the canvas at a reasonable spot
+  // for the force simulation to settle).
+  ensurePositions();
+  // Clear selections that may reference removed items
+  if (state.selectedNode && !findNode(state.selectedNode)) state.selectedNode = null;
+  if (state.selectedEdge && !findEdge(state.selectedEdge)) state.selectedEdge = null;
+}
+function undo(){
+  if (state.historyIndex <= 0){ showToast("Nothing to undo", "err"); return; }
+  state.historyIndex--;
+  restoreFromHistory(state.history[state.historyIndex]);
+  // Mark dirty because the in-memory state now differs from the file on disk;
+  // skip history push because we're navigating, not creating a new state.
+  afterMutate(false, true);
+  showToast("Undone", "ok");
+}
+function redo(){
+  if (state.historyIndex >= state.history.length - 1){ showToast("Nothing to redo", "err"); return; }
+  state.historyIndex++;
+  restoreFromHistory(state.history[state.historyIndex]);
+  afterMutate(false, true);
+  showToast("Redone", "ok");
+}
+function updateUndoRedo(){
+  const canUndo = state.historyIndex > 0;
+  const canRedo = state.historyIndex < state.history.length - 1;
+  document.getElementById("btn-undo").disabled = !canUndo;
+  document.getElementById("btn-redo").disabled = !canRedo;
+  document.getElementById("tb-undo").disabled = !canUndo;
+  document.getElementById("tb-redo").disabled = !canRedo;
+}
+
+/* ============================================================================
+   PATH-FINDING (BFS, undirected for traversal purposes)
+   ============================================================================ */
+function findShortestPath(srcId, dstId){
+  if (srcId === dstId) return [{ type:"node", id:srcId }];
+  // Build undirected adjacency from current edges
+  const adj = new Map();
+  state.graph.edges.forEach(e=>{
+    if (!adj.has(e.source)) adj.set(e.source, []);
+    if (!adj.has(e.target)) adj.set(e.target, []);
+    adj.get(e.source).push({ to:e.target, edge:e, dir:"out" });
+    adj.get(e.target).push({ to:e.source, edge:e, dir:"in"  });
+  });
+  const parent = new Map();
+  parent.set(srcId, null);
+  const queue = [srcId];
+  while (queue.length){
+    const cur = queue.shift();
+    if (cur === dstId) break;
+    const neighbors = adj.get(cur) || [];
+    for (const n of neighbors){
+      if (!parent.has(n.to)){
+        parent.set(n.to, { from:cur, edge:n.edge, dir:n.dir });
+        queue.push(n.to);
+      }
+    }
+  }
+  if (!parent.has(dstId)) return null;
+  // Reconstruct as alternating node/edge steps
+  const steps = [];
+  let cur = dstId;
+  while (cur !== null){
+    const p = parent.get(cur);
+    steps.unshift({ type:"node", id:cur });
+    if (p){
+      steps.unshift({ type:"edge", edge:p.edge, dir:p.dir });
+      cur = p.from;
+    } else {
+      cur = null;
+    }
+  }
+  return steps;
+}
+function startPathFinding(){
+  // Reset any prior path
+  clearPath();
+  state.pathFinding.active = true;
+  state.pathFinding.source = null;
+  // If user has a node selected, use it as source automatically
+  if (state.selectedNode){
+    state.pathFinding.source = state.selectedNode;
+  }
+  showPathBanner();
+  syncFindPathBtn();
+}
+function cancelPathFinding(){
+  state.pathFinding.active = false;
+  state.pathFinding.source = null;
+  hidePathBanner();
+  syncFindPathBtn();
+}
+function clearPath(){
+  cancelPathFinding();
+  state.pathFinding.pathNodes = new Set();
+  state.pathFinding.pathEdges = new Set();
+  state.pathFinding.steps = null;
+  syncFindPathBtn();
+  requestRedraw();
+  renderDetails();
+}
+// Reset transient view state (found path, multi-select) that would otherwise
+// reference nodes from a previous graph after a file/sample/snapshot load —
+// stale path state dims the entire new graph and keeps dead IDs selected.
+function clearLoadedViewState(){
+  if (state.pathFinding.active || state.pathFinding.pathNodes.size > 0) clearPath();
+  if (state.multiSelect.size){ state.multiSelect.clear(); updateStats(); }
+}
+// Keeps the sidebar Find Path button in sync with path-finding state.
+// Three states: idle (default label), picking (cancel label, active style),
+// path shown (clear label, active style).
+function syncFindPathBtn(){
+  const btn = document.getElementById("btn-find-path");
+  if (!btn) return;
+  if (state.pathFinding.active){
+    btn.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i> Cancel path-finder';
+    btn.classList.add("active");
+    btn.setAttribute("aria-pressed", "true");
+  } else if (state.pathFinding.pathNodes.size > 0){
+    btn.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i> Clear path';
+    btn.classList.add("active");
+    btn.setAttribute("aria-pressed", "true");
+  } else {
+    btn.innerHTML = '<i class="fa-solid fa-route" aria-hidden="true"></i> Find path between two nodes';
+    btn.classList.remove("active");
+    btn.setAttribute("aria-pressed", "false");
+  }
+}
+function applyFoundPath(steps, srcId, dstId){
+  state.pathFinding.steps = steps;
+  state.pathFinding.pathNodes = new Set(steps.filter(s=>s.type==="node").map(s=>s.id));
+  state.pathFinding.pathEdges = new Set(steps.filter(s=>s.type==="edge").map(s=>s.edge.id));
+  state.pathFinding.active = false;
+  state.pathFinding.source = null;
+  hidePathBanner();
+  syncFindPathBtn();
+  // If the path crosses a collapsed branch, expand the ancestor(s) so the
+  // path is actually visible on the canvas.
+  let expanded = false;
+  state.pathFinding.pathNodes.forEach(id => {
+    if (state.hiddenByCollapse.has(id)){
+      const collapsed = (state.graph.collapsedNodes || []).slice();
+      collapsed.forEach(parentId => {
+        if (getCollapseDescendants(parentId).has(id)){
+          state.graph.collapsedNodes = state.graph.collapsedNodes.filter(x => x !== parentId);
+          expanded = true;
+        }
+      });
+    }
+  });
+  if (expanded){
+    recomputeHiddenByCollapse();
+    // collapsedNodes is persisted graph data: route through afterMutate so the
+    // expansion survives reload and participates in undo history. skipDirty —
+    // revealing a path is a view aid, not an edit the user must re-save.
+    afterMutate(true);
+  }
+  // Also select source so its profile shows; details renderer prefers path view if active
+  selectNode(srcId);
+}
+function showPathBanner(){
+  const banner = document.getElementById("path-banner");
+  if (!banner) return;
+  banner.style.display = "flex";
+  const txt = document.getElementById("path-banner-text");
+  if (state.pathFinding.source){
+    const src = findNode(state.pathFinding.source);
+    txt.textContent = "Path-finder: click target node (source: " + (src?src.label:"?") + ")";
+  } else {
+    txt.textContent = "Path-finder: click source node, then click target";
+  }
+}
+function hidePathBanner(){
+  const banner = document.getElementById("path-banner");
+  if (banner) banner.style.display = "none";
+}
+
+/* ============================================================================
+   GRAPH RENDERER (Canvas)
+   ============================================================================ */
+const canvas = document.getElementById("graph-canvas");
+const ctx = canvas.getContext("2d");
+let needsRedraw = true;
+let rafActive = false;
+let settleCounter = 0;   // increments when there's no movement and no interaction
+const SETTLE_THRESHOLD = 30; // ~0.5s @ 60fps before pausing
+const requestRedraw = () => {
+  needsRedraw = true;
+  settleCounter = 0;
+  if (!rafActive){ rafActive = true; requestAnimationFrame(tick); }
+};
+
+function resizeCanvas(){
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  canvas.style.width = rect.width+"px";
+  canvas.style.height = rect.height+"px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  wakeSim();
+}
+__ergOn(window, "resize", resizeCanvas);
+
+function ensurePositions(){
+  const w = canvas.clientWidth || 800, h = canvas.clientHeight || 600;
+  state.graph.nodes.forEach(n=>{
+    if (!state.positions.has(n.id)){
+      state.positions.set(n.id, {
+        x: w/2 + (Math.random()-0.5)*Math.min(w,h)*0.6,
+        y: h/2 + (Math.random()-0.5)*Math.min(w,h)*0.6,
+        vx:0, vy:0, fixed:false
+      });
+    }
+  });
+}
+
+/* ----- Layout persistence -----
+   Hand-arranged layouts survive save/reload: node positions (and pin flags)
+   are serialized into graph.positions on every persist/save and restored on
+   load. When positions restore successfully the loader skips re-running the
+   layout algorithm, so the geometry on screen is exactly what was saved.
+   (History snapshots deliberately exclude positions — the force sim moves
+   nodes between history pushes, so undo would otherwise yank the camera.) */
+function syncPositionsToGraph(){
+  const out = {};
+  state.graph.nodes.forEach(n=>{
+    const p = state.positions.get(n.id);
+    if (!p || !isFinite(p.x) || !isFinite(p.y)) return;
+    const rec = { x: Math.round(p.x*10)/10, y: Math.round(p.y*10)/10 };
+    if (p.pinned) rec.pinned = 1;
+    out[n.id] = rec;
+  });
+  state.graph.positions = out;
+}
+function restorePositionsFromGraph(){
+  const saved = state.graph.positions;
+  if (!saved || typeof saved !== "object" || Array.isArray(saved)) return 0;
+  let restored = 0;
+  state.graph.nodes.forEach(n=>{
+    const p = saved[n.id];
+    if (p && isFinite(p.x) && isFinite(p.y)){
+      // pinned implies fixed: the force sim only checks `fixed`, and the
+      // mouseup handler keeps fixed=true for pinned nodes — mirror that here
+      // or restored pins would drift as the sim settles.
+      state.positions.set(n.id, { x:+p.x, y:+p.y, vx:0, vy:0, fixed:!!p.pinned, pinned:!!p.pinned });
+      restored++;
+    }
+  });
+  return restored;
+}
+// Debounced localStorage persist for drag re-arrangements, so moving nodes
+// around (without any data edit) still survives a reload.
+function schedulePositionPersist(){
+  clearTimeout(schedulePositionPersist._t);
+  schedulePositionPersist._t = setTimeout(persist, 800);
+}
+
+/* ----- Hierarchy helpers (shared by hierarchical / hierarchical-lr / radial) ----- */
+const HIER_DOWN_TYPES = ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST","OWNS","MANAGES"];
+const HIER_UP_TYPES   = ["REPORTS_TO","PART_OF"];
+
+// Build a forest from the graph: each node gets at most one parent.
+// Returns { roots:[id], childrenOf:Map<id,id[]>, parentOf:Map<id,id> }
+function buildHierarchy(opts){
+  opts = opts || {};
+  const childrenOf = new Map();
+  const parentOf = new Map();
+  state.graph.nodes.forEach(n => childrenOf.set(n.id, []));
+  // Walk edges and assign parents.
+  state.graph.edges.forEach(ed => {
+    let parent = null, child = null;
+    if (HIER_DOWN_TYPES.includes(ed.type)){ parent = ed.source; child = ed.target; }
+    else if (HIER_UP_TYPES.includes(ed.type)){ parent = ed.target; child = ed.source; }
+    if (!parent || !child || parent === child) return;
+    if (!childrenOf.has(parent) || !childrenOf.has(child)) return;
+    if (parentOf.has(child)) return; // first parent wins; avoids cycles & ambiguity
+    parentOf.set(child, parent);
+    childrenOf.get(parent).push(child);
+  });
+  // Org Chart: cluster a unit's lead near it. A person tied to a unit only via
+  // RESPONSIBLE_FOR/MANAGES gets no structural parent, so it would drop into the
+  // singleton row far from its unit. When leadParents is set, attach such
+  // orphans to the unit they lead so leads sit directly under it.
+  if (opts.leadParents){
+    const nodeById = new Map(state.graph.nodes.map(n => [n.id, n]));
+    state.graph.edges.forEach(ed => {
+      if (ed.type !== "RESPONSIBLE_FOR" && ed.type !== "MANAGES") return;
+      const child = ed.source, parent = ed.target; // person --RESPONSIBLE_FOR--> unit
+      if (parent === child) return;
+      // Only rescue actual people/roles — without this check an orphaned
+      // Office that MANAGES an Application would become the Application's
+      // child in the org tree.
+      const childNode = nodeById.get(child);
+      if (!childNode || (childNode.type !== "Person" && childNode.type !== "Role")) return;
+      if (!childrenOf.has(parent) || !childrenOf.has(child)) return;
+      if (parentOf.has(child)) return; // only rescue true orphans
+      parentOf.set(child, parent);
+      childrenOf.get(parent).push(child);
+    });
+  }
+  // Pick roots: prefer Executive Office / Front Office; otherwise any node without a parent.
+  const allRoots = state.graph.nodes
+    .filter(n => !parentOf.has(n.id))
+    .map(n => n.id);
+  // Sort roots so structural top-of-org nodes come first.
+  const rootRank = id => {
+    const n = state.graph.nodes.find(x => x.id === id);
+    if (!n) return 9;
+    if (n.type === "Under Secretary") return -2;
+    if (n.type === "Bureau") return -1;
+    if (n.type === "Executive Office") return 0;
+    if (n.type === "Front Office") return 1;
+    if (n.type === "Directorate") return 2;
+    if (n.type === "Office") return 3;
+    return 4;
+  };
+  allRoots.sort((a,b) => rootRank(a) - rootRank(b));
+  return { roots: allRoots, childrenOf, parentOf };
+}
+
+// Sort each child list so siblings render in a stable, sensible order.
+function sortChildrenStable(childrenOf){
+  const typeOrder = ["Under Secretary","Bureau","Directorate","Front Office","Office","System","Platform","Application","SPFx Application","Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox","Person","Role","Workflow","Power Automate Flow","Power BI Dashboard","API","Dataset","Dataverse Table","Document","Requirement","Decision","Vendor","Service","Environment","Other"];
+  childrenOf.forEach(arr => {
+    arr.sort((a,b) => {
+      const na = state.graph.nodes.find(n=>n.id===a);
+      const nb = state.graph.nodes.find(n=>n.id===b);
+      const ra = typeOrder.indexOf(na ? na.type : "Other");
+      const rb = typeOrder.indexOf(nb ? nb.type : "Other");
+      if (ra !== rb) return (ra<0?99:ra) - (rb<0?99:rb);
+      return (na ? na.label : "").localeCompare(nb ? nb.label : "");
+    });
+  });
+}
+
+// Compute subtree "width" in units of leaf slots.
+// Pre-populating memo[id] before recursing breaks any accidental hierarchy cycles.
+function subtreeLeaves(id, childrenOf, memo){
+  if (memo.has(id)) return memo.get(id);
+  memo.set(id, 1);
+  const kids = childrenOf.get(id) || [];
+  let w;
+  if (!kids.length){ w = 1; }
+  else { w = 0; kids.forEach(k => w += subtreeLeaves(k, childrenOf, memo)); }
+  memo.set(id, w);
+  return w;
+}
+
+function applyLayout(name, skipFit){
+  // Mode entry/exit for Org Chart — snapshot the filter set on entry,
+  // restore it when the user picks any other layout.
+  if (name === "org-chart" && !state.orgChartMode){
+    state.orgChartSnapshot = {
+      filtersNode: [...state.filtersNode],
+      layout: state.layout || "force"
+    };
+    state.orgChartMode = true;
+    state.filtersNode = new Set(["Under Secretary","Bureau","Person","Role","Executive Office","Front Office","Directorate","Office","Team"]);
+    if (typeof buildFilterUI === "function") buildFilterUI();
+    showToast("Org chart view — REPORTS_TO chains drive the layout. Pick another layout to exit.", "ok");
+  } else if (name !== "org-chart" && state.orgChartMode){
+    if (state.orgChartSnapshot){
+      state.filtersNode = new Set(state.orgChartSnapshot.filtersNode);
+      if (typeof buildFilterUI === "function") buildFilterUI();
+    }
+    state.orgChartMode = false;
+    state.orgChartSnapshot = null;
+    showToast("Exited org chart view", "ok");
+  }
+  state.layout = name;
+  document.getElementById("footer-layout").textContent = "Layout: " + (name === "org-chart" ? "Org Chart" : name);
+  // Org Chart shares its rendering with the top-down hierarchical layout.
+  if (name === "org-chart") name = "hierarchical";
+  // Show/hide the cluster-attr picker.
+  const clusterField = document.getElementById("cluster-attr-field");
+  if (clusterField) clusterField.style.display = (name === "cluster") ? "" : "none";
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  const cx = w/2, cy = h/2;
+  ensurePositions();
+
+  if (name === "hierarchical" || name === "hierarchical-lr"){
+    layoutTree(name === "hierarchical-lr" ? "LR" : "TB", w, h);
+  } else if (name === "radial"){
+    layoutRadial(w, h);
+  } else if (name === "cluster"){
+    layoutCluster(w, h, state.clusterAttr || "type");
+  } else if (name === "concentric"){
+    const ringOrder = [
+      ["Under Secretary"],["Bureau"],["Executive Office"],["Front Office"],["Directorate"],["Office"],
+      ["Platform","System"],["Application","SPFx Application","Site Collection"],
+      ["SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox","Workflow","Power Automate Flow","Power BI Dashboard"],
+      ["Person","Role","API","Dataset","Dataverse Table","Document","Requirement","Decision","Vendor","Service","Environment","Other"]
+    ];
+    const ring = new Map();
+    state.graph.nodes.forEach(n=>{
+      let r = ringOrder.length - 1;
+      for (let i=0;i<ringOrder.length;i++){ if (ringOrder[i].includes(n.type)){ r=i; break; } }
+      if (!ring.has(r)) ring.set(r,[]);
+      ring.get(r).push(n);
+    });
+    // Compact populated tiers to consecutive ranks so the layout conforms to
+    // what is actually present: the highest tier in the graph centers at rank 0
+    // and absent tiers (e.g. no Under Secretary / Bureau) leave no empty rings.
+    const populated = [...ring.keys()].sort((a,b)=>a-b);
+    const rankOf = new Map(populated.map((tier,idx)=>[tier,idx]));
+    const ringCount = populated.length;
+    const maxR = Math.min(w,h)/2 - 40;
+    ring.forEach((arr, r)=>{
+      const rank = rankOf.get(r);
+      const radius = ringCount<=1 ? maxR*0.5 : (maxR * rank / (ringCount-1));
+      arr.forEach((n,i)=>{
+        const p = state.positions.get(n.id);
+        const angle = (i/arr.length)*Math.PI*2 + rank*0.2;
+        p.x = cx + Math.cos(angle)*radius;
+        p.y = cy + Math.sin(angle)*radius;
+        p.vx = p.vy = 0;
+      });
+    });
+  } else if (name === "grid"){
+    const arr = state.graph.nodes.slice();
+    const cols = Math.ceil(Math.sqrt(arr.length));
+    const rows = Math.ceil(arr.length/cols);
+    const cw = (w-80)/cols, ch = (h-80)/rows;
+    arr.forEach((n,i)=>{
+      const c = i%cols, r = Math.floor(i/cols);
+      const p = state.positions.get(n.id);
+      p.x = 40 + cw/2 + c*cw;
+      p.y = 40 + ch/2 + r*ch;
+      p.vx = p.vy = 0;
+    });
+  }
+  // Show/hide Org Chart mode banner based on state set earlier in this function
+  const ocBanner = document.getElementById("org-chart-banner");
+  if (ocBanner) ocBanner.style.display = state.orgChartMode ? "" : "none";
+  wakeSim();
+  // Auto-fit after layout change so the user sees the result immediately
+  // without having to click Fit. Skip for force since it self-animates from
+  // current positions and would jump on every recompute otherwise.
+  if (name !== "force" && !skipFit){
+    setTimeout(() => { if (typeof fitGraph === "function") fitGraph(); }, 80);
+  }
+}
+
+/* Top-down (TB) or left-right (LR) tidy tree layout.
+   Roots are split into multi-node trees (rendered properly with children
+   centered under parents) and singleton roots (packed into their own row
+   below the trees for TB, or column to the right for LR). The dominant
+   tree comes first so it owns the visual center. */
+function layoutTree(axis, w, h){
+  const { roots, childrenOf } = buildHierarchy({ leadParents: state.orgChartMode });
+  sortChildrenStable(childrenOf);
+  const leafMemo = new Map();
+  roots.forEach(r => subtreeLeaves(r, childrenOf, leafMemo));
+
+  // Partition: multi-node trees vs. singletons.
+  const treeRoots = [];
+  const singletonRoots = [];
+  roots.forEach(r => {
+    if ((childrenOf.get(r) || []).length > 0) treeRoots.push(r);
+    else singletonRoots.push(r);
+  });
+  // Sort tree roots largest-first so the dominant one anchors the layout.
+  treeRoots.sort((a,b) => (leafMemo.get(b)||1) - (leafMemo.get(a)||1));
+  // If every root is a singleton, fall back to placing them all as bare roots.
+  const effective = treeRoots.length ? treeRoots : singletonRoots.slice();
+  const remainingSingletons = treeRoots.length ? singletonRoots : [];
+
+  // Spacing.
+  const depthSpacing = axis === "TB" ? 150 : 230;  // LR needs more horizontal room for labels
+  const leafSpacing  = axis === "TB" ? 180 : 95;
+  const rootGap = leafSpacing * 0.8;
+
+  let crossCursor = 0;
+  let maxDepthUsed = 0;
+  const placed = new Set();
+  const place = (id, depth) => {
+    if (placed.has(id)) return;
+    placed.add(id);
+    if (depth > maxDepthUsed) maxDepthUsed = depth;
+    const kids = (childrenOf.get(id) || []).filter(k => !placed.has(k));
+    let myCenterCross;
+    if (!kids.length){
+      myCenterCross = crossCursor + leafSpacing/2;
+      crossCursor += leafSpacing;
+    } else {
+      const startCross = crossCursor;
+      kids.forEach(k => place(k, depth + 1));
+      const endCross = crossCursor;
+      myCenterCross = (startCross + endCross) / 2;
+    }
+    const along = depth * depthSpacing;
+    const p = state.positions.get(id);
+    if (p){
+      if (axis === "TB"){ p.x = myCenterCross; p.y = along; }
+      else { p.x = along; p.y = myCenterCross; }
+      p.vx = p.vy = 0;
+    }
+  };
+  effective.forEach((r, i) => {
+    if (i > 0) crossCursor += rootGap;
+    place(r, 0);
+  });
+  const treeCrossEnd = crossCursor;
+
+  // Pack singleton roots into a row past the trees (with a gap of one+ depth-step).
+  if (remainingSingletons.length){
+    const singletonPitch = leafSpacing * 0.65;
+    const targetCrossWidth = Math.max(treeCrossEnd, w * 1.1);
+    const cols = Math.max(1, Math.min(remainingSingletons.length, Math.floor(targetCrossWidth / singletonPitch)));
+    const rowsNeeded = Math.ceil(remainingSingletons.length / cols);
+    const rowPitch = depthSpacing * 0.6;
+    const rowBaseAlong = (maxDepthUsed + 2) * depthSpacing; // 2-step gap below the trees
+    const rowStartCross = (treeCrossEnd - cols * singletonPitch) / 2 + singletonPitch/2;
+    remainingSingletons.forEach((id, i) => {
+      const col = i % cols, row = Math.floor(i / cols);
+      const crossPos = rowStartCross + col * singletonPitch;
+      const alongPos = rowBaseAlong + row * rowPitch;
+      const p = state.positions.get(id);
+      if (!p) return;
+      placed.add(id);
+      if (axis === "TB"){ p.x = crossPos; p.y = alongPos; }
+      else { p.x = alongPos; p.y = crossPos; }
+      p.vx = p.vy = 0;
+    });
+  }
+
+  // Center the whole layout in the viewport.
+  let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+  state.graph.nodes.forEach(n => {
+    const p = state.positions.get(n.id); if (!p) return;
+    if (p.x<minX) minX=p.x; if (p.x>maxX) maxX=p.x;
+    if (p.y<minY) minY=p.y; if (p.y>maxY) maxY=p.y;
+  });
+  if (isFinite(minX)){
+    const cxNow = (minX+maxX)/2, cyNow=(minY+maxY)/2;
+    const dx = w/2 - cxNow, dy = h/2 - cyNow;
+    state.graph.nodes.forEach(n => {
+      const p = state.positions.get(n.id); if (!p) return;
+      p.x += dx; p.y += dy;
+    });
+  }
+}
+
+/* Radial tree:
+   - The dominant root (largest subtree by leaf count) goes at the canvas center
+     and gets the full 2π — each depth is one ring outward, subtrees get angular
+     wedges sized to their leaf count (with a min-floor so singletons aren't
+     squeezed into invisible slivers).
+   - Each ring's radius is chosen based on actual crowding at that depth, not a
+     uniform ringStep. This avoids ring-circumference shortfalls when many nodes
+     live at the same depth.
+   - Other roots become "satellite" trees in an outer band, each owning their own
+     angular slice of the perimeter. */
+function layoutRadial(w, h){
+  const { roots, childrenOf } = buildHierarchy();
+  sortChildrenStable(childrenOf);
+  const leafMemo = new Map();
+  roots.forEach(r => subtreeLeaves(r, childrenOf, leafMemo));
+  if (!roots.length) return;
+
+  // Pick dominant root by leaf count.
+  const sorted   = roots.slice().sort((a,b) => (leafMemo.get(b)||1) - (leafMemo.get(a)||1));
+  const dominant = sorted[0];
+  const others   = sorted.slice(1);
+
+  // ---- 1) Walk the dominant tree, computing each node's wedge in radians ----
+  // Wedge allocation uses the same min-frac rule as `place()` below so the
+  // crowding heuristic matches the actual placement.
+  const wedgeOf = new Map();
+  const depthOf = new Map();
+  if (dominant){
+    wedgeOf.set(dominant, Math.PI * 2);
+    depthOf.set(dominant, 0);
+    const queue = [dominant];
+    const visited = new Set([dominant]);
+    while (queue.length){
+      const id  = queue.shift();
+      const d   = depthOf.get(id);
+      const par = wedgeOf.get(id);
+      const kids = (childrenOf.get(id) || []).filter(k => !visited.has(k));
+      if (!kids.length) continue;
+      const weights = kids.map(k => leafMemo.get(k) || 1);
+      const totalW  = weights.reduce((s,x) => s + x, 0) || 1;
+      const minFrac = 0.6 / kids.length;
+      const fracs   = weights.map(w => Math.max(w / totalW, minFrac));
+      const fracSum = fracs.reduce((s,x) => s + x, 0);
+      kids.forEach((k, i) => {
+        wedgeOf.set(k, par * (fracs[i] / fracSum));
+        depthOf.set(k, d + 1);
+        visited.add(k);
+        queue.push(k);
+      });
+    }
+  }
+  let domDepth = 0;
+  depthOf.forEach(d => { if (d > domDepth) domDepth = d; });
+
+  // ---- 2) Compute required radius per depth ----
+  // For each node at depth d with wedge w, it needs r >= minArc / w so that the
+  // arc spacing within its own wedge is at least minArc. Take max across nodes
+  // at the same depth.
+  const minArc  = 55;  // target arc-length between siblings on the same ring
+  const minStep = 70;  // minimum radial step between consecutive rings
+  const reqR = new Map();
+  reqR.set(0, 0);
+  for (let d = 1; d <= domDepth; d++) reqR.set(d, 0);
+  depthOf.forEach((d, id) => {
+    if (d === 0) return;
+    const w = wedgeOf.get(id);
+    if (!w || w <= 0) return;
+    const need = minArc / w;
+    if (need > reqR.get(d)) reqR.set(d, need);
+  });
+  const radiusAt = new Map();
+  radiusAt.set(0, 0);
+  for (let d = 1; d <= domDepth; d++){
+    radiusAt.set(d, Math.max(radiusAt.get(d-1) + minStep, reqR.get(d)));
+  }
+
+  // ---- 3) Satellite band (other roots) ----
+  let satMaxDepth = 0;
+  others.forEach(o => {
+    const stack = [[o, 0]];
+    const seen = new Set();
+    while (stack.length){
+      const [id, d] = stack.pop();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (d > satMaxDepth) satMaxDepth = d;
+      (childrenOf.get(id) || []).forEach(k => stack.push([k, d+1]));
+    }
+  });
+  const gap = others.length > 0 ? 1 : 0;
+  if (others.length){
+    const satBaseDepth = domDepth + gap + 1;
+    // Required radius for the satellite ring: room for `others.length` items at minArc spacing.
+    const satReqR = others.length * minArc / (Math.PI * 2);
+    radiusAt.set(satBaseDepth, Math.max(radiusAt.get(domDepth) + minStep * 1.5, satReqR));
+    for (let d = 1; d <= satMaxDepth; d++){
+      radiusAt.set(satBaseDepth + d, radiusAt.get(satBaseDepth + d - 1) + minStep);
+    }
+  }
+
+  // ---- 4) Place nodes ----
+  const cx = w/2, cy = h/2;
+  const placed = new Set();
+  const placeAt = (id, depth, angle) => {
+    const r = radiusAt.get(depth) || 0;
+    const p = state.positions.get(id);
+    if (p){
+      p.x = cx + Math.cos(angle - Math.PI/2) * r;
+      p.y = cy + Math.sin(angle - Math.PI/2) * r;
+      p.vx = p.vy = 0;
+    }
+  };
+  const place = (id, depth, angleStart, angleEnd) => {
+    if (placed.has(id)) return;
+    placed.add(id);
+    placeAt(id, depth, (angleStart + angleEnd)/2);
+    const kids = (childrenOf.get(id) || []).filter(k => !placed.has(k));
+    if (!kids.length) return;
+    const weights = kids.map(k => leafMemo.get(k) || 1);
+    const totalW  = weights.reduce((s,x) => s + x, 0) || 1;
+    const minFrac = 0.6 / kids.length;
+    const fracs   = weights.map(w => Math.max(w / totalW, minFrac));
+    const fracSum = fracs.reduce((s,x) => s + x, 0);
+    let cursor = angleStart;
+    kids.forEach((k, i) => {
+      const span = (angleEnd - angleStart) * (fracs[i] / fracSum);
+      place(k, depth + 1, cursor, cursor + span);
+      cursor += span;
+    });
+  };
+
+  if (dominant) place(dominant, 0, 0, Math.PI * 2);
+
+  if (others.length){
+    const baseDepth = domDepth + gap + 1;
+    const minSliceFrac = 0.6 / others.length;
+    const weights = others.map(o => Math.max(leafMemo.get(o) || 1, 0.5));
+    const totalW  = weights.reduce((s,x) => s + x, 0);
+    const slices  = weights.map(w => Math.max(w / totalW, minSliceFrac));
+    const slicesSum = slices.reduce((s,x) => s + x, 0);
+    let cursor = 0;
+    others.forEach((o, i) => {
+      const span = Math.PI * 2 * (slices[i] / slicesSum);
+      place(o, baseDepth, cursor, cursor + span);
+      cursor += span;
+    });
+  }
+}
+
+/* Group by attribute: groups laid out on a coarse grid sized to the canvas
+   aspect. Inside each group's cell:
+     - 1 member  → centered dot
+     - 2–8       → ring around the centroid
+     - >8        → small grid filling the cell (rings get angularly tight) */
+function layoutCluster(w, h, attr){
+  const groups = new Map();
+  const labelOf = n => {
+    if (attr === "type") return n.type || "Other";
+    if (attr === "parent") return n.parent || "(no parent)";
+    return n[attr] || "(none)";
+  };
+  state.graph.nodes.forEach(n => {
+    const key = labelOf(n);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(n);
+  });
+  const keys = Array.from(groups.keys()).sort((a,b)=>{
+    const da = groups.get(b).length - groups.get(a).length;
+    return da !== 0 ? da : String(a).localeCompare(String(b));
+  });
+  const G = keys.length || 1;
+  const cols = Math.max(1, Math.round(Math.sqrt(G * (w/h))));
+  const rows = Math.ceil(G / cols);
+  const cellW = (w - 60) / cols;
+  const cellH = (h - 60) / rows;
+
+  keys.forEach((key, idx) => {
+    const c = idx % cols, r = Math.floor(idx / cols);
+    const gx = 30 + cellW/2 + c*cellW;
+    const gy = 30 + cellH/2 + r*cellH;
+    const arr = groups.get(key);
+    const count = arr.length;
+    const maxInner = Math.min(cellW, cellH) / 2 - 24;
+
+    if (count === 1){
+      const p = state.positions.get(arr[0].id);
+      if (p){ p.x = gx; p.y = gy; p.vx = p.vy = 0; }
+      return;
+    }
+
+    if (count <= 8){
+      // Ring of members around the centroid.
+      const ringR = Math.min(maxInner, 22 + Math.sqrt(count) * 18);
+      arr.forEach((n, i) => {
+        const p = state.positions.get(n.id);
+        if (!p) return;
+        const a = (i / count) * Math.PI * 2 - Math.PI/2;
+        p.x = gx + Math.cos(a) * ringR;
+        p.y = gy + Math.sin(a) * ringR;
+        p.vx = p.vy = 0;
+      });
+      return;
+    }
+
+    // >8: arrange in a mini-grid that fills the cell.
+    const padX = 18, padY = 18;
+    const innerW = Math.max(40, cellW - 2*padX);
+    const innerH = Math.max(40, cellH - 2*padY);
+    // Choose mini-grid columns to match the cell's aspect ratio.
+    const inCols = Math.max(1, Math.round(Math.sqrt(count * (innerW / innerH))));
+    const inRows = Math.ceil(count / inCols);
+    const stepX = inCols > 1 ? innerW / (inCols - 1) : 0;
+    const stepY = inRows > 1 ? innerH / (inRows - 1) : 0;
+    const startX = gx - innerW/2;
+    const startY = gy - innerH/2;
+    arr.forEach((n, i) => {
+      const p = state.positions.get(n.id);
+      if (!p) return;
+      const ic = i % inCols, ir = Math.floor(i / inCols);
+      p.x = inCols > 1 ? startX + ic * stepX : gx;
+      p.y = inRows > 1 ? startY + ir * stepY : gy;
+      p.vx = p.vy = 0;
+    });
+  });
+}
+
+/* ----- Force simulation ----- */
+/* ============================================================================
+   FORCE SIMULATION — Barnes-Hut O(n log n) repulsion + freeze-when-settled.
+   The repulsion law matches the original all-pairs version exactly:
+   force on A from B = repulsion*(sizeA+sizeB)/24 / dist^2, directed away from B.
+   Barnes-Hut approximates a distant cluster by its center of mass; validated
+   against brute force (exact as BH_THETA -> 0). Once the layout is calm for a
+   sustained run of frames the sim freezes, so a settled graph costs no CPU
+   until something wakes it (drag, edit, layout change, resize).
+   ========================================================================== */
+const BH_THETA = 0.75;          // opening angle; lower = more accurate, slower
+const BH_THETA2 = BH_THETA * BH_THETA;
+const SIM_SETTLE_EPS = 0.05;    // total per-frame movement below this = "calm"
+const SIM_SETTLE_FRAMES = 60;   // consecutive calm frames before freezing
+let simFrozen = false;
+let simCalmFrames = 0;
+// Wake physics + invalidate the hit-test grid after anything that moves nodes.
+function wakeSim(){ simFrozen = false; simCalmFrames = 0; bumpPos(); requestRedraw(); }
+
+// Quadtree over node positions. `sizes[i]` is node i's radius (its "mass").
+// Each cell carries body count, total mass, and mass-weighted center of mass.
+function buildForceQuad(nodes, P, sizes){
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for (let i=0;i<nodes.length;i++){ const p=P.get(nodes[i].id); if(!p) continue;
+    if(p.x<minX)minX=p.x; if(p.y<minY)minY=p.y; if(p.x>maxX)maxX=p.x; if(p.y>maxY)maxY=p.y; }
+  if (minX===Infinity) return null;
+  const span = Math.max(maxX-minX, maxY-minY, 1) + 1;
+  const MAXD=24, MINW=0.5;
+  const newCell=(x,y,w)=>({x,y,w,body:null,extra:null,kids:null,mass:0,cnt:0,comx:0,comy:0});
+  const quad=(c,x,y)=>(x>=c.x+c.w/2?1:0)+(y>=c.y+c.w/2?2:0);
+  const subdivide=c=>{const hw=c.w/2;c.kids=[newCell(c.x,c.y,hw),newCell(c.x+hw,c.y,hw),newCell(c.x,c.y+hw,hw),newCell(c.x+hw,c.y+hw,hw)];};
+  function insert(c,b,depth){
+    if (c.kids===null && c.body===null){ c.body=b; return; }
+    if (c.kids===null){
+      if (depth>=MAXD || c.w<MINW){ (c.extra||(c.extra=[])).push(b); return; }
+      subdivide(c); const old=c.body; c.body=null;
+      insert(c.kids[quad(c,old.x,old.y)], old, depth+1);
+    }
+    insert(c.kids[quad(c,b.x,b.y)], b, depth+1);
+  }
+  const root = newCell(minX, minY, span);
+  for (let i=0;i<nodes.length;i++){ const p=P.get(nodes[i].id); if(!p) continue;
+    insert(root, { id:nodes[i].id, x:p.x, y:p.y, m:sizes[i] }, 0); }
+  (function mass(c){
+    if (c.kids===null){
+      let m=0,cx=0,cy=0,cnt=0;
+      if (c.body){ m+=c.body.m; cx+=c.body.m*c.body.x; cy+=c.body.m*c.body.y; cnt++; }
+      if (c.extra) for (const b of c.extra){ m+=b.m; cx+=b.m*b.x; cy+=b.m*b.y; cnt++; }
+      c.mass=m; c.cnt=cnt; c.comx=m?cx/m:c.x; c.comy=m?cy/m:c.y; return;
+    }
+    let m=0,cx=0,cy=0,cnt=0;
+    for (const k of c.kids){ mass(k); m+=k.mass; cx+=k.comx*k.mass; cy+=k.comy*k.mass; cnt+=k.cnt; }
+    c.mass=m; c.cnt=cnt; c.comx=m?cx/m:c.x; c.comy=m?cy/m:c.y;
+  })(root);
+  return root;
+}
+// Repulsion on (ax,ay,asize) from the tree, skipping self. Iterative (no
+// recursion overhead) via an explicit stack.
+function bhForce(root, ax, ay, asize, selfId){
+  let fx=0, fy=0;
+  const stack=[root];
+  while (stack.length){
+    const c = stack.pop();
+    if (!c || c.mass===0) continue;
+    if (c.kids===null){
+      if (c.body && c.body.id!==selfId){
+        let dx=ax-c.body.x, dy=ay-c.body.y, d2=dx*dx+dy*dy;
+        if (d2<1){ d2=1; dx=Math.random()-0.5; dy=Math.random()-0.5; }
+        const d=Math.sqrt(d2), fac=(asize+c.body.m)/(d2*d);
+        fx+=dx*fac; fy+=dy*fac;
+      }
+      if (c.extra) for (const b of c.extra){ if (b.id===selfId) continue;
+        let dx=ax-b.x, dy=ay-b.y, d2=dx*dx+dy*dy;
+        if (d2<1){ d2=1; dx=Math.random()-0.5; dy=Math.random()-0.5; }
+        const d=Math.sqrt(d2), fac=(asize+b.m)/(d2*d);
+        fx+=dx*fac; fy+=dy*fac;
+      }
+      continue;
+    }
+    let dx=ax-c.comx, dy=ay-c.comy, d2=dx*dx+dy*dy;
+    if (c.w*c.w < BH_THETA2*d2){
+      if (d2<1) d2=1;
+      const d=Math.sqrt(d2), fac=(asize*c.cnt + c.mass)/(d2*d);
+      fx+=dx*fac; fy+=dy*fac;
+    } else {
+      for (let i=0;i<4;i++) stack.push(c.kids[i]);
+    }
+  }
+  return { fx, fy };
+}
+function simulateStep(){
+  if (state.layout !== "force") return;
+  if (simFrozen) return;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  const nodes = state.graph.nodes, edges = state.graph.edges;
+  if (!nodes.length) return;
+  const P = state.positions;
+  const k = 165, repulsion = 11000, centerStrength = 0.00035, damping = 0.86;
+  const REP = repulsion / 24;
+
+  // Node sizes (masses) into a parallel array — never mutate node objects, so
+  // nothing leaks into the saved JSON.
+  const sizes = new Array(nodes.length);
+  for (let i=0;i<nodes.length;i++) sizes[i] = nodeRadius(nodes[i]);
+  const root = buildForceQuad(nodes, P, sizes);
+
+  for (let i=0;i<nodes.length;i++){
+    const a = P.get(nodes[i].id); if (!a || a.fixed) continue;
+    const r = root ? bhForce(root, a.x, a.y, sizes[i], nodes[i].id) : { fx:0, fy:0 };
+    let fx = REP * r.fx, fy = REP * r.fy;
+    fx += (w/2 - a.x) * centerStrength * 60;
+    fy += (h/2 - a.y) * centerStrength * 60;
+    a.vx = (a.vx + fx*0.01) * damping;
+    a.vy = (a.vy + fy*0.01) * damping;
+  }
+  for (let i=0;i<edges.length;i++){
+    const ed = edges[i];
+    const a = P.get(ed.source), b = P.get(ed.target);
+    if (!a||!b) continue;
+    const dx = b.x-a.x, dy = b.y-a.y;
+    const d = Math.sqrt(dx*dx+dy*dy) || 1;
+    // softer spring so edges don't collapse the graph
+    const f = (d-k)*0.025;
+    const ax = (dx/d)*f, ay = (dy/d)*f;
+    if (!a.fixed){ a.vx += ax; a.vy += ay; }
+    if (!b.fixed){ b.vx -= ax; b.vy -= ay; }
+  }
+  let movement = 0;
+  nodes.forEach(n=>{
+    const p = P.get(n.id);
+    if (p.fixed || state.draggedNode===n.id) return;
+    p.x += p.vx; p.y += p.vy;
+    movement += Math.abs(p.vx) + Math.abs(p.vy);
+  });
+  if (movement < SIM_SETTLE_EPS){
+    if (++simCalmFrames >= SIM_SETTLE_FRAMES) simFrozen = true;
+  } else {
+    simCalmFrames = 0;
+    bumpPos();         // positions changed -> hit-test grid is stale
+    requestRedraw();
+  }
+}
+
+/* ----- Drawing primitives ----- */
+function drawArrow(x1,y1,x2,y2,size){
+  const angle = Math.atan2(y2-y1, x2-x1);
+  ctx.beginPath();
+  ctx.moveTo(x2,y2);
+  ctx.lineTo(x2 - size*Math.cos(angle-Math.PI/6), y2 - size*Math.sin(angle-Math.PI/6));
+  ctx.lineTo(x2 - size*Math.cos(angle+Math.PI/6), y2 - size*Math.sin(angle+Math.PI/6));
+  ctx.closePath(); ctx.fill();
+}
+function roundRect(ctx,x,y,w,h,r){
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+}
+function drawShape(shape,x,y,size,color,glow){
+  if (glow){ ctx.shadowColor = color; ctx.shadowBlur = 18; } else { ctx.shadowBlur = 0; }
+  ctx.fillStyle = color;
+  ctx.strokeStyle = CANVAS_COLORS.nodeBorder;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  if (shape==="round") ctx.arc(x,y,size,0,Math.PI*2);
+  else if (shape==="square"){ const r=size*0.18, s=size*1.7; roundRect(ctx,x-s/2,y-s/2,s,s,r); }
+  else if (shape==="diamond"){ ctx.moveTo(x,y-size); ctx.lineTo(x+size,y); ctx.lineTo(x,y+size); ctx.lineTo(x-size,y); ctx.closePath(); }
+  else if (shape==="tri"){ ctx.moveTo(x,y-size); ctx.lineTo(x+size*0.95,y+size*0.7); ctx.lineTo(x-size*0.95,y+size*0.7); ctx.closePath(); }
+  else if (shape==="hex"){
+    for (let i=0;i<6;i++){
+      const a = Math.PI/3*i - Math.PI/6;
+      const px = x+Math.cos(a)*size, py = y+Math.sin(a)*size;
+      if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+    }
+    ctx.closePath();
+  } else ctx.arc(x,y,size,0,Math.PI*2);
+  ctx.fill(); ctx.stroke();
+  ctx.shadowBlur = 0;
+}
+function nodeRadius(n){ return typeStyle(n.type).size; }
+
+function render(){
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  ctx.clearRect(0,0,w,h);
+  const t = state.transform;
+  ctx.save();
+  ctx.translate(t.x, t.y); ctx.scale(t.scale, t.scale);
+
+  const visN = new Set(); visibleNodes().forEach(n => visN.add(n.id));
+  const visE = visibleEdges();
+
+  let highlighted = null;
+  // Path-finding result takes priority over selection-neighborhood
+  const pathActive = state.pathFinding.pathNodes.size > 0;
+  if (pathActive){
+    highlighted = state.pathFinding.pathNodes;
+  } else {
+    const focusId = state.selectedNode || state.hoveredNode;
+    if (focusId){
+      highlighted = new Set([focusId]);
+      state.graph.edges.forEach(e=>{
+        if (e.source===focusId) highlighted.add(e.target);
+        if (e.target===focusId) highlighted.add(e.source);
+      });
+    }
+  }
+  const focusId = state.selectedNode || state.hoveredNode;
+  const searchHits = new Set();
+  if (state.search){
+    state.graph.nodes.forEach(n=>{ if (nodeMatchesSearch(n)) searchHits.add(n.id); });
+  }
+
+  // edges
+  visE.forEach(e=>{
+    const a = state.positions.get(e.source), b = state.positions.get(e.target);
+    if (!a||!b) return;
+    const isSel = state.selectedEdge === e.id;
+    const isHov = state.hoveredEdge === e.id;
+    let inv, dim;
+    if (pathActive){
+      inv = state.pathFinding.pathEdges.has(e.id);
+      dim = !inv;
+    } else {
+      inv = highlighted && (highlighted.has(e.source) && highlighted.has(e.target) &&
+                            (e.source===focusId || e.target===focusId));
+      dim = highlighted && !inv;
+    }
+    const es = edgeStyle(e.type);
+
+    let color = (state.dimEdges && !inv) ? muteEdgeColor(es.color) : es.color, width = es.width;
+    if (inv){ color = CANVAS_COLORS.edgeHighlight; width = es.width + 1; }
+    if (isHov){ color = CANVAS_COLORS.edgeHover; width = es.width + 1.2; }
+    if (isSel){ color = CANVAS_COLORS.edgeSelected; width = es.width + 1.6; }
+    if (dim){ color = CANVAS_COLORS.edgeDim; width = es.width * 0.9; }
+    const isRisky = state.flaggedEdges && state.flaggedEdges.has(e.id);
+    if (isRisky && !isSel){ color = "#F59E0B"; if (!dim) width = Math.max(width, es.width + 0.6); }
+
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width;
+    ctx.setLineDash(isSel ? [] : (isRisky ? [6,4] : (es.dash || [])));
+    // Marching-ants animation for edges touching the selected node.
+    // Negative dashOffset = forward flow (source -> target). Path-finder
+    // mode owns its own dash treatment, so skip animation there.
+    const animateThisEdge = state.selectedNode && !pathActive &&
+      (e.source === state.selectedNode || e.target === state.selectedNode);
+    if (animateThisEdge){
+      ctx.setLineDash([10, 5]);
+      // Static dashes under prefers-reduced-motion (WCAG 2.3.3 / 2.2.2):
+      // the connection still reads as dashed, it just doesn't march.
+      ctx.lineDashOffset = PREFERS_REDUCED_MOTION ? 0 : -(performance.now() / 70) % 15;
+    }
+
+    const dx = b.x-a.x, dy = b.y-a.y;
+    const len = Math.sqrt(dx*dx+dy*dy) || 1;
+    const offset = Math.min(20, len*0.08);
+    const nx = -dy/len, ny = dx/len;
+    const mx = (a.x+b.x)/2, my = (a.y+b.y)/2;
+    const cpx = mx + nx*offset, cpy = my + ny*offset;
+    const tr = nodeRadius(findNode(e.target));
+    const ang = Math.atan2(b.y-cpy, b.x-cpx);
+    const ex = b.x - Math.cos(ang)*(tr+4), ey = b.y - Math.sin(ang)*(tr+4);
+
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.quadraticCurveTo(cpx, cpy, ex, ey);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+    drawArrow(cpx, cpy, ex, ey, isSel ? 9 : 7);
+
+    if ((isSel || isHov || (t.scale >= 0.9 && inv) || (state.showAllEdgeLabels && t.scale >= 0.55)) && !dim){
+      ctx.save();
+      const lx = (a.x+b.x)/2 + nx*(offset+8);
+      const ly = (a.y+b.y)/2 + ny*(offset+8);
+      ctx.font = '500 10px "Inter", system-ui, sans-serif';
+      const text = e.type;
+      const tw = ctx.measureText(text).width;
+      ctx.fillStyle = CANVAS_COLORS.labelBgEdge;
+      ctx.fillRect(lx-tw/2-4, ly-8, tw+8, 14);
+      ctx.fillStyle = isSel ? CANVAS_COLORS.labelTextEdgeSel : CANVAS_COLORS.labelTextEdge;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(text, lx, ly);
+      ctx.restore();
+    }
+  });
+
+  // connecting-mode preview line
+  if (state.connectingFrom && state.lastMouse){
+    const a = state.positions.get(state.connectingFrom);
+    if (a){
+      const wp = screenToWorld(state.lastMouse.x, state.lastMouse.y);
+      ctx.save();
+      ctx.strokeStyle = CANVAS_COLORS.connectingLine;
+      ctx.fillStyle = CANVAS_COLORS.connectingLine;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6,4]);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(wp.x, wp.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      drawArrow(a.x, a.y, wp.x, wp.y, 9);
+      ctx.restore();
+    }
+  }
+
+  // nodes
+  const now = performance.now();
+  state.graph.nodes.forEach(n=>{
+    if (!visN.has(n.id)) return;
+    const p = state.positions.get(n.id);
+    if (!p) return;
+    const ts = typeStyle(n.type);
+    const isSel = state.selectedNode === n.id;
+    const isHov = state.hoveredNode === n.id;
+    const isCFrom = state.connectingFrom === n.id;
+    const dim = highlighted && !highlighted.has(n.id);
+    const isHit = searchHits.has(n.id);
+
+    let color = dim ? CANVAS_COLORS.nodeDim : ts.color;
+    if (!dim){
+      if (state.heatmap) color = heatColor(n);
+      if (state.whatif.active){
+        if (state.whatif.disabled.has(n.id)) color = "#475569";
+        else if (state.whatif.orphaned.has(n.id)) color = "#F59E0B";
+        else if (state.whatif.affected.has(n.id)) color = "#EF4444";
+      }
+    }
+    let size = ts.size;
+    if (isSel) size *= 1.18;
+    if (isHov) size *= 1.1;
+
+    const pulse = isHit && now < state.searchPulseUntil;
+    if (pulse){
+      const f = (Math.sin(now*0.006)+1)/2;
+      ctx.shadowColor = ts.color;
+      ctx.shadowBlur = 12 + 16*f;
+    }
+    drawShape(ts.shape, p.x, p.y, size, color, isSel||isHov||pulse||isCFrom);
+
+    // icon overlay (uses per-node override or type default)
+    if (state.fontsReady && t.scale > 0.35 && !dim){
+      const spec = iconSpec(n);
+      const iconSize = Math.max(8, size*0.85);
+      const fg = iconFgFor(ts.color);
+      const yOff = (ts.shape==="tri" ? size*0.15 : 0);
+      if (spec.kind === "svg"){
+        drawIconSvg(ctx, spec, p.x, p.y + yOff, iconSize, fg);
+      } else if (spec.unicode){
+        ctx.save();
+        ctx.font = `${spec.weight} ${iconSize}px ${spec.font}`;
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillStyle = fg;
+        ctx.fillText(spec.unicode, p.x, p.y + yOff);
+        ctx.restore();
+      }
+    }
+
+    if (isCFrom){
+      ctx.strokeStyle = CANVAS_COLORS.ringConnecting;
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([4,3]);
+      ctx.beginPath(); ctx.arc(p.x, p.y, size+8, 0, Math.PI*2); ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (isSel){
+      ctx.strokeStyle = CANVAS_COLORS.ringSelected;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(p.x, p.y, size+6, 0, Math.PI*2); ctx.stroke();
+    } else if (isHov){
+      ctx.strokeStyle = CANVAS_COLORS.ringHover;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p.x, p.y, size+4, 0, Math.PI*2); ctx.stroke();
+    }
+    // Multi-selection ring (cyan dashed)
+    if (state.multiSelect.has(n.id)){
+      ctx.save();
+      ctx.strokeStyle = "#22D3EE"; ctx.lineWidth = 2.5; ctx.setLineDash([5,3]);
+      ctx.beginPath(); ctx.arc(p.x, p.y, size+7, 0, Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
+    // Single-point-of-failure marker (amber double ring)
+    if (state.spof.has(n.id)){
+      ctx.save();
+      ctx.strokeStyle = "#FBBF24"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(p.x, p.y, size+10, 0, Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
+    // What-if disabled marker (red X)
+    if (state.whatif.active && state.whatif.disabled.has(n.id)){
+      ctx.save();
+      ctx.strokeStyle = "#F87171"; ctx.lineWidth = 2.5;
+      const rr = size*0.7;
+      ctx.beginPath(); ctx.moveTo(p.x-rr,p.y-rr); ctx.lineTo(p.x+rr,p.y+rr);
+      ctx.moveTo(p.x+rr,p.y-rr); ctx.lineTo(p.x-rr,p.y+rr); ctx.stroke();
+      ctx.restore();
+    }
+
+    // Collapsed-branch badge: small amber pill with the hidden count
+    if (isCollapsed(n.id) && t.scale > 0.4){
+      const hidden = state.collapseCounts.get(n.id) || 0;
+      const label = "+" + hidden;
+      ctx.save();
+      ctx.font = '700 10px "Inter", system-ui, sans-serif';
+      const padX = 5;
+      const tw = ctx.measureText(label).width + padX * 2;
+      const bx = p.x + size * 0.4, by = p.y + size * 0.95;
+      // pill background
+      ctx.fillStyle = "#FBBF24";
+      const r = 8;
+      ctx.beginPath();
+      ctx.moveTo(bx + r, by);
+      ctx.arcTo(bx + tw, by, bx + tw, by + 16, r);
+      ctx.arcTo(bx + tw, by + 16, bx, by + 16, r);
+      ctx.arcTo(bx, by + 16, bx, by, r);
+      ctx.arcTo(bx, by, bx + tw, by, r);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#04101F";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, bx + tw / 2, by + 8);
+      ctx.restore();
+    }
+    // Pin indicator for nodes manually anchored via layout mode / shift+drag
+    if (p.pinned && state.fontsReady && t.scale > 0.5){
+      ctx.save();
+      const px = p.x + size * 0.75, py = p.y - size * 0.75;
+      // small accent disc behind the icon
+      ctx.fillStyle = "rgba(11,18,32,0.85)";
+      ctx.beginPath(); ctx.arc(px, py, 7, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = "#FBBF24";
+      ctx.font = '900 9px "Font Awesome 6 Free"';
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("", px, py); // fa-thumbtack
+      ctx.restore();
+    }
+    // label
+    if (t.scale > 0.45 || isSel || isHov){
+      ctx.font = (isSel?"700 ":"500 ") + (ts.size>18?"12.5px":"11.5px") + ' "Inter", system-ui, sans-serif';
+      ctx.textAlign = "center"; ctx.textBaseline = "top";
+      const ly = p.y + size + 5;
+      const text = n.label;
+      const tw = ctx.measureText(text).width;
+      ctx.fillStyle = CANVAS_COLORS.labelBg;
+      ctx.fillRect(p.x - tw/2 - 4, ly-1, tw+8, 14);
+      ctx.fillStyle = dim ? CANVAS_COLORS.labelTextDim : (isSel ? CANVAS_COLORS.labelTextSelected : CANVAS_COLORS.labelText);
+      ctx.fillText(text, p.x, ly);
+    }
+  });
+
+  ctx.restore();
+
+  // Lasso selection rectangle (screen space, after transform restore)
+  if (state.dragMode === "lasso" && state.selectBox){
+    const b = state.selectBox;
+    const x = Math.min(b.x0,b.x1), y = Math.min(b.y0,b.y1);
+    const bw = Math.abs(b.x1-b.x0), bh = Math.abs(b.y1-b.y0);
+    ctx.save();
+    ctx.fillStyle = "rgba(34,211,238,0.12)";
+    ctx.strokeStyle = "#22D3EE"; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
+    ctx.fillRect(x,y,bw,bh); ctx.strokeRect(x,y,bw,bh);
+    ctx.restore();
+  }
+}
+
+function tick(){
+  const wasMoving = needsRedraw;
+  simulateStep();
+  // Continue redrawing while a node is selected so the connected-edge
+  // marching-ants animation has frames. Also drives normal force/redraw paths.
+  if (needsRedraw || (state.layout === "force" && !simFrozen) || state.selectedNode){
+    render(); needsRedraw = false;
+  }
+  // Track stillness; pause rAF when nothing's happening to save battery
+  const interacting = state.draggedNode || state.dragMode || state.connectingFrom;
+  if (!wasMoving && state.layout !== "force" && !interacting) settleCounter++;
+  else if (state.layout === "force" && !interacting) {
+    // force layout: pause once the simulation cools below movement threshold
+    // simulateStep() will requestRedraw whenever movement > 0.05
+    settleCounter++;
+  } else {
+    settleCounter = 0;
+  }
+  // Selection keeps animation alive — never let settleCounter pause us
+  if (state.selectedNode) settleCounter = 0;
+  if (settleCounter > SETTLE_THRESHOLD){
+    rafActive = false;
+    return;
+  }
+  requestAnimationFrame(tick);
+}
+
+/* ----- Hit testing ----- */
+function screenToWorld(x,y){
+  return { x:(x-state.transform.x)/state.transform.scale, y:(y-state.transform.y)/state.transform.scale };
+}
+/* ----- Spatial hash for hit-testing -----
+   A uniform grid over node positions so pickNode searches only the cursor's
+   cell + 8 neighbors instead of every node. Rebuilt lazily, and only when
+   positions actually changed (tracked by posStamp), so a settled graph reuses
+   the cached grid while panning/zooming/hovering. Validated identical to the
+   old linear scan, including topmost-wins ordering. */
+const PICK_CELL = 80;
+let pickGrid = null, pickGridStamp = -1, pickGridN = -1;
+let posStamp = 0;
+function bumpPos(){ posStamp++; }
+function buildPickGrid(){
+  const nodes = state.graph.nodes;
+  pickGrid = new Map();
+  for (let i=0;i<nodes.length;i++){
+    const p = state.positions.get(nodes[i].id); if (!p) continue;
+    const key = Math.floor(p.x/PICK_CELL) + "," + Math.floor(p.y/PICK_CELL);
+    let arr = pickGrid.get(key); if (!arr){ arr=[]; pickGrid.set(key, arr); }
+    arr.push(i); // store node index so topmost (highest index) can win ties
+  }
+  pickGridN = nodes.length;
+}
+function ensurePickGrid(){
+  if (!pickGrid || pickGridStamp !== posStamp || pickGridN !== state.graph.nodes.length){
+    buildPickGrid();
+    pickGridStamp = posStamp;
+  }
+}
+function pickNode(sx,sy){
+  const w = screenToWorld(sx,sy);
+  ensurePickGrid();
+  const nodes = state.graph.nodes;
+  const cx = Math.floor(w.x/PICK_CELL), cy = Math.floor(w.y/PICK_CELL);
+  let best = null, bestIdx = -1;
+  for (let gx=cx-1; gx<=cx+1; gx++){
+    for (let gy=cy-1; gy<=cy+1; gy++){
+      const arr = pickGrid.get(gx+","+gy); if (!arr) continue;
+      for (let a=0;a<arr.length;a++){
+        const i = arr[a]; const n = nodes[i];
+        if (i <= bestIdx) continue;            // a lower node can't win
+        if (!isVisibleNode(n)) continue;
+        const p = state.positions.get(n.id); if (!p) continue;
+        const r = nodeRadius(n)+4;
+        const dx = w.x-p.x, dy = w.y-p.y;
+        if (dx*dx + dy*dy <= r*r){ best = n; bestIdx = i; }
+      }
+    }
+  }
+  return best;
+}
+function pickEdge(sx,sy){
+  const w = screenToWorld(sx,sy);
+  // Tolerance in SCREEN pixels (converted to world units) so edges stay
+  // clickable when zoomed out and don't grow a huge slop zone zoomed in.
+  const tol = 6 / (state.transform.scale || 1);
+  const edges = state.graph.edges;
+  for (let i=edges.length-1;i>=0;i--){
+    const e = edges[i]; if (!isVisibleEdge(e)) continue;
+    const a = state.positions.get(e.source), b = state.positions.get(e.target);
+    if (!a||!b) continue;
+    if (pointToEdgeCurveDist(w.x, w.y, a, b) < tol) return e;
+  }
+  return null;
+}
+// Distance from a point to the quadratic curve the renderer actually draws
+// (control point offset perpendicular from the chord midpoint — keep in sync
+// with the geometry in render()). Sampled as a polyline; 16 segments is well
+// within tolerance for curves whose max bow is 20 world px.
+function pointToEdgeCurveDist(px, py, a, b){
+  const dx = b.x-a.x, dy = b.y-a.y;
+  const len = Math.sqrt(dx*dx+dy*dy) || 1;
+  const offset = Math.min(20, len*0.08);
+  const nx = -dy/len, ny = dx/len;
+  const cpx = (a.x+b.x)/2 + nx*offset, cpy = (a.y+b.y)/2 + ny*offset;
+  let best = Infinity, lx = a.x, ly = a.y;
+  const STEPS = 16;
+  for (let i=1;i<=STEPS;i++){
+    const t = i/STEPS, mt = 1-t;
+    const x = mt*mt*a.x + 2*mt*t*cpx + t*t*b.x;
+    const y = mt*mt*a.y + 2*mt*t*cpy + t*t*b.y;
+    const d = pointToSegmentDist(px, py, lx, ly, x, y);
+    if (d < best) best = d;
+    lx = x; ly = y;
+  }
+  return best;
+}
+function pointToSegmentDist(px,py,x1,y1,x2,y2){
+  const dx = x2-x1, dy = y2-y1, len2 = dx*dx+dy*dy;
+  if (len2===0) return Math.hypot(px-x1, py-y1);
+  let t = ((px-x1)*dx + (py-y1)*dy)/len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1+t*dx), py - (y1+t*dy));
+}
+
+/* ----- Mouse interaction ----- */
+let tooltipTimer = null;
+canvas.addEventListener("mousedown", ev=>{
+  if (ev.button === 2) return; // right-click handled separately
+  hideContextMenu();
+  const rect = canvas.getBoundingClientRect();
+  const sx = ev.clientX-rect.left, sy = ev.clientY-rect.top;
+  state.lastMouse = { x:sx, y:sy };
+
+  const hit = pickNode(sx, sy);
+  // What-if scenario mode: clicking a node toggles its disabled state.
+  // Empty-canvas drags still pan so distant nodes stay reachable mid-mode.
+  if (state.whatif.active){
+    if (hit) toggleWhatifNode(hit.id);
+    else { state.dragMode = "pan"; canvas.classList.add("dragging"); }
+    return;
+  }
+  // Ctrl/Cmd+click toggles a node's membership in the multi-selection
+  if ((ev.ctrlKey || ev.metaKey) && hit){
+    toggleMultiSelect(hit.id);
+    return;
+  }
+  if (state.connectingFrom){
+    if (hit && hit.id !== state.connectingFrom){
+      openConnectModal(state.connectingFrom, hit.id);
+    } else if (!hit){
+      // empty canvas: pan, so the target node can be reached mid-connect
+      state.dragMode = "pan"; canvas.classList.add("dragging");
+    } else {
+      showToast("Pick a different node as target", "err");
+    }
+    return;
+  }
+  if (state.pathFinding.active){
+    if (!hit){ state.dragMode = "pan"; canvas.classList.add("dragging"); return; }
+    if (!state.pathFinding.source){
+      state.pathFinding.source = hit.id;
+      showPathBanner();
+      return;
+    }
+    if (hit.id === state.pathFinding.source){
+      showToast("Pick a different node as target", "err");
+      return;
+    }
+    const steps = findShortestPath(state.pathFinding.source, hit.id);
+    if (!steps){
+      const a = findNode(state.pathFinding.source), b = hit;
+      showToast("No path between " + (a?a.label:"?") + " and " + b.label + " in either direction", "err");
+      cancelPathFinding();
+      return;
+    }
+    const srcId = state.pathFinding.source;
+    applyFoundPath(steps, srcId, hit.id);
+    const hopCount = steps.filter(s=>s.type==="edge").length;
+    showToast("Path found · " + hopCount + " hop" + (hopCount===1?"":"s"), "ok");
+    requestRedraw();
+    return;
+  }
+  if (hit){
+    state.draggedNode = hit.id;
+    state.dragMode = "node";
+    // Shift+drag OR layout-mode = reposition without changing selection / opening details panel
+    const isLayoutDrag = ev.shiftKey || state.layoutMode;
+    if (!isLayoutDrag){
+      selectNode(hit.id);
+    }
+    const p = state.positions.get(hit.id);
+    if (p){
+      p.fixed = true;
+      // Permanent pin so the force sim doesn't pull the node back after release
+      if (isLayoutDrag) p.pinned = true;
+    }
+  } else {
+    const e = pickEdge(sx, sy);
+    if (e) selectEdge(e.id);
+    else if (ev.shiftKey){ state.dragMode = "lasso"; state.selectBox = { x0:sx, y0:sy, x1:sx, y1:sy }; }
+    else { state.dragMode = "pan"; canvas.classList.add("dragging"); }
+  }
+});
+canvas.addEventListener("mousemove", ev=>{
+  // any mouse activity wakes the rAF loop
+  if (!rafActive){ rafActive = true; requestAnimationFrame(tick); }
+  const rect = canvas.getBoundingClientRect();
+  const sx = ev.clientX-rect.left, sy = ev.clientY-rect.top;
+  const dx = sx - state.lastMouse.x, dy = sy - state.lastMouse.y;
+  state.lastMouse = { x:sx, y:sy };
+
+  if (state.connectingFrom){ requestRedraw(); }
+
+  if (state.dragMode === "lasso" && state.selectBox){
+    state.selectBox.x1 = sx; state.selectBox.y1 = sy;
+    requestRedraw(); return;
+  }
+  if (state.dragMode === "pan"){
+    state.transform.x += dx; state.transform.y += dy;
+    requestRedraw(); return;
+  }
+  if (state.dragMode === "node" && state.draggedNode){
+    const p = state.positions.get(state.draggedNode);
+    if (p){ p.x += dx/state.transform.scale; p.y += dy/state.transform.scale; p.vx = p.vy = 0; }
+    wakeSim(); return;
+  }
+  const hit = pickNode(sx,sy);
+  if (hit){
+    if (state.hoveredNode !== hit.id){
+      state.hoveredNode = hit.id; state.hoveredEdge = null;
+      document.getElementById("footer-hover").textContent = hit.label + " · " + hit.type;
+      requestRedraw();
+    }
+    scheduleTooltip(hit, ev.clientX, ev.clientY);
+  } else {
+    hideTooltip();
+    const e = pickEdge(sx,sy);
+    if (e){
+      if (state.hoveredEdge !== e.id){
+        state.hoveredEdge = e.id; state.hoveredNode = null;
+        document.getElementById("footer-hover").textContent = e.type + " · " + (findNode(e.source)||{}).label + " → " + (findNode(e.target)||{}).label;
+        requestRedraw();
+      }
+    } else if (state.hoveredNode || state.hoveredEdge){
+      state.hoveredNode = null; state.hoveredEdge = null;
+      document.getElementById("footer-hover").textContent = "Hover a node to inspect";
+      requestRedraw();
+    }
+  }
+});
+canvas.addEventListener("mouseup", ()=>{
+  if (state.dragMode === "lasso" && state.selectBox){
+    commitLassoSelection();
+    state.selectBox = null; state.dragMode = null;
+    return;
+  }
+  if (state.draggedNode){
+    const p = state.positions.get(state.draggedNode);
+    if (p && !p.pinned) p.fixed = false;  // pinned nodes stay anchored after release
+    schedulePositionPersist(); // re-arrangements survive reload without a data edit
+  }
+  state.draggedNode = null; state.dragMode = null;
+  canvas.classList.remove("dragging");
+});
+canvas.addEventListener("mouseleave", ()=>{
+  if (state.draggedNode){
+    const p = state.positions.get(state.draggedNode);
+    if (p && !p.pinned) p.fixed = false;
+  }
+  state.draggedNode = null; state.dragMode = null;
+  canvas.classList.remove("dragging");
+  hideTooltip();
+});
+canvas.addEventListener("wheel", ev=>{
+  ev.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const sx = ev.clientX-rect.left, sy = ev.clientY-rect.top;
+  const factor = ev.deltaY > 0 ? 0.9 : 1.1;
+  const ns = Math.min(4, Math.max(0.15, state.transform.scale * factor));
+  const wx = (sx - state.transform.x)/state.transform.scale;
+  const wy = (sy - state.transform.y)/state.transform.scale;
+  state.transform.scale = ns;
+  state.transform.x = sx - wx*ns;
+  state.transform.y = sy - wy*ns;
+  updateZoomLabel();
+  requestRedraw();
+}, { passive:false });
+
+// Canvas keyboard navigation
+function navigateNode(direction){
+  const nodes = visibleNodes();
+  if (!nodes.length) return;
+  if (!state.selectedNode){
+    // pick top-left-most visible node
+    let pick = nodes[0]; let bestY = Infinity, bestX = Infinity;
+    nodes.forEach(n => {
+      const p = state.positions.get(n.id);
+      if (!p) return;
+      if (p.y < bestY || (p.y === bestY && p.x < bestX)){ pick = n; bestY = p.y; bestX = p.x; }
+    });
+    selectNode(pick.id); centerOnNode(pick.id); return;
+  }
+  if (direction === "next" || direction === "prev"){
+    const sorted = nodes.slice().sort((a,b)=>{
+      const pa = state.positions.get(a.id), pb = state.positions.get(b.id);
+      return (pa.y - pb.y) || (pa.x - pb.x);
+    });
+    const idx = sorted.findIndex(n => n.id === state.selectedNode);
+    const nextIdx = direction === "next"
+      ? (idx + 1) % sorted.length
+      : (idx - 1 + sorted.length) % sorted.length;
+    selectNode(sorted[nextIdx].id); centerOnNode(sorted[nextIdx].id);
+    return;
+  }
+  // arrow keys: pick nearest visible node in that direction
+  const p0 = state.positions.get(state.selectedNode);
+  if (!p0) return;
+  const isUp = direction === "up", isDown = direction === "down",
+        isLeft = direction === "left", isRight = direction === "right";
+  let best = null, bestScore = Infinity;
+  nodes.forEach(n => {
+    if (n.id === state.selectedNode) return;
+    const p = state.positions.get(n.id); if (!p) return;
+    const dx = p.x - p0.x, dy = p.y - p0.y;
+    let inDir = false;
+    if (isUp    && dy < -5 && Math.abs(dy) > Math.abs(dx)*0.5) inDir = true;
+    if (isDown  && dy >  5 && Math.abs(dy) > Math.abs(dx)*0.5) inDir = true;
+    if (isLeft  && dx < -5 && Math.abs(dx) > Math.abs(dy)*0.5) inDir = true;
+    if (isRight && dx >  5 && Math.abs(dx) > Math.abs(dy)*0.5) inDir = true;
+    if (!inDir) return;
+    const score = Math.hypot(dx, dy);
+    if (score < bestScore){ bestScore = score; best = n; }
+  });
+  if (best){ selectNode(best.id); centerOnNode(best.id); }
+}
+canvas.addEventListener("keydown", ev=>{
+  if (state.present.active) return;
+  const key = ev.key;
+  if (key === "ArrowUp")    { ev.preventDefault(); navigateNode("up"); }
+  else if (key === "ArrowDown")  { ev.preventDefault(); navigateNode("down"); }
+  else if (key === "ArrowLeft")  { ev.preventDefault(); navigateNode("left"); }
+  else if (key === "ArrowRight") { ev.preventDefault(); navigateNode("right"); }
+  // NOTE: Tab is deliberately NOT intercepted — hijacking it created a WCAG
+  // 2.1.2 keyboard trap (focus could never leave the canvas). Cycle nodes
+  // with [ and ] (or PageUp/PageDown) instead; arrows do spatial navigation.
+  else if (key === "]" || key === "PageDown"){ ev.preventDefault(); navigateNode("next"); }
+  else if (key === "[" || key === "PageUp")  { ev.preventDefault(); navigateNode("prev"); }
+  else if (key === "Enter" || key === " "){
+    if (state.selectedNode){ ev.preventDefault(); centerOnNode(state.selectedNode); }
+  }
+  // Keyboard path to the context menu (Shift+F10 / dedicated ContextMenu key)
+  else if (key === "ContextMenu" || (ev.shiftKey && key === "F10")){
+    if (!state.selectedNode && !state.selectedEdge) return;
+    ev.preventDefault();
+    ctxReturnFocus = canvas;
+    const rect = canvas.getBoundingClientRect();
+    const t = state.transform;
+    if (state.selectedNode){
+      const n = findNode(state.selectedNode), p = state.positions.get(state.selectedNode);
+      if (n && p) showNodeContextMenu(rect.left + p.x*t.scale + t.x, rect.top + p.y*t.scale + t.y, n);
+    } else {
+      const e = findEdge(state.selectedEdge);
+      const a = e && state.positions.get(e.source), b = e && state.positions.get(e.target);
+      if (e && a && b) showEdgeContextMenu(rect.left + (a.x+b.x)/2*t.scale + t.x, rect.top + (a.y+b.y)/2*t.scale + t.y, e);
+    }
+    const first = document.querySelector("#ctx-menu .ctx-item");
+    if (first) first.focus();
+  }
+});
+
+canvas.addEventListener("contextmenu", ev=>{
+  ev.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const sx = ev.clientX-rect.left, sy = ev.clientY-rect.top;
+  const hitN = pickNode(sx, sy);
+  if (hitN){ selectNode(hitN.id); showNodeContextMenu(ev.clientX, ev.clientY, hitN); return; }
+  const hitE = pickEdge(sx, sy);
+  if (hitE){ selectEdge(hitE.id); showEdgeContextMenu(ev.clientX, ev.clientY, hitE); return; }
+  showCanvasContextMenu(ev.clientX, ev.clientY, sx, sy);
+});
+
+function updateZoomLabel(){ document.getElementById("footer-zoom").textContent = "Zoom: " + Math.round(state.transform.scale*100) + "%"; }
+
+function fitGraph(){
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  const nodes = visibleNodes(); if (!nodes.length) return;
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  nodes.forEach(n=>{
+    const p = state.positions.get(n.id); if (!p) return;
+    if (p.x<minX) minX=p.x; if (p.y<minY) minY=p.y;
+    if (p.x>maxX) maxX=p.x; if (p.y>maxY) maxY=p.y;
+  });
+  const pad = 90;
+  const gw = (maxX-minX)||1, gh = (maxY-minY)||1;
+  // cap zoom-in so dense graphs aren't shown at impossible scale
+  const s = Math.min((w-pad*2)/gw, (h-pad*2)/gh, 1.1);
+  state.transform.scale = s;
+  state.transform.x = pad - minX*s + (w - pad*2 - gw*s)/2;
+  state.transform.y = pad - minY*s + (h - pad*2 - gh*s)/2;
+  updateZoomLabel(); requestRedraw();
+}
+function resetView(){ state.transform = { x:0, y:0, scale:1 }; updateZoomLabel(); requestRedraw(); }
+function centerOnNode(id){
+  const p = state.positions.get(id); if (!p) return;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  state.transform.x = w/2 - p.x*state.transform.scale;
+  state.transform.y = h/2 - p.y*state.transform.scale;
+  updateZoomLabel(); requestRedraw();
+}
+
+/* ----- Selection ----- */
+function announceSelection(id){
+  const live = document.getElementById("a11y-live");
+  if (!live) return;
+  const n = findNode(id);
+  if (!n){ live.textContent = ""; return; }
+  const rels = state.graph.edges.filter(e => e.source === id || e.target === id);
+  const summary = rels.length ? (rels.length + " relationship" + (rels.length === 1 ? "" : "s")) : "no relationships";
+  live.textContent = n.label + ", " + n.type + ". " + summary + ".";
+}
+function selectNode(id){ state.selectedNode = id; state.selectedEdge = null; state.multiSelect.clear(); renderDetails(); updateStats(); requestRedraw(); pushRecentNode(id); announceSelection(id); }
+function selectEdge(id){ state.selectedEdge = id; state.selectedNode = null; state.multiSelect.clear(); renderDetails(); updateStats(); requestRedraw(); }
+function clearSelection(){
+  state.selectedNode = state.selectedEdge = null;
+  state.showNeighborhoodOnly = false;
+  state.multiSelect.clear();
+  renderDetails(); updateStats(); requestRedraw();
+}
+
+/* ----- Tooltip ----- */
+// Human-readable edit age. Gives the staleness heatmap a non-color
+// representation (WCAG 1.4.1): the same information appears as text in the
+// tooltip and node profile.
+function timeAgo(iso){
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (isNaN(ms)) return null;
+  const days = Math.floor(ms / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return days + " days ago";
+  const months = Math.floor(days / 30);
+  if (months < 12) return months + " month" + (months===1?"":"s") + " ago";
+  const years = Math.floor(months / 12);
+  return years + " year" + (years===1?"":"s") + " ago";
+}
+function scheduleTooltip(node, clientX, clientY){
+  clearTimeout(tooltipTimer);
+  tooltipTimer = setTimeout(()=>{
+    const el = document.getElementById("tooltip");
+    const ts = typeStyle(node.type);
+    const meta = [];
+    const tipOwner = effectiveOwner(node);
+    const tipLead = effectiveLead(node);
+    const tipPlatform = effectivePlatform(node);
+    if (tipOwner) meta.push("Owner: " + tipOwner);
+    if (tipLead) meta.push("Lead: " + tipLead);
+    if (tipPlatform) meta.push("Platform: " + tipPlatform);
+    const tipAge = timeAgo(node.updatedAt);
+    if (tipAge) meta.push("Edited " + tipAge);
+    el.innerHTML = `<div class="tooltip-title">${escapeHtml(node.label)}</div>
+      <div class="tooltip-type"><i class="fa-solid" style="color:${ts.color}">${ts.icon||""}</i> ${escapeHtml(node.type)}</div>
+      ${node.description ? `<div class="tooltip-meta">${escapeHtml(node.description.slice(0,120))}${node.description.length>120?"…":""}</div>`:""}
+      ${meta.length ? `<div class="tooltip-meta">${meta.map(escapeHtml).join(" · ")}</div>`:""}`;
+    el.style.left = clientX + "px";
+    el.style.top = (clientY - 12) + "px";
+    el.classList.add("show");
+  }, 320);
+}
+function hideTooltip(){
+  clearTimeout(tooltipTimer);
+  document.getElementById("tooltip").classList.remove("show");
+}
+
+/* ============================================================================
+   DETAILS PANEL
+   ============================================================================ */
+const PROFILE_SECTIONS = [
+  { title:"Parent / Containers",        icon:"fa-folder-tree",     test:(n,r)=>r.dir==="in"  && (r.edge.type==="CONTAINS"||r.edge.type==="PART_OF") },
+  { title:"Children / Contained",       icon:"fa-folder-open",     test:(n,r)=>r.dir==="out" && (r.edge.type==="CONTAINS"||r.edge.type==="PART_OF") },
+  { title:"Reports To",                 icon:"fa-arrow-up-from-bracket",   test:(n,r)=>r.dir==="out" && r.edge.type==="REPORTS_TO" },
+  { title:"Direct Reports",             icon:"fa-arrow-down-to-bracket",   test:(n,r)=>r.dir==="in"  && r.edge.type==="REPORTS_TO" },
+  { title:"People & Roles",             icon:"fa-users",           test:(n,r)=>r.other.type==="Person"||r.other.type==="Role" },
+  { title:"Owns / Manages",             icon:"fa-key",             test:(n,r)=>r.dir==="out" && ["OWNS","MANAGES","RESPONSIBLE_FOR","SUPPORTS"].includes(r.edge.type) },
+  { title:"Owned / Managed By",         icon:"fa-user-shield",     test:(n,r)=>r.dir==="in"  && ["OWNS","MANAGES","RESPONSIBLE_FOR","SUPPORTS"].includes(r.edge.type) },
+  { title:"Systems",                    icon:"fa-server",          test:(n,r)=>r.other.type==="System" },
+  { title:"Platforms",                  icon:"fa-cubes",           test:(n,r)=>r.other.type==="Platform" },
+  { title:"Applications",               icon:"fa-window-maximize", test:(n,r)=>r.other.type==="Application" },
+  { title:"SPFx Apps",                  icon:"fa-puzzle-piece",    test:(n,r)=>r.other.type==="SPFx Application" },
+  { title:"Site Collections",          icon:"fa-folder-tree",      test:(n,r)=>r.other.type==="Site Collection" },
+  { title:"SharePoint Sites",           icon:"fa-share-from-square", test:(n,r)=>r.other.type==="SharePoint Site" },
+  { title:"SharePoint Lists",           icon:"fa-list",             test:(n,r)=>r.other.type==="SharePoint List" },
+  { title:"Dataverse Tables",           icon:"fa-table",            test:(n,r)=>r.other.type==="Dataverse Table" },
+  { title:"Microsoft Teams",            icon:"fa-users-rectangle", test:(n,r)=>r.other.type==="Microsoft Team" },
+  { title:"O365 Groups",                icon:"fa-user-group",      test:(n,r)=>r.other.type==="O365 Group" },
+  { title:"Mailboxes",                  icon:"fa-envelope",        test:(n,r)=>r.other.type==="Mailbox" },
+  { title:"Workflows & Flows",          icon:"fa-diagram-project", test:(n,r)=>r.other.type==="Workflow"||r.other.type==="Power Automate Flow" },
+  { title:"Dashboards",                 icon:"fa-chart-column",    test:(n,r)=>r.other.type==="Power BI Dashboard" },
+  { title:"APIs",                       icon:"fa-plug",            test:(n,r)=>r.other.type==="API" },
+  { title:"Datasets",                   icon:"fa-database",        test:(n,r)=>r.other.type==="Dataset" },
+  { title:"Documents",                  icon:"fa-file-lines",      test:(n,r)=>r.other.type==="Document" },
+  { title:"Decisions & Requirements",   icon:"fa-gavel",           test:(n,r)=>r.other.type==="Decision"||r.other.type==="Requirement" },
+  { title:"Vendors & Services",         icon:"fa-handshake",       test:(n,r)=>r.other.type==="Vendor"||r.other.type==="Service" },
+  { title:"Environments",               icon:"fa-globe",           test:(n,r)=>r.other.type==="Environment" },
+  { title:"Dependencies",               icon:"fa-link",            test:(n,r)=>r.edge.type==="DEPENDS_ON" },
+  { title:"Integrations & Connections", icon:"fa-arrows-left-right-to-line", test:(n,r)=>["INTEGRATES_WITH","CONNECTED_TO","SENDS_TO","RECEIVES_FROM"].includes(r.edge.type) }
+];
+
+/* ---------- Effective-value helpers ----------
+   When a relationship is expressed only via an edge (Quick-Connect) and not
+   filled in the corresponding form field, the field value is empty but the
+   relationship still exists. These helpers return the "effective" value by
+   first checking the field, then falling back to resolving the relationship
+   via the relevant edge. Used in tooltip display and profile DETAILS section
+   so the two stay consistent with the People & Roles section. */
+function effectiveLead(node){
+  if (node.lead && String(node.lead).trim()) return node.lead;
+  // Lookup incoming RESPONSIBLE_FOR edge from a Person or Role
+  const e = state.graph.edges.find(ed =>
+    ed.type === "RESPONSIBLE_FOR" && ed.target === node.id);
+  if (e){
+    const src = findNode(e.source);
+    if (src && (src.type === "Person" || src.type === "Role")) return src.label;
+  }
+  return "";
+}
+function effectiveOwner(node){
+  if (node.owner && String(node.owner).trim()) return node.owner;
+  const e = state.graph.edges.find(ed =>
+    ed.type === "OWNS" && ed.target === node.id);
+  if (e){
+    const src = findNode(e.source);
+    if (src) return src.label;
+  }
+  return "";
+}
+function effectivePlatform(node){
+  if (node.platform && String(node.platform).trim()) return node.platform;
+  const e = state.graph.edges.find(ed =>
+    ed.type === "HOSTED_ON" && ed.source === node.id);
+  if (e){
+    const t = findNode(e.target);
+    if (t) return t.label;
+  }
+  return "";
+}
+
+/* ---------- Custom node type deduplication ----------
+   When a custom node type was created BEFORE that type became built-in
+   (e.g. Team, Microsoft Form), the custom type lingers in
+   state.graph.customNodeTypes and the Type dropdown shows it twice — once
+   as built-in, once as custom. This cleanup strips any custom type whose
+   name matches a built-in (case-insensitive). Existing nodes typed with the
+   custom name stay valid because the built-in name resolves identically.
+*/
+function removeDuplicateCustomTypes(){
+  if (!state.graph || !Array.isArray(state.graph.customNodeTypes)) return 0;
+  const builtinLower = new Set(NODE_TYPES.map(t => t.toLowerCase().trim()));
+  const original = state.graph.customNodeTypes.length;
+  // Also dedupe custom types that have the same name as each other (case &
+  // whitespace insensitive) — keep the first occurrence.
+  const seenLower = new Set();
+  state.graph.customNodeTypes = state.graph.customNodeTypes.filter(t => {
+    if (!t || !t.name) return false;
+    const key = String(t.name).toLowerCase().trim();
+    if (!key) return false;
+    if (builtinLower.has(key)) return false;  // collides with built-in
+    if (seenLower.has(key)) return false;     // duplicate custom type
+    seenLower.add(key);
+    return true;
+  });
+  return original - state.graph.customNodeTypes.length;
+}
+
+/* ---------- Edge deduplication ----------
+   Multiple edges with the same (source, target, type) are always meaningless
+   in this graph model — they distort metrics (edge counts, critical hubs,
+   service flows), bloat the profile panel, and confuse the path-finder. They
+   typically arise when a user both fills the Lead field on a node AND
+   Quick-Connects the same Person via RESPONSIBLE_FOR, or otherwise creates
+   the same edge twice through different mechanisms.
+
+   This helper dedupes in place, keeping the FIRST occurrence (which is
+   usually the manual edge if any exists, since auto-edges are created on
+   form save which comes after Quick-Connect in typical workflows).
+*/
+function removeDuplicateEdges(){
+  if (!state.graph || !Array.isArray(state.graph.edges)) return 0;
+  const seen = new Set();
+  const kept = [];
+  let removed = 0;
+  for (const e of state.graph.edges){
+    const key = `${e.source}|${e.target}|${e.type}`;
+    if (seen.has(key)){ removed++; continue; }
+    seen.add(key);
+    kept.push(e);
+  }
+  if (removed > 0) state.graph.edges = kept;
+  return removed;
+}
+
+function relationshipsFor(node){
+  const out = [];
+  const seen = new Set();
+  state.graph.edges.forEach(e=>{
+    let other, dir;
+    if (e.source === node.id){ other = findNode(e.target); dir = "out"; }
+    else if (e.target === node.id){ other = findNode(e.source); dir = "in"; }
+    else return;
+    if (!other) return;
+    // Defense in depth: collapse logical duplicates (same other node + same
+    // edge type + same direction) into one entry so the profile panel never
+    // shows "Person X RESPONSIBLE_FOR Office Y" twice even if the data has
+    // two edge records.
+    const dedupeKey = `${dir}:${other.id}:${e.type}`;
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+    out.push({ edge:e, dir, other });
+  });
+  return out;
+}
+function statusBadge(status){
+  const s = (status||"Active").trim();
+  // Status meaning is conveyed by color + icon + text (not color alone) for a11y
+  let cls = "", icon = "fa-circle-check";
+  if (/inactive|deprecated|retired/i.test(s)) { cls = "inactive"; icon = "fa-circle-xmark"; }
+  else if (/pilot/i.test(s))                  { cls = "planned";  icon = "fa-flask"; }
+  else if (/plan|future|proposed/i.test(s))   { cls = "planned";  icon = "fa-clock"; }
+  return `<span class="status-badge ${cls}"><i class="fa-solid ${icon}"></i> ${escapeHtml(s)}</span>`;
+}
+
+function renderDetails(){
+  const el = document.getElementById("details-panel");
+  // Path-finding result takes precedence over node/edge profile
+  if (state.pathFinding.steps && state.pathFinding.steps.length > 0){
+    renderPathProfile(el, state.pathFinding.steps);
+    return;
+  }
+  if (state.selectedNode){ renderNodeProfile(el, findNode(state.selectedNode)); }
+  else if (state.selectedEdge){ renderEdgeProfile(el, findEdge(state.selectedEdge)); }
+  else {
+    el.innerHTML = `<div class="empty-state">
+      <div class="glyph"><i class="fa-solid fa-circle-nodes"></i></div>
+      <h3>No item selected</h3>
+      <p>Click a node or relationship to see its details and connections here.</p>
+      <div class="hint">Press <kbd>?</kbd> for help · <kbd>C</kbd> to connect a selected node</div>
+    </div>`;
+  }
+}
+
+function renderPathProfile(el, steps){
+  const nodeSteps = steps.filter(s=>s.type==="node");
+  const edgeSteps = steps.filter(s=>s.type==="edge");
+  const first = findNode(nodeSteps[0].id), last = findNode(nodeSteps[nodeSteps.length-1].id);
+  const rowsHtml = steps.map((s, i)=>{
+    if (s.type === "node"){
+      const n = findNode(s.id);
+      if (!n) return "";
+      const ts = typeStyle(n.type);
+      const isEnd = i === 0 || i === steps.length-1;
+      return `<div class="rel-item" data-node="${escapeHtml(n.id)}" role="button" tabindex="0" style="${isEnd?'border-color:rgba(251,191,36,0.5);':''}">
+        <div class="rel-left">
+          <div class="ti" style="background:${ts.color}; color:${iconFgFor(ts.color)}"><i class="fa-solid" aria-hidden="true">${ts.icon||"&#xf111;"}</i></div>
+          <div style="min-width:0">
+            <div class="rel-node-name">${escapeHtml(n.label)}</div>
+            <div class="rel-node-type">${escapeHtml(n.type)}${i===0?" · source":(i===steps.length-1?" · target":"")}</div>
+          </div>
+        </div>
+      </div>`;
+    } else {
+      // edge step
+      const arrow = s.dir === "out" ? "↓" : "↑";
+      return `<div style="padding:2px 14px; color:var(--muted); font-size:11px; display:flex; align-items:center; gap:6px">
+        <span style="color:var(--accent-2); font-size:14px; line-height:1">${arrow}</span>
+        <span class="rel-type" style="margin:0">${escapeHtml(s.edge.type)}</span>
+      </div>`;
+    }
+  }).join("");
+  el.innerHTML = `
+    <div class="profile-header">
+      <span class="type-pill"><i class="fa-solid fa-route ti" aria-hidden="true"></i> Path</span>
+      <div class="profile-name">${escapeHtml(first?first.label:"?")}<br>
+        <span style="color:var(--muted); font-size:14px; font-weight:400">to</span><br>
+        ${escapeHtml(last?last.label:"?")}</div>
+      <p class="profile-desc">${edgeSteps.length} hop${edgeSteps.length===1?"":"s"}, ${nodeSteps.length} nodes in chain.</p>
+    </div>
+    <div class="profile-section">
+      <h4><i class="fa-solid fa-list-ol" aria-hidden="true"></i> Path steps</h4>
+      <div class="rel-list">${rowsHtml}</div>
+    </div>
+    <div class="profile-section">
+      <h4><i class="fa-solid fa-bolt" aria-hidden="true"></i> Actions</h4>
+      <div class="btn-row">
+        <button class="btn" id="path-find-another"><i class="fa-solid fa-route"></i> Find another path</button>
+        <button class="btn danger" id="path-clear"><i class="fa-solid fa-xmark"></i> Clear path</button>
+      </div>
+    </div>
+  `;
+  el.querySelectorAll(".rel-item").forEach(it=>{
+    it.addEventListener("click", ()=>{
+      const id = it.getAttribute("data-node");
+      // Clicking a path step centers but doesn't change the path highlight
+      centerOnNode(id);
+    });
+    it.addEventListener("keydown", e=>{ if (e.key==="Enter"||e.key===" "){ e.preventDefault(); it.click(); } });
+  });
+  document.getElementById("path-find-another").onclick = ()=>{ clearPath(); startPathFinding(); };
+  document.getElementById("path-clear").onclick = ()=>{ clearPath(); showToast("Path cleared","ok"); };
+}
+
+function relItemHtml(other, edge, dir){
+  const ot = typeStyle(other.type);
+  return `<div class="rel-item" data-node="${escapeHtml(other.id)}" role="button" tabindex="0">
+    <div class="rel-left">
+      <div class="ti" style="background:${ot.color}; color:${iconFgFor(ot.color)}"><i class="fa-solid">${ot.icon||"&#xf111;"}</i></div>
+      <div style="min-width:0">
+        <div class="rel-node-name">${escapeHtml(other.label)}</div>
+        <div class="rel-node-type">${escapeHtml(other.type)}</div>
+      </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:6px">
+      <span class="rel-type">${escapeHtml(edge.type)}</span>
+      <span class="arrow">${dir==="out"?"→":"←"}</span>
+    </div>
+  </div>`;
+}
+
+function renderNodeProfile(el, node){
+  if (!node){ el.innerHTML=""; return; }
+  const ts = typeStyle(node.type);
+  const rels = relationshipsFor(node);
+
+  const kv = [];
+  const addKv = (k,v,html=false)=>{ if (v && String(v).trim()) kv.push(`<div class="k">${escapeHtml(k)}</div><div class="v">${html?v:escapeHtml(v)}</div>`); };
+  addKv("Owner", effectiveOwner(node));
+  addKv("Lead", effectiveLead(node));
+  addKv("Parent", node.parent);
+  addKv("Directorate", node.directorate);
+  addKv("Office", node.office);
+  addKv("Platform", effectivePlatform(node));
+  if (node.updatedAt){
+    const ago = timeAgo(node.updatedAt);
+    addKv("Last edited", ago ? `${ago} (${new Date(node.updatedAt).toLocaleDateString()})` : null);
+  }
+  if (node.url && node.url.trim()){
+    // Only hyperlink http(s) URLs — escapeHtml stops attribute breakout but
+    // not a javascript: scheme in imported data; show anything else as text.
+    if (/^https?:\/\//i.test(node.url.trim())){
+      addKv("URL", `<a href="${escapeHtml(node.url)}" target="_blank" rel="noopener">${escapeHtml(node.url)}</a>`, true);
+    } else {
+      addKv("URL", node.url);
+    }
+  }
+  if (node.email && node.email.trim()){
+    // Support comma-separated addresses (primary + aliases) by linking each one
+    const emailLinks = node.email.split(",").map(s => s.trim()).filter(Boolean)
+      .map(addr => `<a href="mailto:${escapeHtml(addr)}">${escapeHtml(addr)}</a>`)
+      .join(", ");
+    addKv("Email", emailLinks, true);
+  }
+  if (node.phone && node.phone.trim()){
+    addKv("Phone", `<a href="tel:${escapeHtml(node.phone.replace(/[^0-9+]/g, ""))}">${escapeHtml(node.phone)}</a>`, true);
+  }
+
+  const usedEdgeIds = new Set();
+  const sectionsHtml = PROFILE_SECTIONS.map(sec=>{
+    const items = rels.filter(r => sec.test(node, r) && !usedEdgeIds.has(r.edge.id));
+    if (!items.length) return "";
+    items.forEach(r => usedEdgeIds.add(r.edge.id));
+    return `<div class="profile-section">
+      <h4><i class="fa-solid ${sec.icon}"></i> ${escapeHtml(sec.title)} <span class="count">${items.length}</span></h4>
+      <div class="rel-list">${items.map(r => relItemHtml(r.other, r.edge, r.dir)).join("")}</div>
+    </div>`;
+  }).join("");
+
+  const otherRels = rels.filter(r => !usedEdgeIds.has(r.edge.id));
+  const otherHtml = otherRels.length ? `<div class="profile-section">
+    <h4><i class="fa-solid fa-ellipsis"></i> Other Relationships <span class="count">${otherRels.length}</span></h4>
+    <div class="rel-list">${otherRels.map(r => relItemHtml(r.other, r.edge, r.dir)).join("")}</div>
+  </div>` : "";
+
+  const inCount = rels.filter(r=>r.dir==="in").length;
+  const outCount = rels.filter(r=>r.dir==="out").length;
+
+  const tagHtml = Array.isArray(node.tags) && node.tags.length
+    ? `<div class="profile-section"><h4><i class="fa-solid fa-tags"></i> Tags</h4><div class="tag-list">${node.tags.map(t=>`<span class="tag">${escapeHtml(t)}</span>`).join("")}</div></div>`
+    : "";
+  const notesHtml = node.notes && node.notes.trim()
+    ? `<div class="profile-section"><h4><i class="fa-solid fa-note-sticky"></i> Notes</h4><div class="notes-block">${escapeHtml(node.notes)}</div></div>`
+    : "";
+
+  el.innerHTML = `
+    <div class="profile-header">
+      <span class="type-pill"><i class="fa-solid ti" style="color:${ts.color}">${ts.icon||"&#xf111;"}</i> ${escapeHtml(node.type)}</span>
+      <div class="profile-name">${escapeHtml(node.label)}</div>
+      <div>${statusBadge(node.status)}</div>
+      ${node.description ? `<p class="profile-desc">${escapeHtml(node.description)}</p>` : ""}
+    </div>
+    ${kv.length ? `<div class="profile-section"><h4><i class="fa-solid fa-circle-info"></i> Details</h4><div class="kv-grid">${kv.join("")}</div></div>` : ""}
+    <div class="profile-section">
+      <h4><i class="fa-solid fa-chart-pie"></i> Relationship Summary</h4>
+      <div class="kv-grid">
+        <div class="k">Total</div><div class="v">${rels.length}</div>
+        <div class="k">Incoming</div><div class="v">${inCount}</div>
+        <div class="k">Outgoing</div><div class="v">${outCount}</div>
+      </div>
+    </div>
+    ${sectionsHtml}
+    ${otherHtml}
+    ${tagHtml}
+    ${notesHtml}
+    <div class="profile-section">
+      <h4><i class="fa-solid fa-bolt"></i> Actions</h4>
+      <div class="btn-row">
+        <button class="btn" id="profile-edit"><i class="fa-solid fa-pen"></i> Edit</button>
+        <button class="btn" id="profile-connect"><i class="fa-solid fa-arrows-turn-to-dots"></i> Connect</button>
+        <button class="btn" id="profile-impact" title="See what depends on this entity"><i class="fa-solid fa-bolt"></i> Impact</button>
+      </div>
+      <div class="btn-row" style="margin-top:6px">
+        <button class="btn" id="profile-focus"><i class="fa-solid fa-circle-nodes"></i> Neighborhood</button>
+        <button class="btn" id="profile-center"><i class="fa-solid fa-crosshairs"></i> Center</button>
+      </div>
+      <button class="btn block" id="profile-walk" style="margin-top:6px"><i class="fa-solid fa-person-walking"></i> Walk relationships</button>
+      <button class="btn block" id="profile-scope" style="margin-top:6px"><i class="fa-solid fa-filter"></i> Scope to this branch</button>
+      ${getCollapseChildren(node.id).length || isCollapsed(node.id) ? `<button class="btn block" id="profile-collapse" style="margin-top:6px"><i class="fa-solid fa-square-${isCollapsed(node.id)?"plus":"minus"}"></i> ${isCollapsed(node.id)?"Expand branch":"Collapse branch"}</button>` : ""}
+      <button class="btn danger block" id="profile-delete" style="margin-top:6px"><i class="fa-solid fa-trash"></i> Delete</button>
+    </div>
+  `;
+  el.querySelectorAll(".rel-item").forEach(it=>{
+    it.addEventListener("click", ()=>{ const id = it.getAttribute("data-node"); selectNode(id); centerOnNode(id); });
+    it.addEventListener("keydown", e=>{ if (e.key==="Enter"||e.key===" "){ e.preventDefault(); it.click(); } });
+  });
+  document.getElementById("profile-edit").onclick = ()=>openNodeModal(node);
+  document.getElementById("profile-connect").onclick = ()=>startConnect(node.id);
+  document.getElementById("profile-impact").onclick = ()=>openImpactModal(node.id);
+  document.getElementById("profile-focus").onclick = ()=>{
+    state.showNeighborhoodOnly = !state.showNeighborhoodOnly;
+    updateStats(); requestRedraw();
+    showToast(state.showNeighborhoodOnly ? "Neighborhood-only ON" : "Neighborhood-only OFF", "ok");
+  };
+  document.getElementById("profile-center").onclick = ()=>centerOnNode(node.id);
+  document.getElementById("profile-walk").onclick = ()=>walkRelationships(node.id);
+  document.getElementById("profile-scope").onclick = ()=>scopeToBranch(node.id);
+  // Keyboard-reachable Collapse/Expand branch — previously this action only
+  // existed in the right-click context menu (a WCAG 2.1.1 gap).
+  const collapseBtn = document.getElementById("profile-collapse");
+  if (collapseBtn) collapseBtn.onclick = ()=>{
+    if (isCollapsed(node.id)) expandNodeBranch(node.id); else collapseNodeBranch(node.id);
+    renderDetails();
+  };
+  document.getElementById("profile-delete").onclick = ()=>{
+    if (confirm("Delete '"+node.label+"' and its relationships?")) deleteNode(node.id);
+  };
+}
+
+function renderEdgeProfile(el, edge){
+  if (!edge){ el.innerHTML=""; return; }
+  const s = findNode(edge.source), t = findNode(edge.target);
+  const ss = s ? typeStyle(s.type) : null, tt = t ? typeStyle(t.type) : null;
+  const cat = EDGE_CATEGORY[edge.type] || "other";
+  const catStyle = EDGE_STYLE[cat];
+  // Include this edge's own type even if it isn't built-in (imported files may
+  // carry custom types) so opening the editor doesn't silently coerce it.
+  const typeList = EDGE_TYPES.includes(edge.type) ? EDGE_TYPES : [...EDGE_TYPES, edge.type];
+  const typeOpts = typeList.map(t => `<option value="${escapeHtml(t)}" ${edge.type===t?"selected":""}>${escapeHtml(t)}</option>`).join("");
+  el.innerHTML = `
+    <div class="profile-header">
+      <span class="type-pill"><i class="fa-solid fa-arrow-right-long ti"></i> Relationship · ${escapeHtml(catStyle.label)}</span>
+      <div class="profile-name">${escapeHtml(edge.type)}</div>
+    </div>
+    <div class="profile-section">
+      <h4><i class="fa-solid fa-pen"></i> Edit inline <span class="edge-inline-saved" id="edge-saved-flag"><i class="fa-solid fa-check"></i> saved</span></h4>
+      <div class="edge-inline-row">
+        <label for="edge-inline-type">Type</label>
+        <select id="edge-inline-type">${typeOpts}</select>
+      </div>
+      <div class="edge-inline-row">
+        <label for="edge-inline-desc">Description</label>
+        <textarea id="edge-inline-desc" placeholder="Optional context about this relationship">${escapeHtml(edge.description||"")}</textarea>
+      </div>
+      <div class="edge-inline-row">
+        <label for="edge-inline-notes">Notes</label>
+        <textarea id="edge-inline-notes" placeholder="Optional notes">${escapeHtml(edge.notes||"")}</textarea>
+      </div>
+    </div>
+    <div class="profile-section">
+      <h4><i class="fa-solid fa-link"></i> Endpoints</h4>
+      <div class="rel-list">
+        <div class="rel-item" data-node="${escapeHtml(edge.source)}" role="button" tabindex="0">
+          <div class="rel-left">
+            <div class="ti" style="background:${ss?ss.color:"#94A3B8"}; color:${iconFgFor(ss?ss.color:"#94A3B8")}"><i class="fa-solid">${ss?ss.icon:"&#xf111;"}</i></div>
+            <div style="min-width:0">
+              <div class="rel-node-name">${escapeHtml(s?s.label:edge.source)}</div>
+              <div class="rel-node-type">Source · ${escapeHtml(s?s.type:"?")}</div>
+            </div>
+          </div>
+          <span class="arrow">→</span>
+        </div>
+        <div class="rel-item" data-node="${escapeHtml(edge.target)}" role="button" tabindex="0">
+          <div class="rel-left">
+            <div class="ti" style="background:${tt?tt.color:"#94A3B8"}; color:${iconFgFor(tt?tt.color:"#94A3B8")}"><i class="fa-solid">${tt?tt.icon:"&#xf111;"}</i></div>
+            <div style="min-width:0">
+              <div class="rel-node-name">${escapeHtml(t?t.label:edge.target)}</div>
+              <div class="rel-node-type">Target · ${escapeHtml(t?t.type:"?")}</div>
+            </div>
+          </div>
+          <span class="arrow">←</span>
+        </div>
+      </div>
+    </div>
+    <div class="profile-section">
+      <h4><i class="fa-solid fa-bolt"></i> Actions</h4>
+      <div class="btn-row">
+        <button class="btn" id="edge-reverse"><i class="fa-solid fa-arrows-rotate"></i> Reverse</button>
+        <button class="btn danger" id="edge-delete"><i class="fa-solid fa-trash"></i> Delete</button>
+      </div>
+    </div>
+  `;
+  el.querySelectorAll(".rel-item").forEach(it=>{
+    it.addEventListener("click", ()=>{ const id = it.getAttribute("data-node"); selectNode(id); });
+    it.addEventListener("keydown", e=>{ if (e.key==="Enter"||e.key===" "){ e.preventDefault(); it.click(); } });
+  });
+  // Inline-edit wiring: live-save on change, brief "saved" confirmation
+  const savedFlag = document.getElementById("edge-saved-flag");
+  const flashSaved = () => {
+    if (!savedFlag) return;
+    savedFlag.classList.add("show");
+    clearTimeout(flashSaved._t);
+    flashSaved._t = setTimeout(() => savedFlag.classList.remove("show"), 1200);
+  };
+  const typeSel = document.getElementById("edge-inline-type");
+  if (typeSel){
+    typeSel.onchange = () => {
+      edge.type = typeSel.value;
+      // A manual retype makes this a user-owned edge: clear the auto flags so
+      // syncStructuralEdges won't silently revert it on the next node save.
+      if (edge.auto){ delete edge.auto; delete edge.autoField; }
+      afterMutate();
+      // afterMutate's dedupe keeps the FIRST identical edge — if this one was
+      // removed in the merge, select the survivor instead of editing a ghost.
+      if (!findEdge(edge.id)){
+        const survivor = state.graph.edges.find(x => x.source===edge.source && x.target===edge.target && x.type===edge.type);
+        showToast("Merged with an identical existing relationship", "ok");
+        if (survivor) selectEdge(survivor.id);
+        else { state.selectedEdge = null; renderDetails(); }
+        return;
+      }
+      flashSaved();
+      // Re-render so the header and category pill update
+      setTimeout(() => renderEdgeProfile(el, edge), 0);
+    };
+  }
+  const descTa = document.getElementById("edge-inline-desc");
+  if (descTa){
+    descTa.onblur = () => {
+      if (edge.description === descTa.value) return;
+      edge.description = descTa.value;
+      afterMutate();
+      flashSaved();
+    };
+  }
+  const notesTa = document.getElementById("edge-inline-notes");
+  if (notesTa){
+    notesTa.onblur = () => {
+      if (edge.notes === notesTa.value) return;
+      edge.notes = notesTa.value;
+      afterMutate();
+      flashSaved();
+    };
+  }
+  document.getElementById("edge-reverse").onclick = ()=>{
+    const tmp = edge.source; edge.source = edge.target; edge.target = tmp;
+    if (edge.auto){ delete edge.auto; delete edge.autoField; } // now user-owned
+    afterMutate();
+    if (!findEdge(edge.id)){
+      const survivor = state.graph.edges.find(x => x.source===edge.source && x.target===edge.target && x.type===edge.type);
+      showToast("Reversed — merged with an identical existing relationship", "ok");
+      if (survivor) selectEdge(survivor.id);
+      else { state.selectedEdge = null; renderDetails(); }
+      return;
+    }
+    showToast("Reversed direction", "ok");
+  };
+  document.getElementById("edge-delete").onclick = ()=>{
+    if (confirm("Delete this relationship?")) deleteEdge(edge.id);
+  };
+}
+
+/* ============================================================================
+   STATS / FILTERS / LEGEND
+   ============================================================================ */
+function updateStats(){
+  const setText = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
+  setText("stat-nodes",  state.graph.nodes.length);
+  setText("stat-edges",  state.graph.edges.length);
+  // Show "visible nodes / total nodes" so users see both numbers in one field
+  const vn = visibleNodes().length, vt = state.graph.nodes.length;
+  setText("stat-vnodes", vn === vt ? vn : (vn + "/" + vt));
+  const sel = state.selectedNode ? findNode(state.selectedNode) : null;
+  setText("stat-sel", state.multiSelect.size > 0 ? (state.multiSelect.size + " sel") : (sel ? sel.type : (state.selectedEdge ? "Relation" : "·")));
+  syncMultiUI();
+}
+
+function buildFilterUI(){
+  const nf = document.getElementById("node-type-filters");
+  const ef = document.getElementById("edge-type-filters");
+  nf.innerHTML = ""; ef.innerHTML = "";
+  const presentN = new Set(state.graph.nodes.map(n=>n.type));
+  const presentE = new Set(state.graph.edges.map(e=>e.type));
+  allNodeTypes().forEach(t=>{
+    if (!presentN.has(t) && !state.filtersNode.has(t)) return;
+    const ts = typeStyle(t);
+    const row = document.createElement("label");
+    row.className = "checkbox-row";
+    row.innerHTML = `<input type="checkbox" ${state.filtersNode.has(t)?"checked":""} />
+                     <span class="swatch" style="background:${ts.color}"></span>
+                     <span class="type-icon"><i class="fa-solid" style="color:${ts.color}">${ts.icon||""}</i></span>
+                     <span>${escapeHtml(t)}</span>`;
+    row.querySelector("input").addEventListener("change", e=>{
+      if (e.target.checked) state.filtersNode.add(t); else state.filtersNode.delete(t);
+      persistFilters(); updateStats(); requestRedraw();
+    });
+    nf.appendChild(row);
+  });
+  allEdgeTypes().forEach(t=>{
+    if (!presentE.has(t) && !state.filtersEdge.has(t)) return;
+    const es = edgeStyle(t);
+    const row = document.createElement("label");
+    row.className = "checkbox-row";
+    row.innerHTML = `<input type="checkbox" ${state.filtersEdge.has(t)?"checked":""} />
+                     <span class="swatch" style="background:${es.color.replace(/[\d.]+\)$/,'0.9)')}"></span>
+                     <span>${escapeHtml(t)}</span>`;
+    row.querySelector("input").addEventListener("change", e=>{
+      if (e.target.checked) state.filtersEdge.add(t); else state.filtersEdge.delete(t);
+      persistFilters(); updateStats(); requestRedraw();
+    });
+    ef.appendChild(row);
+  });
+}
+
+function buildA11yMirror(){
+  const el = document.getElementById("a11y-graph");
+  if (!el) return;
+  const nm = id => { const n = findNode(id); return n ? n.label : id; };
+  const nodes = state.graph.nodes.slice(0, 500);
+  const items = nodes.map(n => {
+    const outs = state.graph.edges.filter(e => e.source === n.id).map(e => e.type + " " + nm(e.target));
+    return "<li>" + escapeHtml(n.label) + " (" + escapeHtml(n.type) + ")" + (outs.length ? ": " + escapeHtml(outs.join("; ")) : "") + "</li>";
+  }).join("");
+  const more = state.graph.nodes.length - nodes.length;
+  const moreNote = more > 0 ? "<li>…and " + more + " more nodes not listed.</li>" : "";
+  el.innerHTML = "<h2>Graph: " + state.graph.nodes.length + " nodes, " + state.graph.edges.length + " relationships</h2><ul>" + items + moreNote + "</ul>";
+}
+function buildLegend(){
+  state.flaggedEdges = computeFlaggedEdges();
+  buildA11yMirror();
+  buildScopePicker();
+  const ln = document.getElementById("legend-grid-nodes");
+  const le = document.getElementById("legend-grid-edges");
+  ln.innerHTML = ""; le.innerHTML = "";
+  if (state.heatmap){ buildHeatmapLegend(ln, le); return; }
+  const presentTypes = new Set(state.graph.nodes.map(n=>n.type));
+  allNodeTypes().filter(t => presentTypes.has(t)).forEach(t=>{
+    const ts = typeStyle(t);
+    const item = document.createElement("div");
+    item.className = "legend-item";
+    item.innerHTML = `<span class="legend-icon" style="background:${ts.color}; color:${iconFgFor(ts.color)}"><i class="fa-solid">${ts.icon||""}</i></span><span>${escapeHtml(t)}</span>`;
+    ln.appendChild(item);
+  });
+  // edge categories
+  Object.keys(EDGE_STYLE).forEach(cat=>{
+    const es = edgeCategoryStyle(cat); // theme-aware swatch color
+    const dashCss = es.dash.length ? es.dash.join(" ") : "none";
+    const item = document.createElement("div");
+    item.className = "legend-item";
+    item.innerHTML = `<svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="${es.color.replace(/[\d.]+\)$/,'0.95)')}" stroke-width="${es.width+0.5}" stroke-dasharray="${dashCss}"/></svg><span>${escapeHtml(es.label)}</span>`;
+    le.appendChild(item);
+  });
+  if (state.flaggedEdges && state.flaggedEdges.size){
+    const ri = document.createElement("div");
+    ri.className = "legend-item";
+    ri.innerHTML = `<svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#F59E0B" stroke-width="2.4" stroke-dasharray="6 4"/></svg><span>Potential issue (${state.flaggedEdges.size})</span>`;
+    le.appendChild(ri);
+  }
+}
+
+/* ============================================================================
+   MODALS — Add/Edit Node and Edge
+   ============================================================================ */
+const modal = document.getElementById("modal-backdrop");
+const modalBody = document.getElementById("modal-body");
+const modalTitle = document.getElementById("modal-title");
+const modalSave = document.getElementById("modal-save");
+let modalSaveHandler = null;
+
+let modalReturnFocus = null;
+function getFocusableInModal(){
+  const root = document.getElementById("modal");
+  return Array.from(root.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )).filter(el => el.offsetParent !== null);
+}
+function trapModalFocus(e){
+  if (e.key !== "Tab") return;
+  const focusables = getFocusableInModal();
+  if (!focusables.length) return;
+  const first = focusables[0], last = focusables[focusables.length - 1];
+  if (e.shiftKey && document.activeElement === first){
+    e.preventDefault(); last.focus();
+  } else if (!e.shiftKey && document.activeElement === last){
+    e.preventDefault(); first.focus();
+  }
+}
+function openModal(title, html, onSave, wide){
+  modalReturnFocus = document.activeElement;
+  modalTitle.innerHTML = title;
+  modalBody.innerHTML = html;
+  modalSaveHandler = onSave;
+  // Reset footer each open: show Save only when a save handler is provided, so a
+  // prior info/list modal (which hid Save) doesn't leave it hidden for a form modal.
+  const _sb = document.getElementById("modal-save"), _cb = document.getElementById("modal-cancel");
+  if (_sb) _sb.style.display = onSave ? "" : "none";
+  if (_cb) _cb.innerHTML = "Cancel";
+  document.getElementById("modal").classList.toggle("wide", !!wide);
+  document.getElementById("modal").classList.remove("xl");
+  modal.classList.add("open");
+  __ergOn(document, "keydown", trapModalFocus, true);
+  // focus first focusable so keyboard users can start interacting immediately
+  setTimeout(()=>{
+    const f = getFocusableInModal();
+    // prefer first input/select over the close button
+    const target = f.find(el => /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) || f[0];
+    if (target) target.focus();
+  }, 30);
+}
+function closeModal(){
+  modal.classList.remove("open");
+  modalBody.innerHTML = "";
+  modalSaveHandler = null;
+  pendingNodePos = null; // don't let a cancelled "Add node here" leak into the next add
+  document.removeEventListener("keydown", trapModalFocus, true);
+  // Restore footer button defaults (info-style modals like Help / Manage Types
+  // hide the Save button and rename Cancel; reset so the next form modal works)
+  const saveBtn = document.getElementById("modal-save");
+  const cancelBtn = document.getElementById("modal-cancel");
+  if (saveBtn) saveBtn.style.display = "";
+  if (cancelBtn) cancelBtn.innerHTML = "Cancel";
+  if (modalReturnFocus && typeof modalReturnFocus.focus === "function"){
+    try { modalReturnFocus.focus(); } catch(_){}
+  }
+  modalReturnFocus = null;
+}
+document.getElementById("modal-close").addEventListener("click", closeModal);
+document.getElementById("modal-cancel").addEventListener("click", closeModal);
+modal.addEventListener("click", e=>{ if (e.target===modal) closeModal(); });
+modalSave.addEventListener("click", ()=>{ if (modalSaveHandler) modalSaveHandler(); });
+
+function nodeFormHtml(n){
+  n = n || {};
+  // Built-in types in main group, custom types in their own optgroup.
+  // Custom types whose name matches a built-in (case-insensitive) are hidden
+  // here — defense in depth alongside removeDuplicateCustomTypes() which
+  // cleans the underlying data on load/save.
+  const builtinLowerSet = new Set(NODE_TYPES.map(t => t.toLowerCase()));
+  const customNames = (state.graph.customNodeTypes || [])
+    .map(t => t.name)
+    .filter(nm => nm && !builtinLowerSet.has(nm.toLowerCase()));
+  const builtinOpts = NODE_TYPES.map(t=>`<option value="${t}" ${n.type===t?"selected":""}>${t}</option>`).join("");
+  const customOpts  = customNames.map(t=>`<option value="${escapeHtml(t)}" ${n.type===t?"selected":""}>${escapeHtml(t)}</option>`).join("");
+  const typeOpts = customOpts
+    ? `<optgroup label="Built-in">${builtinOpts}</optgroup><optgroup label="Custom">${customOpts}</optgroup>`
+    : builtinOpts;
+  // Group icons into named optgroups so the 25+ entries are scannable.
+  // M365 = the SVG brand icons we added; Brand = FA brand glyphs (microsoft,
+  // salesforce, github, ...); Other = enterprise stand-ins (servicenow, arcgis).
+  const ICON_GROUPS = [
+    { label: "Microsoft 365",
+      keys: ["microsoft-365","sharepoint","teams","onedrive","outlook","exchange",
+             "word","excel","powerpoint","onenote","power-platform","power-bi",
+             "power-automate","power-apps","dataverse","copilot-studio","forms"] },
+    { label: "Brand",
+      keys: ["microsoft","windows","salesforce","github","gitlab","slack",
+             "aws","google","jira","confluence","docker","apple","linux"] },
+    { label: "Other products",
+      keys: ["servicenow","arcgis"] }
+  ];
+  const seen = new Set();
+  const groupHtml = grp => {
+    const opts = grp.keys
+      .filter(k => ICON_REGISTRY[k])
+      .map(k => {
+        seen.add(k);
+        return `<option value="${k}" ${n.icon===k?"selected":""}>${ICON_REGISTRY[k].label}</option>`;
+      })
+      .join("");
+    return opts ? `<optgroup label="${grp.label}">${opts}</optgroup>` : "";
+  };
+  // CRITICAL ORDERING: compute the grouped HTML FIRST so the `seen` Set is
+  // populated. Previously ungroupedKeys was computed before any groupHtml call
+  // had run, so `seen` was empty and every icon ended up listed in both its
+  // named group AND the "Other" catch-all.
+  const groupedHtml = ICON_GROUPS.map(groupHtml).join("");
+  // Any registry keys not covered by a named group get an "Other" bucket so
+  // future icon additions still appear without code changes.
+  const ungroupedKeys = Object.keys(ICON_REGISTRY).filter(k => !seen.has(k));
+  const ungroupedHtml = ungroupedKeys.length
+    ? `<optgroup label="Other">${ungroupedKeys.map(k =>
+        `<option value="${k}" ${n.icon===k?"selected":""}>${ICON_REGISTRY[k].label}</option>`
+      ).join("")}</optgroup>` : "";
+  const iconOpts = '<option value="">Type default</option>' + groupedHtml + ungroupedHtml;
+  // Build datalists from the current graph
+  const opt = arr => arr.map(x => `<option value="${escapeHtml(x.label)}"></option>`).join("");
+  const allNodes = state.graph.nodes.slice().sort((a,b)=>a.label.localeCompare(b.label));
+  const filt = pred => allNodes.filter(pred);
+  const dlAll        = opt(allNodes);
+  const dlDirectorate= opt(filt(x=>x.type==="Directorate"));
+  const dlOffice     = opt(filt(x=>x.type==="Office"||x.type==="Front Office"||x.type==="Executive Office"||x.type==="Directorate"||x.type==="Bureau"||x.type==="Under Secretary"));
+  const dlPlatform   = opt(filt(x=>x.type==="Platform"||x.type==="System"));
+  const dlTeam       = opt(filt(x=>x.type==="Team"));
+  const dlPerson     = opt(filt(x=>x.type==="Person"));
+  const dlStatus = ["Active","Inactive","Planned","Pilot","Retired","Deprecated","Proposed"].map(s=>`<option value="${s}"></option>`).join("");
+  return `
+    <datalist id="dl-all">${dlAll}</datalist>
+    <datalist id="dl-directorate">${dlDirectorate}</datalist>
+    <datalist id="dl-office">${dlOffice}</datalist>
+    <datalist id="dl-team">${dlTeam}</datalist>
+    <datalist id="dl-platform">${dlPlatform}</datalist>
+    <datalist id="dl-person">${dlPerson}</datalist>
+    <datalist id="dl-status">${dlStatus}</datalist>
+    <div class="form-callout">
+      <i class="fa-solid fa-circle-info"></i>
+      <span><strong>Tip:</strong> Filling <em>Parent, Reports to, Directorate, Office, Team, Platform, Owner,</em> or <em>Lead</em> with an existing node name auto-creates the matching graph edge (CONTAINS / REPORTS_TO / HOSTED_ON / OWNS / RESPONSIBLE_FOR).</span>
+    </div>
+    <div class="form-callout warn">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      <span><strong>Heads-up:</strong> <em>Parent</em>, <em>Directorate</em>, <em>Office</em>, and <em>Team</em> all create <strong>CONTAINS</strong> edges. Fill only the most specific one per node &mdash; <em>Directorate</em> for Offices, <em>Office</em> for Teams (or for People without a team), <em>Team</em> for People who belong to a team, <em>Parent</em> for everything else. Filling two creates duplicate edges.</span>
+    </div>
+    <div class="field"><label for="f-id">ID (unique)</label><input id="f-id" type="text" value="${escapeHtml(n.id||"")}" ${n.id?'readonly':''} placeholder="auto-generated if blank"/></div>
+    <div class="field"><label for="f-label">Label (display name)</label><input id="f-label" type="text" value="${escapeHtml(n.label||"")}" placeholder="e.g. Customer Engagement Office"/></div>
+    <div class="field"><label for="f-type">Type</label><select id="f-type">${typeOpts}</select></div>
+    <div class="field"><label for="f-icon">Icon (overrides type default)</label><select id="f-icon">${iconOpts}</select></div>
+    <div class="field"><label for="f-description">Description</label><textarea id="f-description" placeholder="What is this?">${escapeHtml(n.description||"")}</textarea></div>
+    <div class="field"><label for="f-status">Status <span class="field-hint">drives Pipeline metrics: Proposed / Planned / Pilot / Active / Inactive / Retired</span></label><input id="f-status" type="text" list="dl-status" value="${escapeHtml(n.status||"Active")}"/></div>
+    <div class="field"><label for="f-owner">Owner <span class="field-hint">creates an OWNS edge if matches a node</span></label><input id="f-owner" type="text" list="dl-all" value="${escapeHtml(n.owner||"")}" placeholder="Pick or type…"/></div>
+    <div class="field"><label for="f-lead">Lead <span class="field-hint">creates a RESPONSIBLE_FOR edge if matches a Person</span></label><input id="f-lead" type="text" list="dl-person" value="${escapeHtml(n.lead||"")}" placeholder="Pick a person or type a role…"/></div>
+    <div class="field"><label for="f-parent">Parent <span class="field-hint">creates a CONTAINS edge if matches a node</span></label><input id="f-parent" type="text" list="dl-all" value="${escapeHtml(n.parent||"")}" placeholder="Pick or type…"/></div>
+    <div class="field"><label for="f-reportsTo">Reports to <span class="field-hint">creates a REPORTS_TO edge if matches a node</span></label><input id="f-reportsTo" type="text" list="dl-all" value="${escapeHtml(n.reportsTo||"")}" placeholder="Pick or type…"/></div>
+    <div class="field"><label for="f-directorate">Directorate <span class="field-hint">creates a CONTAINS edge if matches a node</span></label><input id="f-directorate" type="text" list="dl-directorate" value="${escapeHtml(n.directorate||"")}" placeholder="Pick a directorate…"/></div>
+    <div class="field"><label for="f-office">Office <span class="field-hint">creates a CONTAINS edge if matches a node</span></label><input id="f-office" type="text" list="dl-office" value="${escapeHtml(n.office||"")}" placeholder="Pick an office…"/></div>
+    <div class="field"><label for="f-team">Team <span class="field-hint">creates a CONTAINS edge if matches a node</span></label><input id="f-team" type="text" list="dl-team" value="${escapeHtml(n.team||"")}" placeholder="Pick a team…"/></div>
+    <div class="field"><label for="f-platform">Platform <span class="field-hint">creates a HOSTED_ON edge if matches a node</span></label><input id="f-platform" type="text" list="dl-platform" value="${escapeHtml(n.platform||"")}" placeholder="Pick a platform…"/></div>
+    <div class="field"><label for="f-url">URL</label><input id="f-url" type="url" value="${escapeHtml(n.url||"")}" placeholder="https://..."/></div>
+    <div class="field"><label for="f-email">Email <span class="field-hint">primary contact, comma-separate aliases if needed</span></label><input id="f-email" type="email" value="${escapeHtml(n.email||"")}" placeholder="name@org.com"/></div>
+    <div class="field"><label for="f-phone">Phone</label><input id="f-phone" type="tel" value="${escapeHtml(n.phone||"")}" placeholder="optional"/></div>
+    <div class="field"><label for="f-tags">Tags (comma separated)</label><input id="f-tags" type="text" value="${escapeHtml((n.tags||[]).join(", "))}"/></div>
+    <div class="field"><label for="f-notes">Notes</label><textarea id="f-notes">${escapeHtml(n.notes||"")}</textarea></div>
+  `;
+}
+function readNodeForm(){
+  const id = (document.getElementById("f-id").value||"").trim() || uid("n");
+  return {
+    id, label: document.getElementById("f-label").value.trim() || "(Unnamed)",
+    type: document.getElementById("f-type").value,
+    icon: document.getElementById("f-icon").value || "",
+    reportsTo: document.getElementById("f-reportsTo").value,
+    description: document.getElementById("f-description").value,
+    status: document.getElementById("f-status").value || "Active",
+    owner: document.getElementById("f-owner").value,
+    lead: document.getElementById("f-lead").value,
+    parent: document.getElementById("f-parent").value,
+    directorate: document.getElementById("f-directorate").value,
+    office: document.getElementById("f-office").value,
+    team: document.getElementById("f-team").value,
+    platform: document.getElementById("f-platform").value,
+    url: document.getElementById("f-url").value,
+    email: document.getElementById("f-email").value.trim(),
+    phone: document.getElementById("f-phone").value.trim(),
+    tags: document.getElementById("f-tags").value.split(",").map(s=>s.trim()).filter(Boolean),
+    notes: document.getElementById("f-notes").value,
+    updatedAt: new Date().toISOString()
+  };
+}
+function openNodeModal(existing){
+  const isEdit = !!existing;
+  openModal((isEdit?'<i class="fa-solid fa-pen"></i> Edit node':'<i class="fa-solid fa-plus"></i> Add node'),
+    nodeFormHtml(existing), ()=>{
+    const data = readNodeForm();
+    let syncResult = { added:0, removed:0 };
+    if (!isEdit){
+      if (state.graph.nodes.some(n=>n.id===data.id)){ showToast("Node ID already exists","err"); return; }
+      state.graph.nodes.push(data);
+      // "Add node here" (canvas context menu) stashes the click's world
+      // coordinates in pendingNodePos; otherwise drop near canvas center.
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      const pos = pendingNodePos || { x:w/2+(Math.random()-0.5)*120, y:h/2+(Math.random()-0.5)*120 };
+      pendingNodePos = null;
+      state.positions.set(data.id, { x:pos.x, y:pos.y, vx:0, vy:0, fixed:false });
+      syncResult = syncStructuralEdges(data);
+      selectNode(data.id);
+      showToast("Node added" + (syncResult.added?(" · "+syncResult.added+" edge"+(syncResult.added>1?"s":"")+" auto-created"):""), "ok");
+    } else {
+      const idx = state.graph.nodes.findIndex(n=>n.id===existing.id);
+      const merged = Object.assign({}, existing, data, { id: existing.id });
+      if (idx>=0) state.graph.nodes[idx] = merged;
+      syncResult = syncStructuralEdges(merged);
+      // CASCADE RENAME: if the label changed, find other nodes whose reference
+      // fields contain the OLD label and update them to the new label. Without
+      // this, the next time those nodes are saved, syncStructuralEdges can't
+      // find the old name in the catalog and silently removes their auto-edge.
+      let renameUpdates = 0;
+      if (existing.label && data.label && existing.label !== data.label){
+        const oldLabel = existing.label.trim();
+        const newLabel = data.label.trim();
+        const FIELDS = ["lead","owner","parent","reportsTo","directorate","office","team","platform"];
+        for (const otherNode of state.graph.nodes){
+          if (otherNode.id === merged.id) continue;
+          let changed = false;
+          for (const f of FIELDS){
+            const v = otherNode[f];
+            if (v && String(v).trim().toLowerCase() === oldLabel.toLowerCase()){
+              otherNode[f] = newLabel;
+              changed = true;
+            }
+          }
+          if (changed){
+            renameUpdates++;
+            syncStructuralEdges(otherNode);
+          }
+        }
+      }
+      let msg = "Node updated";
+      const bits = [];
+      if (syncResult.added) bits.push("+"+syncResult.added+" edge"+(syncResult.added>1?"s":""));
+      if (syncResult.removed) bits.push("−"+syncResult.removed+" stale");
+      if (renameUpdates) bits.push(renameUpdates+" reference"+(renameUpdates>1?"s":"")+" updated");
+      if (bits.length) msg += " · " + bits.join(", ");
+      showToast(msg, "ok");
+    }
+    afterMutate(); closeModal();
+  });
+}
+
+function edgeFormHtml(existing){
+  const e = existing || {};
+  const nodeOpts = state.graph.nodes.slice().sort((a,b)=>a.label.localeCompare(b.label))
+    .map(n => `<option value="${escapeHtml(n.id)}">${escapeHtml(n.label)} · ${escapeHtml(n.type)}</option>`).join("");
+  const edgeTypeList = (e.type && !EDGE_TYPES.includes(e.type)) ? [...EDGE_TYPES, e.type] : EDGE_TYPES;
+  const typeOpts = edgeTypeList.map(t=>`<option value="${escapeHtml(t)}" ${e.type===t?"selected":""}>${escapeHtml(t)}</option>`).join("");
+  return `
+    <div class="field"><label for="e-source">Source node</label><select id="e-source">${nodeOpts}</select></div>
+    <div class="field"><label for="e-target">Target node</label><select id="e-target">${nodeOpts}</select></div>
+    <div class="field"><label for="e-type">Relationship type</label><select id="e-type">${typeOpts}</select></div>
+    <div class="field"><label for="e-desc">Description</label><textarea id="e-desc">${escapeHtml(e.description||"")}</textarea></div>
+    <div class="field"><label for="e-notes">Notes</label><textarea id="e-notes">${escapeHtml(e.notes||"")}</textarea></div>
+    ${relWarnHtml()}
+  `;
+}
+function openEdgeModal(existing){
+  const isEdit = !!existing;
+  openModal((isEdit?'<i class="fa-solid fa-pen"></i> Edit relationship':'<i class="fa-solid fa-link"></i> Add relationship'),
+    edgeFormHtml(existing), ()=>{
+    const source = document.getElementById("e-source").value;
+    const target = document.getElementById("e-target").value;
+    const type = document.getElementById("e-type").value;
+    const description = document.getElementById("e-desc").value;
+    const notes = document.getElementById("e-notes").value;
+    if (!source||!target){ showToast("Pick source and target","err"); return; }
+    if (source===target){ showToast("Source and target must differ","err"); return; }
+    if (!relGatePassed(source, target, type, isEdit ? existing.id : undefined)) return;
+    if (!isEdit){
+      const ne = { id: uid("e"), source, target, type, description, notes };
+      state.graph.edges.push(ne); selectEdge(ne.id);
+      showToast("Relationship added", "ok");
+    } else {
+      const idx = state.graph.edges.findIndex(x=>x.id===existing.id);
+      // Manual edit takes ownership: drop auto/autoField so syncStructuralEdges
+      // won't treat the edited edge as stale and silently delete/recreate it.
+      const updated = Object.assign({}, existing, { source, target, type, description, notes });
+      if (source !== existing.source || target !== existing.target || type !== existing.type){
+        delete updated.auto; delete updated.autoField;
+      }
+      if (idx>=0) state.graph.edges[idx] = updated;
+      showToast("Relationship updated", "ok");
+    }
+    afterMutate(); closeModal();
+  });
+  if (existing){
+    document.getElementById("e-source").value = existing.source;
+    document.getElementById("e-target").value = existing.target;
+  }
+  const emRefresh = () => updateRelWarn(
+    document.getElementById("e-source").value,
+    document.getElementById("e-target").value,
+    document.getElementById("e-type").value,
+    existing ? existing.id : undefined);
+  ["e-source","e-target","e-type"].forEach(id => document.getElementById(id).addEventListener("change", emRefresh));
+  emRefresh();
+}
+
+/* Quick connect modal — only asks for type/desc; endpoints pre-set */
+function openConnectModal(sourceId, targetId){
+  const s = findNode(sourceId), t = findNode(targetId);
+  if (!s||!t){ cancelConnect(); return; }
+  const typeOpts = EDGE_TYPES.map(ty=>`<option value="${ty}">${ty}</option>`).join("");
+  openModal('<i class="fa-solid fa-arrows-turn-to-dots"></i> Quick connect', `
+    <div class="profile-section" style="margin-top:0; background:var(--bg-1)">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:13px">
+        <div><strong>${escapeHtml(s.label)}</strong><br><span style="color:var(--muted); font-size:11px">${escapeHtml(s.type)}</span></div>
+        <i class="fa-solid fa-arrow-right-long" style="color:var(--accent); font-size:18px"></i>
+        <div style="text-align:right"><strong>${escapeHtml(t.label)}</strong><br><span style="color:var(--muted); font-size:11px">${escapeHtml(t.type)}</span></div>
+      </div>
+    </div>
+    <div class="field" style="margin-top:14px"><label for="qc-type">Relationship type</label><select id="qc-type">${typeOpts}</select></div>
+    <div class="field"><label for="qc-desc">Description (optional)</label><textarea id="qc-desc" placeholder="Why are these connected?"></textarea></div>
+    ${relWarnHtml()}
+  `, ()=>{
+    if (!relGatePassed(sourceId, targetId, document.getElementById("qc-type").value)) return;
+    const ne = { id: uid("e"), source: sourceId, target: targetId,
+                 type: document.getElementById("qc-type").value,
+                 description: document.getElementById("qc-desc").value, notes:"" };
+    state.graph.edges.push(ne);
+    cancelConnect();
+    selectEdge(ne.id);
+    afterMutate();
+    showToast("Connection added", "ok");
+    closeModal();
+  });
+  // Suggest a sensible default type
+  const guess = guessEdgeType(s, t);
+  if (guess) document.getElementById("qc-type").value = guess;
+  const qcType = document.getElementById("qc-type");
+  const qcRefresh = () => updateRelWarn(sourceId, targetId, qcType.value);
+  qcType.addEventListener("change", qcRefresh);
+  qcRefresh();
+}
+function guessEdgeType(s, t){
+  if (s.type === "Office" && t.type === "Application") return "OWNS";
+  if (s.type === "Office" && t.type === "SPFx Application") return "OWNS";
+  if (s.type === "Office" && t.type === "SharePoint Site") return "HAS_SITE";
+  if (s.type === "Site Collection" && t.type === "SharePoint Site") return "HAS_SITE";
+  if (s.type === "O365 Group" && t.type === "SharePoint Site") return "SECURES";
+  if (s.type === "SharePoint Site" && t.type === "SharePoint List") return "CONTAINS";
+  if (s.type === "Platform" && t.type === "Site Collection") return "CONTAINS";
+  if (s.type === "Platform" && t.type === "Dataverse Table") return "CONTAINS";
+  if (s.type === "Application" && t.type === "Dataverse Table") return "STORES_DATA_IN";
+  if (s.type === "Office" && t.type === "Microsoft Team") return "HAS_TEAM";
+  if (s.type === "Office" && t.type === "O365 Group") return "HAS_O365_GROUP";
+  if (s.type === "Office" && t.type === "Mailbox") return "HAS_MAILBOX";
+  if (s.type === "Office" && t.type === "Microsoft Form") return "HAS_FORM";
+  if (s.type === "Office" && t.type === "Distribution List") return "HAS_DISTRIBUTION_LIST";
+  if (s.type === "Office" && t.type === "Person") return "CONTAINS";
+  if (s.type === "Office" && t.type === "Team") return "CONTAINS";
+  if (s.type === "Team" && t.type === "Person") return "CONTAINS";
+  if (s.type === "Team" && t.type === "Role") return "CONTAINS";
+  if (t.type === "Platform" && s.type === "Application") return "HOSTED_ON";
+  if (t.type === "Platform" && s.type === "SPFx Application") return "HOSTED_ON";
+  if (t.type === "System" && s.type === "Application") return "HOSTED_ON";
+  if (s.type === "Directorate" && t.type === "Office") return "CONTAINS";
+  if (s.type === "Front Office" && t.type === "Directorate") return "CONTAINS";
+  if (s.type === "Under Secretary") return "CONTAINS";
+  if (s.type === "Bureau") return "CONTAINS";
+  if (s.type === "Executive Office") return "CONTAINS";
+  return null;
+}
+
+function startConnect(sourceId){
+  state.connectingFrom = sourceId;
+  canvas.classList.add("connecting");
+  const banner = document.getElementById("connect-banner");
+  banner.style.display = "flex";
+  const src = findNode(sourceId);
+  document.getElementById("connect-banner-text").textContent =
+    "Quick-connect from " + (src?src.label:"node") + ": click target node (Esc to cancel)";
+  document.getElementById("footer-mode").innerHTML = '<i class="fa-solid fa-arrows-turn-to-dots"></i> Connecting…';
+}
+function cancelConnect(){
+  state.connectingFrom = null;
+  canvas.classList.remove("connecting");
+  document.getElementById("connect-banner").style.display = "none";
+  document.getElementById("footer-mode").innerHTML = "";
+  requestRedraw();
+}
+
+/* ============================================================================
+   RELATIONSHIP GUARDRAIL — shared risk assessment used by the creation modals
+   (warn + "create anyway" override) and the canvas (dash-flag risky edges).
+   ============================================================================ */
+const GUARD_CONTAINMENT = ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST"];
+const GUARD_SHARE_OK = ["Mailbox","Distribution List","Microsoft Form","O365 Group","Document","Dataset"];
+function buildRelIndex(edges){
+  const idx = { pair:new Map(), inT:new Map(), outT:new Map(), parents:new Map() };
+  const push = (m, k, e) => { let a = m.get(k); if (!a){ a = []; m.set(k, a); } a.push(e); };
+  for (const e of edges){
+    push(idx.pair, e.source + "|" + e.target + "|" + e.type, e);
+    push(idx.inT, e.target + "|" + e.type, e);
+    push(idx.outT, e.source + "|" + e.type, e);
+    if (GUARD_CONTAINMENT.includes(e.type)) push(idx.parents, e.target, e);
+  }
+  return idx;
+}
+function assessRelationship(sourceId, targetId, type, ignoreEdgeId, idx){
+  const s = findNode(sourceId), t = findNode(targetId);
+  if (!s || !t) return { level:"ok" };
+  if (sourceId === targetId) return { level:"caution", code:"self", message:"A node should not connect to itself." };
+  idx = idx || buildRelIndex(state.graph.edges);
+  const keep = e => e.id !== ignoreEdgeId;
+  const nm = id => { const n = findNode(id); return n ? n.label : "another node"; };
+  const incoming = (id, ty) => (idx.inT.get(id + "|" + ty) || []).filter(keep);
+  const outgoing = (id, ty) => (idx.outT.get(id + "|" + ty) || []).filter(keep);
+  const parentsOf = id => (idx.parents.get(id) || []).filter(keep);
+  if ((idx.pair.get(sourceId + "|" + targetId + "|" + type) || []).some(keep))
+    return { level:"caution", code:"duplicate", message:`A ${type} relationship between ${s.label} and ${t.label} already exists — this duplicates it.` };
+  if (type === "OWNS"){
+    const ex = incoming(targetId,"OWNS").filter(e => e.source !== sourceId);
+    if (ex.length) return { level:"caution", code:"multi-owner", message:`${t.label} already has an owner (${nm(ex[0].source)}). A node should have a single owner.`, suggest:"If this unit only consumes it, use USES instead." };
+  }
+  if (type === "HOSTED_ON"){
+    const ex = outgoing(sourceId,"HOSTED_ON").filter(e => e.target !== targetId);
+    if (ex.length) return { level:"caution", code:"multi-host", message:`${s.label} is already hosted on ${nm(ex[0].target)}. A node should be hosted on one platform.`, suggest:"Use INTEGRATES_WITH or CONNECTED_TO for secondary platforms." };
+    if (s.type === "SharePoint Site" && /sharepoint online/i.test(t.label) && parentsOf(sourceId).some(e => (findNode(e.source)||{}).type === "Site Collection"))
+      return { level:"caution", code:"redundant-host", message:`${s.label} already sits under a Site Collection, so hosting it directly on SharePoint Online is redundant.`, suggest:"Leave it — the tenant link is implied through the collection." };
+  }
+  if (type === "REPORTS_TO"){
+    const ex = outgoing(sourceId,"REPORTS_TO").filter(e => e.target !== targetId);
+    if (ex.length) return { level:"caution", code:"multi-reports", message:`${s.label} already reports to ${nm(ex[0].target)}. Keep a single reporting line.` };
+    if ((idx.pair.get(targetId + "|" + sourceId + "|CONTAINS") || []).some(keep))
+      return { level:"caution", code:"reciprocal", message:`${t.label} already CONTAINS ${s.label}, so a REPORTS_TO back is redundant.`, suggest:"Keep the containment and skip the reports-to." };
+  }
+  if (GUARD_CONTAINMENT.includes(type)){
+    if (s.type === "Person" || s.type === "Role")
+      return { level:"caution", code:"backwards", message:`${s.type}s do not contain org units — ${s.label} ${type} ${t.label} is backwards.`, suggest:`If ${s.label} leads it, use RESPONSIBLE_FOR; if they belong to it, connect ${t.label} → ${s.label} instead.` };
+    const ps = parentsOf(targetId).filter(e => e.source !== sourceId);
+    if (ps.length && GUARD_SHARE_OK.indexOf(t.type) === -1)
+      return { level:"caution", code:"multi-parent", message:`${t.label} is already contained by ${nm(ps[0].source)} — this adds a second structural parent.`, suggest:"Keep one container; use USES, OWNS, or RESPONSIBLE_FOR for the other link." };
+  }
+  return { level:"ok" };
+}
+function computeFlaggedEdges(){
+  const idx = buildRelIndex(state.graph.edges);
+  const flagged = new Set();
+  for (const e of state.graph.edges){
+    if (assessRelationship(e.source, e.target, e.type, e.id, idx).level === "caution") flagged.add(e.id);
+  }
+  return flagged;
+}
+function relWarnHtml(){
+  return '<div id="rel-warn" class="rel-warn" role="alert" style="display:none"></div>'
+       + '<label id="rel-force-wrap" class="rel-force" style="display:none"><input type="checkbox" id="rel-force"> Create anyway — this is intentional</label>';
+}
+function updateRelWarn(sourceId, targetId, type, ignoreId){
+  const box = document.getElementById("rel-warn");
+  if (!box) return { level:"ok" };
+  const wrap = document.getElementById("rel-force-wrap");
+  const a = assessRelationship(sourceId, targetId, type, ignoreId);
+  if (a.level === "caution"){
+    box.style.display = "";
+    box.innerHTML = `<strong><i class="fa-solid fa-triangle-exclamation"></i> Possibly problematic</strong><br>${escapeHtml(a.message)}`
+                  + (a.suggest ? `<br><span class="rel-suggest">${escapeHtml(a.suggest)}</span>` : "");
+    if (wrap) wrap.style.display = "";
+  } else {
+    box.style.display = "none"; box.innerHTML = "";
+    if (wrap){ wrap.style.display = "none"; const f = document.getElementById("rel-force"); if (f) f.checked = false; }
+  }
+  return a;
+}
+function relGatePassed(sourceId, targetId, type, ignoreId){
+  const a = updateRelWarn(sourceId, targetId, type, ignoreId);
+  if (a.level !== "caution") return true;
+  const f = document.getElementById("rel-force");
+  if (f && f.checked) return true;
+  showToast("Relationship flagged as problematic — tick “Create anyway” to proceed", "err");
+  return false;
+}
+
+function afterMutate(skipDirty, skipHistory){
+  // Auto-dedupe any duplicate edges introduced by this mutation. Silent —
+  // a duplicate edge is always a bug, not a feature, so no toast.
+  removeDuplicateEdges();
+  // Also strip any custom node types that collide with built-ins (no toast,
+  // identical purpose).
+  removeDuplicateCustomTypes();
+  // Capture the post-mutation state for redo to work. Undo/redo themselves
+  // pass skipHistory=true so they don't re-push the state they just restored.
+  if (!skipHistory) pushHistory();
+  persist();
+  // Skip dirty mark for synthetic mutations (boot, file load, undo, redo) —
+  // those aren't user-initiated changes on top of file state.
+  if (!skipDirty) markDirty();
+  // Recompute hidden-by-collapse: edges may have been added/removed,
+  // changing the descendant tree.
+  recomputeHiddenByCollapse();
+  buildFilterUI(); buildLegend();
+  updateStats(); renderDetails();
+  updateUndoRedo();
+  wakeSim();
+}
+
+/* ----- Structural-field → edge sync -----
+   Keeps metadata fields like parent/directorate/office/platform/owner/lead
+   in lockstep with graph edges. Edges created this way are tagged
+   { auto:true, autoField:"<field>" } so they can be safely replaced
+   when the field changes without disturbing edges added manually. */
+function findNodeByLabel(label){
+  if (!label) return null;
+  const s = String(label).trim();
+  if (!s) return null;
+  return state.graph.nodes.find(n => n.id === s) ||
+         state.graph.nodes.find(n => n.label === s) ||
+         state.graph.nodes.find(n => (n.label||"").toLowerCase() === s.toLowerCase()) ||
+         null;
+}
+const SYNC_RULES = [
+  { field:"parent",       otherIsSource:true,  edgeType:"CONTAINS"        },
+  { field:"directorate",  otherIsSource:true,  edgeType:"CONTAINS"        },
+  { field:"office",       otherIsSource:true,  edgeType:"CONTAINS"        },
+  { field:"team",         otherIsSource:true,  edgeType:"CONTAINS"        },
+  { field:"platform",     otherIsSource:false, edgeType:"HOSTED_ON"       },
+  { field:"owner",        otherIsSource:true,  edgeType:"OWNS"            },
+  { field:"lead",         otherIsSource:true,  edgeType:"RESPONSIBLE_FOR", personOnly:true },
+  { field:"reportsTo",    otherIsSource:false, edgeType:"REPORTS_TO"      }
+];
+function syncStructuralEdges(node){
+  let added = 0, removed = 0;
+  for (const rule of SYNC_RULES){
+    const value = (node[rule.field] || "").trim();
+    const other = value ? findNodeByLabel(value) : null;
+    // Find any edge previously created from this field for this node
+    const previous = state.graph.edges.filter(e =>
+      e.auto && e.autoField === rule.field &&
+      (rule.otherIsSource ? e.target === node.id : e.source === node.id)
+    );
+    if (!other || (rule.personOnly && other.type !== "Person")){
+      if (previous.length){
+        state.graph.edges = state.graph.edges.filter(e => !previous.includes(e));
+        removed += previous.length;
+      }
+      continue;
+    }
+    const source = rule.otherIsSource ? other.id : node.id;
+    const target = rule.otherIsSource ? node.id : other.id;
+    if (source === target) continue;
+    const correct = previous.find(e => e.source===source && e.target===target);
+    if (correct){
+      const stale = previous.filter(e => e !== correct);
+      if (stale.length){
+        state.graph.edges = state.graph.edges.filter(e => !stale.includes(e));
+        removed += stale.length;
+      }
+    } else {
+      if (previous.length){
+        state.graph.edges = state.graph.edges.filter(e => !previous.includes(e));
+        removed += previous.length;
+      }
+      state.graph.edges.push({
+        id: uid("e"), source, target, type: rule.edgeType,
+        description: `Auto-created from "${rule.field}" field`,
+        notes: "", auto: true, autoField: rule.field
+      });
+      added++;
+    }
+  }
+  return { added, removed };
+}
+
+function deleteNode(id){
+  state.graph.nodes = state.graph.nodes.filter(n=>n.id!==id);
+  state.graph.edges = state.graph.edges.filter(e=>e.source!==id && e.target!==id);
+  state.graph.collapsedNodes = (state.graph.collapsedNodes || []).filter(x => x !== id);
+  state.positions.delete(id);
+  if (state.selectedNode===id) state.selectedNode=null;
+  state.multiSelect.delete(id);
+  afterMutate(); showToast("Node deleted","ok");
+}
+function deleteEdge(id){
+  state.graph.edges = state.graph.edges.filter(e=>e.id!==id);
+  if (state.selectedEdge===id) state.selectedEdge=null;
+  afterMutate(); showToast("Relationship deleted","ok");
+}
+
+/* ============================================================================
+   CONTEXT MENU
+   ============================================================================ */
+function buildCtxMenu(items){
+  const menu = document.getElementById("ctx-menu");
+  menu.setAttribute("role", "menu");
+  menu.innerHTML = "";
+  items.forEach(it=>{
+    if (it === "sep"){ const s = document.createElement("div"); s.className="ctx-sep"; s.setAttribute("role","separator"); menu.appendChild(s); return; }
+    const el = document.createElement("div");
+    el.className = "ctx-item" + (it.danger?" danger":"");
+    el.setAttribute("role", "menuitem");
+    el.setAttribute("tabindex", "-1");
+    el.innerHTML = `<i class="fa-solid ${it.icon} ci" aria-hidden="true"></i> ${escapeHtml(it.label)}`;
+    el.onclick = ()=>{ hideContextMenu(); it.action(); };
+    menu.appendChild(el);
+  });
+  return menu;
+}
+// Keyboard navigation inside the context menu (WCAG 2.1.1 / menu pattern):
+// arrows move, Home/End jump, Enter/Space activate, Escape closes and
+// returns focus to where the menu was invoked from.
+let ctxReturnFocus = null;
+function ctxMenuItems(){
+  return [...document.getElementById("ctx-menu").querySelectorAll('.ctx-item')];
+}
+document.getElementById("ctx-menu").addEventListener("keydown", e=>{
+  const items = ctxMenuItems();
+  if (!items.length) return;
+  const idx = items.indexOf(document.activeElement);
+  if (e.key === "ArrowDown"){ e.preventDefault(); items[(idx+1) % items.length].focus(); }
+  else if (e.key === "ArrowUp"){ e.preventDefault(); items[(idx-1+items.length) % items.length].focus(); }
+  else if (e.key === "Home"){ e.preventDefault(); items[0].focus(); }
+  else if (e.key === "End"){ e.preventDefault(); items[items.length-1].focus(); }
+  else if (e.key === "Enter" || e.key === " "){
+    e.preventDefault();
+    if (idx >= 0) items[idx].click();
+  } else if (e.key === "Escape" || e.key === "Tab"){
+    e.preventDefault();
+    hideContextMenu();
+  }
+});
+function positionCtxMenu(menu, x, y, focusFirst){
+  menu.classList.add("open");
+  const rect = menu.getBoundingClientRect();
+  if (x + rect.width > window.innerWidth) x = window.innerWidth - rect.width - 8;
+  if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 8;
+  menu.style.left = x + "px"; menu.style.top = y + "px";
+  if (focusFirst){
+    const first = menu.querySelector(".ctx-item");
+    if (first) first.focus();
+  }
+}
+function hideContextMenu(){
+  const menu = document.getElementById("ctx-menu");
+  const wasOpen = menu.classList.contains("open");
+  menu.classList.remove("open");
+  if (wasOpen && ctxReturnFocus){
+    try { ctxReturnFocus.focus(); } catch(_){}
+    ctxReturnFocus = null;
+  }
+}
+function showNodeContextMenu(x, y, node){
+  const items = [
+    { label:"Edit node",          icon:"fa-pen",                  action:()=>openNodeModal(node) },
+    { label:"Connect from here",  icon:"fa-arrows-turn-to-dots",  action:()=>startConnect(node.id) },
+    { label:"Center on graph",    icon:"fa-crosshairs",           action:()=>centerOnNode(node.id) },
+    { label:"Focus neighborhood", icon:"fa-circle-nodes",         action:()=>{ state.showNeighborhoodOnly=!state.showNeighborhoodOnly; updateStats(); requestRedraw(); } },
+    { label:"Walk relationships", icon:"fa-person-walking",       action:()=>walkRelationships(node.id) },
+    { label:"Scope to this branch", icon:"fa-filter",             action:()=>scopeToBranch(node.id) }
+  ];
+  // Collapse/expand affordance shows only when meaningful
+  if (isCollapsed(node.id)){
+    items.push({ label:"Expand branch", icon:"fa-square-plus", action:()=>expandNodeBranch(node.id) });
+  } else if (getCollapseChildren(node.id).length > 0){
+    const totalDesc = getCollapseDescendants(node.id).size;
+    items.push({ label:"Collapse branch (hides " + totalDesc + ")", icon:"fa-square-minus", action:()=>collapseNodeBranch(node.id) });
+  }
+  items.push("sep");
+  items.push({ label:"Delete node", icon:"fa-trash", danger:true, action:()=>{ if(confirm("Delete '"+node.label+"'?")) deleteNode(node.id); } });
+  const menu = buildCtxMenu(items);
+  positionCtxMenu(menu, x, y);
+}
+function showEdgeContextMenu(x, y, edge){
+  const menu = buildCtxMenu([
+    { label:"Edit relationship",  icon:"fa-pen",         action:()=>openEdgeModal(edge) },
+    { label:"Reverse direction",  icon:"fa-arrows-rotate", action:()=>{
+        const t=edge.source; edge.source=edge.target; edge.target=t;
+        if (edge.auto){ delete edge.auto; delete edge.autoField; }
+        afterMutate();
+        if (!findEdge(edge.id)){
+          const survivor = state.graph.edges.find(x => x.source===edge.source && x.target===edge.target && x.type===edge.type);
+          if (state.selectedEdge === edge.id) state.selectedEdge = survivor ? survivor.id : null;
+          showToast("Reversed — merged with an identical existing relationship","ok");
+          renderDetails();
+        } else {
+          showToast("Reversed","ok");
+        }
+      } },
+    "sep",
+    { label:"Delete relationship",icon:"fa-trash", danger:true, action:()=>{ if(confirm("Delete this relationship?")) deleteEdge(edge.id); } }
+  ]);
+  positionCtxMenu(menu, x, y);
+}
+function showCanvasContextMenu(x, y, sx, sy){
+  const menu = buildCtxMenu([
+    { label:"Add node here",   icon:"fa-plus",        action:()=>{ const wp=screenToWorld(sx,sy); pendingNodePos = wp; openNodeModal(null); } },
+    { label:"Add relationship",icon:"fa-link",        action:()=>openEdgeModal(null) },
+    "sep",
+    { label:"Fit graph",       icon:"fa-expand",      action:fitGraph },
+    { label:"Reset view",      icon:"fa-rotate-left", action:resetView }
+  ]);
+  positionCtxMenu(menu, x, y);
+}
+let pendingNodePos = null;
+__ergOn(document, "click", e=>{
+  if (!e.target.closest(".ctx-menu")) hideContextMenu();
+});
+
+/* ============================================================================
+   IMPORT / EXPORT / SAMPLE / PNG
+   ============================================================================ */
+/* ----- File-as-source-of-truth implementation -----
+   Goal: the JSON file IS the working document. localStorage caches changes
+   between explicit Saves so accidental closes don't lose work. */
+
+const FSA_SUPPORTED = typeof window.showOpenFilePicker === "function"
+                   && typeof window.showSaveFilePicker === "function";
+const FILE_PICKER_OPTIONS = {
+  types: [{ description: "Enterprise Graph JSON", accept: { "application/json": [".json"] } }],
+  excludeAcceptAllOption: false,
+  multiple: false
+};
+
+/* ----- Editor identity + last-save stamp -----
+   The app has no auth, so we ask each user once for a display name and
+   remember it in localStorage. The name is written into the JSON on save
+   so teammates opening the file can see who edited last and when. */
+const EDITOR_NAME_KEY = "erg.editorName";
+function getEditorName(forcePrompt){
+  if (host && host.editorName) return host.editorName;
+  let name = localStorage.getItem(EDITOR_NAME_KEY) || "";
+  if (!name || forcePrompt){
+    const v = prompt("Your name (stamped on saves so teammates can see who edited last):", name);
+    if (v === null) return name; // cancelled — keep whatever we had
+    name = v.trim();
+    if (name) localStorage.setItem(EDITOR_NAME_KEY, name);
+    else localStorage.removeItem(EDITOR_NAME_KEY);
+  }
+  return name;
+}
+function formatRelativeTime(iso){
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (!isFinite(t)) return "";
+  const diff = Date.now() - t;
+  if (diff < 45*1000) return "just now";
+  const m = Math.floor(diff/60000);
+  if (m < 60) return m + "m ago";
+  const h = Math.floor(m/60);
+  if (h < 24) return h + "h ago";
+  const d = Math.floor(h/24);
+  if (d < 7) return d + "d ago";
+  return new Date(iso).toLocaleDateString();
+}
+function updateModifiedChip(){
+  const chip = document.getElementById("modified-chip");
+  if (!chip) return;
+  const by = state.lastModifiedBy, at = state.lastModifiedAt;
+  if (!by && !at){ chip.style.display = "none"; return; }
+  chip.style.display = "";
+  const who = by || "unknown";
+  const when = at ? formatRelativeTime(at) : "";
+  chip.querySelector(".mc-text").textContent =
+    "Saved by " + who + (when ? " · " + when : "");
+  const abs = at ? new Date(at).toLocaleString() : "";
+  chip.title = "Last saved by " + who + (abs ? " at " + abs : "") +
+               "\nClick to update your name";
+}
+function applyStampFromBundle(bundle){
+  state.lastModifiedBy = bundle.lastModifiedBy || null;
+  state.lastModifiedAt = bundle.lastModifiedAt || null;
+  updateModifiedChip();
+}
+
+/* JSON bundle schema versions:
+     v1 — legacy graph-only object (just { nodes, edges }), still loadable
+     v2 — added envelope: { version, exportedAt, lastModifiedBy, lastModifiedAt, graph, snapshots }
+     v3 — additive (still backwards-compatible loader):
+            - Node fields: email, phone, team
+            - Node types: "Team" (org sub-unit), "Microsoft Form"
+            - Edge types: HAS_FORM
+            - Older v2 files still load — missing fields default at read time.
+*/
+// Bundle schema version. 4 = graph.positions (persisted layouts) added.
+// Bump when the file format gains fields older builds can't round-trip.
+const BUNDLE_SCHEMA_VERSION = 4;
+function currentBundle(){
+  const now = new Date().toISOString();
+  const editor = getEditorName() || "unknown";
+  syncPositionsToGraph(); // hand-arranged layout travels with the file
+  return {
+    version: BUNDLE_SCHEMA_VERSION,
+    exportedAt: now,
+    lastModifiedBy: editor,
+    lastModifiedAt: now,
+    graph: state.graph,
+    snapshots: loadSnapshots()
+  };
+}
+
+function parseBundle(text){
+  const obj = JSON.parse(text);
+  if (obj && obj.graph && Array.isArray(obj.graph.nodes) && Array.isArray(obj.graph.edges)){
+    // Forward-compat: warn when the file was written by a NEWER build — fields
+    // this build doesn't know about won't round-trip on the next save.
+    if (typeof obj.version === "number" && obj.version > BUNDLE_SCHEMA_VERSION){
+      setTimeout(() => showToast("This file was saved by a newer version of the tool (schema v" + obj.version + " > v" + BUNDLE_SCHEMA_VERSION + "). Saving may drop newer fields.", "err"), 600);
+    }
+    return {
+      graph: obj.graph,
+      snapshots: Array.isArray(obj.snapshots) ? obj.snapshots : null,
+      lastModifiedBy: obj.lastModifiedBy || null,
+      lastModifiedAt: obj.lastModifiedAt || null
+    };
+  }
+  if (obj && Array.isArray(obj.nodes) && Array.isArray(obj.edges)){
+    // legacy graph-only file
+    return { graph: obj, snapshots: null, lastModifiedBy: null, lastModifiedAt: null };
+  }
+  throw new Error("Not a recognized graph JSON file");
+}
+
+// Coerce externally-authored graph data to the canonical shape so malformed
+// files degrade gracefully instead of crashing later (e.g. label-less nodes
+// blow up in `a.label.localeCompare(b.label)` sorts; string `tags` break
+// `.join`). Returns counts for an informational toast.
+function coerceLoadedGraph(graph){
+  const report = { fixedNodes: 0, droppedNodes: 0, droppedEdges: 0 };
+  const seenIds = new Set();
+  graph.nodes = (graph.nodes || []).filter(n => {
+    if (!n || typeof n !== "object"){ report.droppedNodes++; return false; }
+    let fixed = false;
+    if (typeof n.id !== "string" || !n.id){
+      if (n.id != null){ n.id = String(n.id); fixed = true; }
+      else { report.droppedNodes++; return false; } // no usable identity
+    }
+    if (seenIds.has(n.id)){ report.droppedNodes++; return false; } // duplicate ID
+    seenIds.add(n.id);
+    if (typeof n.label !== "string" || !n.label.trim()){ n.label = n.label != null && String(n.label).trim() ? String(n.label) : n.id; fixed = true; }
+    if (typeof n.type !== "string" || !n.type){ n.type = "Other"; fixed = true; }
+    if (n.tags != null && !Array.isArray(n.tags)){
+      n.tags = String(n.tags).split(",").map(s=>s.trim()).filter(Boolean); fixed = true;
+    }
+    if (fixed) report.fixedNodes++;
+    return true;
+  });
+  graph.edges = (graph.edges || []).filter(e => {
+    if (!e || typeof e !== "object" || !e.source || !e.target || !e.type){ report.droppedEdges++; return false; }
+    if (!seenIds.has(e.source) || !seenIds.has(e.target)){ report.droppedEdges++; return false; } // dangling endpoint
+    if (typeof e.id !== "string" || !e.id) e.id = uid("e");
+    return true;
+  });
+  return report;
+}
+
+function applyLoadedBundle(bundle, fileName){
+  state.graph = bundle.graph;
+  const coerced = coerceLoadedGraph(state.graph);
+  if (coerced.droppedNodes || coerced.droppedEdges || coerced.fixedNodes){
+    const bits = [];
+    if (coerced.fixedNodes)   bits.push(coerced.fixedNodes + " node" + (coerced.fixedNodes===1?"":"s") + " repaired");
+    if (coerced.droppedNodes) bits.push(coerced.droppedNodes + " invalid node" + (coerced.droppedNodes===1?"":"s") + " dropped");
+    if (coerced.droppedEdges) bits.push(coerced.droppedEdges + " dangling edge" + (coerced.droppedEdges===1?"":"s") + " dropped");
+    setTimeout(() => showToast("File cleanup: " + bits.join(", "), "ok"), 100);
+  }
+  // Clean up duplicate edges from legacy data (e.g., a user filled the Lead
+  // field AND Quick-Connected the same person — two edges got created).
+  // Silent if nothing was found; toast with count if duplicates were removed.
+  const dupeCount = removeDuplicateEdges();
+  if (dupeCount > 0){
+    setTimeout(() => showToast(`Cleaned up ${dupeCount} duplicate edge${dupeCount===1?"":"s"} on load`, "ok"), 200);
+  }
+  // Strip custom node types that have since become built-in (e.g., a user
+  // created a custom "Team" before Team was promoted to built-in).
+  const typeDupes = removeDuplicateCustomTypes();
+  if (typeDupes > 0){
+    setTimeout(() => showToast(`Removed ${typeDupes} redundant custom type${typeDupes===1?"":"s"} (now built-in)`, "ok"), 400);
+  }
+  // Ensure optional collections exist on the loaded graph (older / external files
+  // may omit them); subsequent code assumes both are arrays.
+  if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
+  if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
+  state.positions.clear();
+  state.selectedNode = state.selectedEdge = null;
+  clearLoadedViewState();
+  resetFiltersFromGraph();
+  // Restore the saved arrangement when the file carries one; only fall back
+  // to recomputing the layout for files without positions (or older schemas).
+  const restoredPos = restorePositionsFromGraph();
+  ensurePositions();
+  if (!restoredPos) applyLayout(state.layout);
+  else { recomputeHiddenByCollapse(); wakeSim(); }
+  // Merge snapshots by ID (newer timestamp wins). If the loaded file contains
+  // no snapshots array, leave existing snapshots alone (don't wipe local).
+  let added = 0, updated = 0;
+  if (bundle.snapshots){
+    const existing = loadSnapshots();
+    const byId = new Map();
+    existing.forEach(s => byId.set(s.id, s));
+    bundle.snapshots.forEach(s => {
+      if (!s || !s.id || !s.graph) return;
+      const cur = byId.get(s.id);
+      if (!cur){ byId.set(s.id, s); added++; }
+      else if (s.ts > cur.ts){ byId.set(s.id, s); updated++; }
+    });
+    const merged = Array.from(byId.values()).sort((a,b)=>b.ts - a.ts);
+    saveSnapshots(merged);
+    renderSnapList();
+  }
+  state.fileName = fileName || null;
+  state.lastModifiedBy = bundle.lastModifiedBy || null;
+  state.lastModifiedAt = bundle.lastModifiedAt || null;
+  updateModifiedChip();
+  markClean();
+  afterMutate(true); // skip dirty mark; we just synced from file
+  renderViewList(); renderWalkthroughList();
+  fitGraph();
+  const bits = [];
+  if (added) bits.push("+" + added + " snapshot" + (added===1?"":"s"));
+  if (updated) bits.push(updated + " updated");
+  showToast("Opened " + (fileName || "graph") + (bits.length ? " · " + bits.join(", ") : ""), "ok");
+}
+
+/* ----- Remember last file across sessions (FSA handle persisted in IndexedDB) -----
+   The browser will not auto-read an arbitrary path, but it will reopen a file the
+   user picked before. We stash the FileSystemFileHandle in IndexedDB (handles are
+   not serialisable to localStorage) and reopen it on launch: silently if permission
+   is still granted, otherwise behind a one-click Reopen button. Works for files on
+   mapped network drives or synced OneDrive / SharePoint folders. */
+function _idbOpen(){
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("erg-fs", 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore("handles"); };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function rememberHandle(handle){
+  if (!handle || !window.indexedDB) return;
+  try {
+    const db = await _idbOpen();
+    await new Promise((res, rej) => {
+      const tx = db.transaction("handles", "readwrite");
+      tx.objectStore("handles").put(handle, "lastFile");
+      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    });
+    db.close();
+  } catch(e){ /* non-fatal */ }
+}
+async function getRememberedHandle(){
+  if (!window.indexedDB) return null;
+  try {
+    const db = await _idbOpen();
+    const h = await new Promise((res) => {
+      const tx = db.transaction("handles", "readonly");
+      const g = tx.objectStore("handles").get("lastFile");
+      g.onsuccess = () => res(g.result || null);
+      g.onerror = () => res(null);
+    });
+    db.close();
+    return h;
+  } catch(e){ return null; }
+}
+async function loadFromHandle(handle){
+  try {
+    const file = await handle.getFile();
+    const bundle = parseBundle(await file.text());
+    state.fileHandle = handle;
+    applyLoadedBundle(bundle, file.name); // toasts "Opened <file>"
+    return true;
+  } catch(err){
+    showToast("Could not reopen the remembered file: " + err.message, "err");
+    return false;
+  }
+}
+async function tryReopenLast(){
+  if (!FSA_SUPPORTED) return;
+  const handle = await getRememberedHandle();
+  if (!handle) return;
+  let perm = "prompt";
+  try { perm = await handle.queryPermission({ mode:"readwrite" }); } catch(e){ perm = "prompt"; }
+  if (perm === "granted"){
+    // applyLoadedBundle (inside loadFromHandle) already toasts "Opened <file>";
+    // a second "Reopened" toast immediately overwrote it.
+    await loadFromHandle(handle, true);
+    return;
+  }
+  const btn = document.getElementById("btn-reopen-last");
+  const nm = document.getElementById("reopen-last-name");
+  if (!btn) return;
+  if (nm) nm.textContent = handle.name || "last file";
+  btn.style.display = "";
+  btn.onclick = async () => {
+    let p = "denied";
+    try { p = await handle.requestPermission({ mode:"readwrite" }); } catch(e){}
+    if (p === "granted"){ if (await loadFromHandle(handle, false)) btn.style.display = "none"; }
+    else showToast("Permission was denied for that file", "err");
+  };
+}
+
+async function openFile(){
+  try {
+    if (FSA_SUPPORTED){
+      const [handle] = await window.showOpenFilePicker(FILE_PICKER_OPTIONS);
+      const file = await handle.getFile();
+      const bundle = parseBundle(await file.text());
+      state.fileHandle = handle; rememberHandle(handle);
+      applyLoadedBundle(bundle, file.name);
+    } else {
+      // Fallback to <input type="file">
+      document.getElementById("file-input").click();
+    }
+  } catch(err){
+    if (err.name !== "AbortError"){
+      showToast("Open failed: " + err.message, "err");
+    }
+  }
+}
+
+// Fallback path used by the hidden file input + drag-drop
+function loadFileBlob(file){
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    try {
+      const bundle = parseBundle(reader.result);
+      // No FSA handle: changes won't auto-save back to this file
+      state.fileHandle = null;
+      applyLoadedBundle(bundle, file.name);
+    } catch(err){
+      showToast("Open failed: " + err.message, "err");
+    }
+  };
+  reader.readAsText(file);
+}
+
+async function saveFile(){
+  const bundle = currentBundle();
+  const text = JSON.stringify(bundle, null, 2);
+  try {
+    if (state.fileHandle){
+      // True in-place save via FSA — silent success
+      const writable = await state.fileHandle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      applyStampFromBundle(bundle);
+      markClean();
+      showToast("Saved " + (state.fileName || "to file"), "ok");
+      return;
+    }
+    if (FSA_SUPPORTED){
+      // No handle yet: prompt for save location once, then save
+      const handle = await window.showSaveFilePicker({
+        ...FILE_PICKER_OPTIONS,
+        suggestedName: state.fileName || "enterprise-relationship-graph.json"
+      });
+      const writable = await handle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      state.fileHandle = handle; rememberHandle(handle);
+      state.fileName = handle.name;
+      applyStampFromBundle(bundle);
+      markClean();
+      showToast("Saved as " + handle.name, "ok");
+      return;
+    }
+    // No FSA at all: fall back to download. User manually replaces the file.
+    downloadBlob(text, state.fileName || "enterprise-relationship-graph.json", "application/json");
+    applyStampFromBundle(bundle);
+    markClean();
+    showToast("Downloaded. Move it over your working file to sync.", "ok");
+  } catch(err){
+    if (err.name !== "AbortError"){
+      showToast("Save failed: " + err.message, "err");
+    }
+  }
+}
+
+async function saveFileAs(){
+  // Explicit "save to a NEW file" — clears the current handle so future Saves
+  // go to the new file
+  const bundle = currentBundle();
+  const text = JSON.stringify(bundle, null, 2);
+  try {
+    if (FSA_SUPPORTED){
+      const handle = await window.showSaveFilePicker({
+        ...FILE_PICKER_OPTIONS,
+        suggestedName: state.fileName || "enterprise-relationship-graph.json"
+      });
+      const writable = await handle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      state.fileHandle = handle; rememberHandle(handle);
+      state.fileName = handle.name;
+      applyStampFromBundle(bundle);
+      markClean();
+      showToast("Saved as " + handle.name, "ok");
+    } else {
+      downloadBlob(text, "enterprise-relationship-graph.json", "application/json");
+      applyStampFromBundle(bundle);
+      showToast("Downloaded a copy", "ok");
+    }
+  } catch(err){
+    if (err.name !== "AbortError"){
+      showToast("Save As failed: " + err.message, "err");
+    }
+  }
+}
+
+function markDirty(){
+  if (!state.dirty){
+    state.dirty = true;
+    updateFileChip();
+  }
+}
+function markClean(){
+  state.dirty = false;
+  updateFileChip();
+}
+function updateFileChip(){
+  const chip = document.getElementById("file-chip");
+  const name = document.getElementById("fc-name");
+  if (!chip || !name) return;
+  if (host && typeof host.renderStatusChip === "function"){
+    try { host.renderStatusChip(chip, name, state); return; } catch(_){}
+  }
+  chip.classList.toggle("dirty", state.dirty);
+  // Dirty state must not be color/title-only (WCAG 1.4.1): mirror it in the
+  // accessible name so screen readers hear "unsaved changes" too.
+  chip.setAttribute("aria-label", state.dirty
+    ? "Current file" + (state.fileName ? " " + state.fileName : "") + ", unsaved changes. Save."
+    : "Current file" + (state.fileName ? " " + state.fileName : ""));
+  if (state.fileName){
+    name.textContent = state.fileName;
+    name.classList.remove("no-file");
+    chip.title = state.dirty
+      ? "Unsaved changes. Click to save."
+      : "Click to save (will write to " + state.fileName + ")";
+  } else {
+    name.textContent = state.dirty ? "unsaved · no file" : "no file open";
+    name.classList.add("no-file");
+    chip.title = state.dirty
+      ? "Unsaved changes. Click to choose a file to save to."
+      : "Click to open or save a file";
+  }
+}
+function loadSample(){
+  if (!confirm("Replace current graph with sample data? Unsaved changes will be lost.")) return;
+  state.graph = JSON.parse(JSON.stringify(SAMPLE_DATA));
+  if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
+  if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
+  state.positions.clear();
+  state.selectedNode = state.selectedEdge = null;
+  clearLoadedViewState();
+  resetFiltersFromGraph();
+  ensurePositions();
+  applyLayout(state.layout);
+  afterMutate(); renderViewList(); renderWalkthroughList(); fitGraph();
+  showToast("Sample data loaded","ok");
+}
+
+/* ----- Tabular export (CSV + XLSX) ----- */
+const NODE_EXPORT_COLS = ["id","label","type","status","owner","lead","parent","reportsTo","directorate","office","team","platform","url","email","phone","tags","notes","description","icon"];
+const EDGE_EXPORT_COLS = ["id","source","source_label","target","target_label","type","description","notes","auto","autoField"];
+
+function nodeToRow(n){
+  return NODE_EXPORT_COLS.map(k => {
+    if (k === "tags") return Array.isArray(n.tags) ? n.tags.join("; ") : "";
+    return n[k] == null ? "" : n[k];
+  });
+}
+function edgeToRow(e){
+  const s = findNode(e.source), t = findNode(e.target);
+  return EDGE_EXPORT_COLS.map(k => {
+    if (k === "source_label") return s ? s.label : "";
+    if (k === "target_label") return t ? t.label : "";
+    if (k === "auto") return e.auto ? "yes" : "";
+    return e[k] == null ? "" : e[k];
+  });
+}
+
+function csvEscape(v){
+  if (v == null) return "";
+  const s = String(v);
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function makeCsv(headers, rows){
+  return [headers, ...rows].map(r => r.map(csvEscape).join(",")).join("\r\n");
+}
+function downloadBlob(content, filename, mime){
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 100);
+}
+function exportCsv(){
+  const nodeRows = state.graph.nodes.map(nodeToRow);
+  const edgeRows = state.graph.edges.map(edgeToRow);
+  // BOM so Excel recognizes UTF-8 on open
+  downloadBlob("﻿" + makeCsv(NODE_EXPORT_COLS, nodeRows), "nodes.csv", "text/csv;charset=utf-8");
+  // small delay so the browser doesn't collapse the two downloads
+  setTimeout(()=>{
+    downloadBlob("﻿" + makeCsv(EDGE_EXPORT_COLS, edgeRows), "edges.csv", "text/csv;charset=utf-8");
+    showToast("Exported nodes.csv and edges.csv", "ok");
+  }, 250);
+}
+
+// SheetJS loaded lazily from CDN — only when user clicks Excel export
+let _xlsxLoading = null;
+function loadSheetJs(){
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (_xlsxLoading) return _xlsxLoading;
+  _xlsxLoading = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js";
+    script.crossOrigin = "anonymous";
+    script.onload = () => resolve(window.XLSX);
+    script.onerror = () => reject(new Error("Failed to load SheetJS from CDN"));
+    document.head.appendChild(script);
+  });
+  return _xlsxLoading;
+}
+async function exportXlsx(){
+  const btn = document.getElementById("btn-export-xlsx");
+  btn.disabled = true;
+  showToast("Preparing Excel workbook…");
+  try {
+    const XLSX = await loadSheetJs();
+    const wb = XLSX.utils.book_new();
+    const nodesSheet = XLSX.utils.aoa_to_sheet([NODE_EXPORT_COLS, ...state.graph.nodes.map(nodeToRow)]);
+    const edgesSheet = XLSX.utils.aoa_to_sheet([EDGE_EXPORT_COLS, ...state.graph.edges.map(edgeToRow)]);
+    // Auto-size columns for readability
+    const autoWidth = rows => {
+      const widths = [];
+      rows.forEach(r => r.forEach((cell,i)=>{
+        const len = (cell == null ? "" : String(cell)).length;
+        widths[i] = Math.max(widths[i] || 8, Math.min(60, len + 2));
+      }));
+      return widths.map(w => ({ wch: w }));
+    };
+    nodesSheet["!cols"] = autoWidth([NODE_EXPORT_COLS, ...state.graph.nodes.map(nodeToRow)]);
+    edgesSheet["!cols"] = autoWidth([EDGE_EXPORT_COLS, ...state.graph.edges.map(edgeToRow)]);
+    XLSX.utils.book_append_sheet(wb, nodesSheet, "Nodes");
+    XLSX.utils.book_append_sheet(wb, edgesSheet, "Edges");
+    XLSX.writeFile(wb, "enterprise-relationship-graph.xlsx");
+    showToast("Exported Excel workbook", "ok");
+  } catch (err){
+    showToast("Excel export failed: " + err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function exportPng(){
+  const nodes = visibleNodes();
+  if (!nodes.length){ showToast("No visible nodes to export","err"); return; }
+  // Compute bounds in world coords
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  nodes.forEach(n=>{
+    const p = state.positions.get(n.id); if(!p) return;
+    const r = nodeRadius(n) + 30;
+    if (p.x-r<minX) minX=p.x-r; if (p.y-r<minY) minY=p.y-r;
+    if (p.x+r>maxX) maxX=p.x+r; if (p.y+r>maxY) maxY=p.y+r;
+  });
+  const pad = 40;
+  const gw = (maxX-minX)+pad*2, gh = (maxY-minY)+pad*2;
+  const scale = 2;
+  const off = document.createElement("canvas");
+  off.width = gw*scale; off.height = gh*scale;
+  const octx = off.getContext("2d");
+  octx.scale(scale, scale);
+  octx.fillStyle = "#0D0E11"; octx.fillRect(0,0,gw,gh);
+  // Redraw with local code into octx using our own transform
+  octx.translate(-minX+pad, -minY+pad);
+  // edges
+  visibleEdges().forEach(e=>{
+    const a = state.positions.get(e.source), b = state.positions.get(e.target);
+    if (!a||!b) return;
+    const es = edgeStyle(e.type);
+    octx.strokeStyle = es.color.replace(/[\d.]+\)$/, '0.9)');
+    octx.fillStyle = octx.strokeStyle;
+    octx.lineWidth = es.width;
+    octx.setLineDash(es.dash || []);
+    const dx = b.x-a.x, dy = b.y-a.y, len = Math.sqrt(dx*dx+dy*dy)||1;
+    const offset = Math.min(20, len*0.08);
+    const nx = -dy/len, ny = dx/len;
+    const mx = (a.x+b.x)/2, my = (a.y+b.y)/2;
+    const cpx = mx+nx*offset, cpy = my+ny*offset;
+    const tr = nodeRadius(findNode(e.target));
+    const ang = Math.atan2(b.y-cpy, b.x-cpx);
+    const ex = b.x-Math.cos(ang)*(tr+4), ey = b.y-Math.sin(ang)*(tr+4);
+    octx.beginPath(); octx.moveTo(a.x,a.y); octx.quadraticCurveTo(cpx,cpy,ex,ey); octx.stroke();
+    octx.setLineDash([]);
+    // arrowhead
+    const aa = Math.atan2(ey-cpy, ex-cpx);
+    octx.beginPath(); octx.moveTo(ex,ey);
+    octx.lineTo(ex - 7*Math.cos(aa-Math.PI/6), ey - 7*Math.sin(aa-Math.PI/6));
+    octx.lineTo(ex - 7*Math.cos(aa+Math.PI/6), ey - 7*Math.sin(aa+Math.PI/6));
+    octx.closePath(); octx.fill();
+  });
+  // nodes
+  nodes.forEach(n=>{
+    const p = state.positions.get(n.id); if (!p) return;
+    const ts = typeStyle(n.type);
+    octx.fillStyle = ts.color; octx.strokeStyle = "rgba(15,23,42,0.85)"; octx.lineWidth = 1.5;
+    octx.beginPath();
+    if (ts.shape==="round") octx.arc(p.x,p.y,ts.size,0,Math.PI*2);
+    else if (ts.shape==="square"){ const r=ts.size*0.18, s=ts.size*1.7; roundRect(octx,p.x-s/2,p.y-s/2,s,s,r); }
+    else if (ts.shape==="diamond"){ octx.moveTo(p.x,p.y-ts.size); octx.lineTo(p.x+ts.size,p.y); octx.lineTo(p.x,p.y+ts.size); octx.lineTo(p.x-ts.size,p.y); octx.closePath(); }
+    else if (ts.shape==="tri"){ octx.moveTo(p.x,p.y-ts.size); octx.lineTo(p.x+ts.size*0.95,p.y+ts.size*0.7); octx.lineTo(p.x-ts.size*0.95,p.y+ts.size*0.7); octx.closePath(); }
+    else if (ts.shape==="hex"){ for (let i=0;i<6;i++){ const a=Math.PI/3*i-Math.PI/6, px=p.x+Math.cos(a)*ts.size, py=p.y+Math.sin(a)*ts.size; if(i===0) octx.moveTo(px,py); else octx.lineTo(px,py);} octx.closePath(); }
+    else octx.arc(p.x,p.y,ts.size,0,Math.PI*2);
+    octx.fill(); octx.stroke();
+    if (state.fontsReady){
+      const spec = iconSpec(n);
+      const isz = Math.max(8, ts.size*0.85);
+      const fg = iconFgFor(ts.color);
+      const yOff = (ts.shape==="tri" ? ts.size*0.15 : 0);
+      if (spec.kind === "svg"){
+        drawIconSvg(octx, spec, p.x, p.y + yOff, isz, fg);
+      } else if (spec.unicode){
+        octx.font = `${spec.weight} ${isz}px ${spec.font}`;
+        octx.textAlign = "center"; octx.textBaseline = "middle";
+        octx.fillStyle = fg;
+        octx.fillText(spec.unicode, p.x, p.y + yOff);
+      }
+    }
+    octx.font = '500 12px "Inter", system-ui, sans-serif';
+    octx.fillStyle = "#F8FAFC"; octx.textAlign = "center"; octx.textBaseline = "top";
+    octx.fillText(n.label, p.x, p.y + ts.size + 5);
+  });
+  // export
+  off.toBlob(blob=>{
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "enterprise-relationship-graph.png";
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 100);
+    showToast("Exported PNG", "ok");
+  }, "image/png");
+}
+
+/* ============================================================================
+   CUSTOM NODE TYPES (Manage Types modal)
+   ============================================================================ */
+function openManageTypesModal(){
+  const html = `
+    <div class="manage-types">
+      <div class="mt-editor" id="mt-editor" style="display:none">
+        <h5 id="mt-editor-title">Add custom type</h5>
+        <div class="field"><label for="mt-name">Name</label>
+          <input id="mt-name" type="text" placeholder="e.g. Cloud Service" /></div>
+        <div class="field"><label>Color</label>
+          <div class="color-palette" id="mt-colors"></div></div>
+        <div class="field"><label for="mt-shape">Shape</label>
+          <select id="mt-shape">${SHAPE_OPTIONS.map(s=>`<option value="${s.value}">${s.label}</option>`).join("")}</select></div>
+        <div class="field"><label>Icon</label>
+          <div class="icon-palette" id="mt-icons"></div></div>
+        <div class="field"><label for="mt-size">Size (8–34)</label>
+          <input id="mt-size" type="number" min="8" max="34" value="16" /></div>
+        <div class="mt-preview-row">
+          <span class="preview-label">Preview:</span>
+          <span class="mt-swatch" id="mt-preview" style="width:40px; height:40px; font-size:18px; border-radius:8px"></span>
+          <span id="mt-preview-name" style="font-size:13px; color:var(--text)">(name will appear here)</span>
+        </div>
+        <div class="btn-row">
+          <button class="btn ghost" id="mt-cancel">Cancel</button>
+          <button class="btn primary" id="mt-save"><i class="fa-solid fa-check"></i> Save type</button>
+        </div>
+      </div>
+      <div class="mt-section">
+        <h4>
+          <span>Custom types <span style="color:var(--muted); font-weight:400" id="mt-custom-count"></span></span>
+          <button class="btn primary" id="mt-add"><i class="fa-solid fa-plus"></i> Add new</button>
+        </h4>
+        <div class="mt-list" id="mt-custom-list"></div>
+      </div>
+      <div class="mt-section">
+        <h4><span>Built-in types <span style="color:var(--muted); font-weight:400">(${NODE_TYPES.length})</span></span></h4>
+        <div class="mt-builtin-grid" id="mt-builtin-grid"></div>
+      </div>
+    </div>
+  `;
+  openModal('<i class="fa-solid fa-palette"></i> Manage node types', html, ()=>closeModal(), true);
+  // Hide default save button; we use our own
+  document.getElementById("modal-save").style.display = "none";
+  document.getElementById("modal-cancel").innerHTML = '<i class="fa-solid fa-check"></i> Done';
+
+  // Editor state (held in closure)
+  let editingName = null;
+  let pickedColor = CUSTOM_TYPE_COLORS[0];
+  let pickedIcon  = CUSTOM_TYPE_ICONS[0].u;
+
+  function buildBuiltinGrid(){
+    const grid = document.getElementById("mt-builtin-grid");
+    grid.innerHTML = NODE_TYPES.map(t=>{
+      const ts = typeStyle(t);
+      const used = countNodesOfType(t);
+      // Count nodes of this type that have an explicit icon override
+      const overrideCount = state.graph.nodes.filter(n =>
+        n.type === t && n.icon && String(n.icon).trim()).length;
+      const resetBtn = overrideCount > 0
+        ? `<button class="mt-reset-btn" data-type="${escapeHtml(t)}" title="Clear ${overrideCount} icon override${overrideCount===1?"":"s"} on ${t} nodes so they use the type default"><i class="fa-solid fa-rotate-left"></i> ${overrideCount}</button>`
+        : '';
+      return `<div class="mt-builtin" title="${used} node${used===1?"":"s"} of this type">
+        <span class="mt-swatch" style="background:${ts.color}; color:${iconFgFor(ts.color)}"><i class="fa-solid">${ts.icon||""}</i></span>
+        <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${escapeHtml(t)}</span>
+        ${resetBtn}
+      </div>`;
+    }).join("");
+    // Wire reset buttons
+    grid.querySelectorAll(".mt-reset-btn").forEach(btn => {
+      btn.onclick = (ev) => {
+        ev.stopPropagation();
+        const type = btn.dataset.type;
+        const affected = state.graph.nodes.filter(n =>
+          n.type === type && n.icon && String(n.icon).trim());
+        if (affected.length === 0) return;
+        if (!confirm(`Clear icon overrides on ${affected.length} ${type} node${affected.length===1?"":"s"}? They'll fall back to the ${type} type default icon.`)) return;
+        affected.forEach(n => { n.icon = ""; });
+        afterMutate();
+        showToast(`Reset icons on ${affected.length} ${type} node${affected.length===1?"":"s"}`, "ok");
+        buildBuiltinGrid();  // re-render so the button updates
+      };
+    });
+  }
+  function buildCustomList(){
+    const list = document.getElementById("mt-custom-list");
+    const customs = state.graph.customNodeTypes || [];
+    document.getElementById("mt-custom-count").textContent = "(" + customs.length + ")";
+    if (!customs.length){
+      list.innerHTML = `<div class="snap-empty">No custom types yet. Click "Add new" to define one.</div>`;
+      return;
+    }
+    list.innerHTML = customs.map(t=>{
+      const used = countNodesOfType(t.name);
+      return `<div class="mt-row" data-name="${escapeHtml(t.name)}">
+        <span class="mt-swatch" style="background:${t.color}; color:${iconFgFor(t.color)}"><i class="fa-solid">${t.icon||""}</i></span>
+        <span class="mt-name">${escapeHtml(t.name)}</span>
+        <span class="mt-meta">${used} in use</span>
+        <div class="mt-actions">
+          <button class="icon-btn" data-act="edit" title="Edit"><i class="fa-solid fa-pen"></i></button>
+          <button class="icon-btn danger" data-act="del" title="Delete"${used>0?' disabled':''}><i class="fa-solid fa-trash"></i></button>
+        </div>
+      </div>`;
+    }).join("");
+    list.querySelectorAll(".mt-row").forEach(row=>{
+      const name = row.getAttribute("data-name");
+      row.querySelector('[data-act="edit"]').onclick = ()=>showEditor(name);
+      const delBtn = row.querySelector('[data-act="del"]');
+      if (delBtn && !delBtn.disabled){
+        delBtn.onclick = ()=>{
+          if (!confirm("Delete custom type '"+name+"'?")) return;
+          state.graph.customNodeTypes = (state.graph.customNodeTypes || []).filter(t => t.name !== name);
+          afterMutate();
+          buildCustomList(); buildBuiltinGrid();
+        };
+      }
+    });
+  }
+  function buildPalettes(){
+    const colors = document.getElementById("mt-colors");
+    colors.innerHTML = CUSTOM_TYPE_COLORS.map(c=>
+      `<button class="color-swatch" data-color="${c}" style="background:${c}" aria-label="Color ${c}"></button>`
+    ).join("");
+    colors.querySelectorAll(".color-swatch").forEach(sw=>{
+      sw.onclick = ()=>{
+        pickedColor = sw.getAttribute("data-color");
+        colors.querySelectorAll(".color-swatch").forEach(s=>s.classList.remove("selected"));
+        sw.classList.add("selected");
+        updatePreview();
+      };
+    });
+    const icons = document.getElementById("mt-icons");
+    icons.innerHTML = CUSTOM_TYPE_ICONS.map(i=>
+      `<button class="icon-swatch" data-icon="${i.u}" title="${escapeHtml(i.label)}" aria-label="${escapeHtml(i.label)}"><i class="fa-solid">${i.u}</i></button>`
+    ).join("");
+    icons.querySelectorAll(".icon-swatch").forEach(sw=>{
+      sw.onclick = ()=>{
+        pickedIcon = sw.getAttribute("data-icon");
+        icons.querySelectorAll(".icon-swatch").forEach(s=>s.classList.remove("selected"));
+        sw.classList.add("selected");
+        updatePreview();
+      };
+    });
+  }
+  function syncSelected(){
+    document.querySelectorAll("#mt-colors .color-swatch").forEach(sw=>{
+      sw.classList.toggle("selected", sw.getAttribute("data-color") === pickedColor);
+    });
+    document.querySelectorAll("#mt-icons .icon-swatch").forEach(sw=>{
+      sw.classList.toggle("selected", sw.getAttribute("data-icon") === pickedIcon);
+    });
+  }
+  function updatePreview(){
+    const preview = document.getElementById("mt-preview");
+    preview.style.background = pickedColor;
+    preview.style.color = iconFgFor(pickedColor);
+    preview.innerHTML = `<i class="fa-solid">${pickedIcon}</i>`;
+    const nameInput = document.getElementById("mt-name");
+    document.getElementById("mt-preview-name").textContent = nameInput.value.trim() || "(name will appear here)";
+  }
+  function showEditor(editName){
+    editingName = editName || null;
+    const editor = document.getElementById("mt-editor");
+    editor.style.display = "";
+    document.getElementById("mt-editor-title").textContent = editName ? "Edit custom type: " + editName : "Add custom type";
+    if (editName){
+      const t = getCustomType(editName);
+      if (t){
+        document.getElementById("mt-name").value = t.name;
+        document.getElementById("mt-shape").value = t.shape || "round";
+        document.getElementById("mt-size").value = t.size || 16;
+        pickedColor = t.color;
+        pickedIcon  = t.icon || "";
+      }
+    } else {
+      document.getElementById("mt-name").value = "";
+      document.getElementById("mt-shape").value = "round";
+      document.getElementById("mt-size").value = 16;
+      pickedColor = CUSTOM_TYPE_COLORS[0];
+      pickedIcon  = CUSTOM_TYPE_ICONS[0].u;
+    }
+    syncSelected();
+    updatePreview();
+    document.getElementById("mt-name").focus();
+  }
+  function hideEditor(){
+    document.getElementById("mt-editor").style.display = "none";
+    editingName = null;
+  }
+  function saveEditor(){
+    const name = document.getElementById("mt-name").value.trim();
+    if (!name){ showToast("Type name is required", "err"); return; }
+    if (isBuiltInType(name)){ showToast("'" + name + "' is a built-in type name", "err"); return; }
+    if (!editingName){
+      // Adding new — check for duplicate
+      if ((state.graph.customNodeTypes || []).some(t => t.name === name)){
+        showToast("A custom type named '" + name + "' already exists", "err"); return;
+      }
+    } else if (editingName !== name){
+      // Renaming — check for collision and update existing nodes that use the old name
+      if ((state.graph.customNodeTypes || []).some(t => t.name === name)){
+        showToast("A custom type named '" + name + "' already exists", "err"); return;
+      }
+    }
+    const shape = document.getElementById("mt-shape").value;
+    const size  = Math.max(8, Math.min(34, parseInt(document.getElementById("mt-size").value, 10) || 16));
+    const def = { name, color: pickedColor, shape, icon: pickedIcon, size };
+    state.graph.customNodeTypes = state.graph.customNodeTypes || [];
+    if (editingName){
+      const idx = state.graph.customNodeTypes.findIndex(t => t.name === editingName);
+      if (idx >= 0) state.graph.customNodeTypes[idx] = def;
+      // If renamed, update any nodes that referenced the old name
+      if (editingName !== name){
+        state.graph.nodes.forEach(n => { if (n.type === editingName) n.type = name; });
+      }
+    } else {
+      state.graph.customNodeTypes.push(def);
+    }
+    // Make sure filter includes the new/renamed type
+    state.filtersNode.add(name);
+    const wasEdit = !!editingName; // capture before hideEditor() nulls editingName
+    afterMutate();
+    hideEditor();
+    buildCustomList(); buildBuiltinGrid();
+    showToast(wasEdit ? "Type updated" : "Type '" + name + "' added", "ok");
+  }
+
+  // Initial render of modal contents
+  buildPalettes();
+  buildCustomList();
+  buildBuiltinGrid();
+  document.getElementById("mt-add").onclick = ()=>showEditor(null);
+  document.getElementById("mt-cancel").onclick = hideEditor;
+  document.getElementById("mt-save").onclick = saveEditor;
+  document.getElementById("mt-name").addEventListener("input", updatePreview);
+}
+
+/* ============================================================================
+   SNAPSHOTS
+   ============================================================================ */
+function loadSnapshots(){
+  if (host && Array.isArray(host.initialSnapshots)) return host.initialSnapshots;
+  try { const s = localStorage.getItem(SNAP_KEY); return s ? JSON.parse(s) : []; } catch(_){ return []; }
+}
+function saveSnapshots(snaps){
+  if (host && typeof host.onSnapshotsChanged === "function"){
+    if (Array.isArray(host.initialSnapshots)) host.initialSnapshots = snaps;
+    try { host.onSnapshotsChanged(snaps); } catch(_){}
+    return;
+  }
+  try { localStorage.setItem(SNAP_KEY, JSON.stringify(snaps)); } catch(_){}
+}
+function saveCurrentSnapshot(){
+  const name = prompt("Snapshot name:", "Snapshot " + new Date().toLocaleString());
+  if (!name) return;
+  const snaps = loadSnapshots();
+  snaps.push({ id: uid("s"), name, ts: Date.now(), graph: snapshot() });
+  saveSnapshots(snaps);
+  renderSnapList();
+  showToast("Snapshot saved", "ok");
+}
+function loadSnapshot(id){
+  const snaps = loadSnapshots();
+  const s = snaps.find(x=>x.id===id); if (!s) return;
+  if (!confirm("Load snapshot '"+s.name+"'? Current graph will be replaced.")) return;
+  // snapshot() doesn't capture views/walkthroughs — preserve the current ones
+  // so loading a snapshot doesn't silently destroy them.
+  const keepViews = state.graph.views;
+  const keepWalkthroughs = state.graph.walkthroughs;
+  state.graph = JSON.parse(JSON.stringify(s.graph));
+  if (keepViews) state.graph.views = keepViews;
+  if (keepWalkthroughs) state.graph.walkthroughs = keepWalkthroughs;
+  if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
+  if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
+  state.positions.clear();
+  state.selectedNode = state.selectedEdge = null;
+  clearLoadedViewState();
+  resetFiltersFromGraph();
+  ensurePositions();
+  applyLayout(state.layout);
+  afterMutate(); fitGraph();
+  showToast("Snapshot loaded", "ok");
+}
+function deleteSnapshot(id){
+  const snaps = loadSnapshots().filter(s=>s.id!==id);
+  saveSnapshots(snaps); renderSnapList();
+  showToast("Snapshot deleted", "ok");
+}
+function renameSnapshot(id){
+  const snaps = loadSnapshots();
+  const s = snaps.find(x=>x.id===id); if (!s) return;
+  const nn = prompt("New name:", s.name); if (!nn) return;
+  s.name = nn; saveSnapshots(snaps); renderSnapList();
+}
+function renderSnapList(){
+  const container = document.getElementById("snap-list-container");
+  const snaps = loadSnapshots().sort((a,b)=>b.ts-a.ts);
+  if (!snaps.length){
+    container.innerHTML = `<div class="snap-empty">No snapshots yet. Save one above.</div>`;
+    return;
+  }
+  container.innerHTML = `<div class="snap-list">${snaps.map(s=>`
+    <div class="snap-item" data-id="${s.id}">
+      <div style="flex:1; min-width:0; overflow:hidden">
+        <div class="snap-name">${escapeHtml(s.name)}</div>
+        <div class="snap-meta">${new Date(s.ts).toLocaleString()} · ${s.graph.nodes.length}N / ${s.graph.edges.length}E</div>
+      </div>
+      <div class="snap-actions">
+        <button class="icon-btn" data-act="load" title="Load"><i class="fa-solid fa-upload"></i></button>
+        <button class="icon-btn" data-act="rename" title="Rename"><i class="fa-solid fa-pen"></i></button>
+        <button class="icon-btn danger" data-act="del" title="Delete"><i class="fa-solid fa-trash"></i></button>
+      </div>
+    </div>`).join("")}</div>`;
+  container.querySelectorAll(".snap-item").forEach(item=>{
+    const id = item.getAttribute("data-id");
+    item.querySelector('[data-act="load"]').onclick = e=>{ e.stopPropagation(); loadSnapshot(id); };
+    item.querySelector('[data-act="rename"]').onclick = e=>{ e.stopPropagation(); renameSnapshot(id); };
+    item.querySelector('[data-act="del"]').onclick = e=>{ e.stopPropagation(); if(confirm("Delete snapshot?")) deleteSnapshot(id); };
+  });
+}
+
+/* ============================================================================
+   HELP SYSTEM
+   ============================================================================ */
+function openValueBrief(){
+  const html = `
+    <div class="help-pane active" style="max-width:760px">
+      <p class="m-lede">For leadership, stakeholders, and anyone asking why this tool exists. Two minutes.</p>
+
+      <h4>The problem</h4>
+      <p>Knowledge about who owns what, what depends on what, and what breaks when something
+      changes lives in people's heads, in org charts that are stale a week after publication,
+      and in scattered lists. Every reorg, departure, audit, and incident pays the same tax:
+      reconstructing that picture from scratch, slowly, by interview.</p>
+
+      <h4>What this is</h4>
+      <p>A living map of the organization: org units, people, roles, systems, platforms,
+      applications, sites, teams, groups, data, and vendors, plus the relationships between
+      them. It runs from a single offline file. No server, no license, no procurement, and
+      the data never leaves your network.</p>
+
+      <h4>What it answers</h4>
+      <ul>
+        <li><strong>Continuity.</strong> Who is carrying three or more leadership assignments?
+        Which systems have multiple dependents and no backup? What does one person's departure
+        actually touch? Single points of failure become visible before they fail.</li>
+        <li><strong>Accountability.</strong> Every asset gets a named owner. More than two
+        dozen built-in validation rules flag ownership gaps, orphans, and contradictions
+        automatically, so the map stays trustworthy.</li>
+        <li><strong>Change planning.</strong> Before a reorg or migration, isolate any office
+        and see its full footprint: systems, sites, flows, vendors. The blast radius of a
+        decision, on screen, before the decision.</li>
+        <li><strong>Governance.</strong> Messaging sprawl per org unit, deprecated assets
+        still in use, unowned technology: surfaced internally before an audit surfaces them.</li>
+        <li><strong>Speed.</strong> New staff and incoming leadership absorb the landscape in
+        minutes instead of months. Presentation walkthroughs turn the map into a guided
+        briefing.</li>
+      </ul>
+
+      <h4>Why it is worth doing</h4>
+      <p>The only recurring cost is curation: a named data steward and a refresh cadence
+      (monthly, or after each org change). There is no infrastructure or licensing spend.
+      Weigh that against the cost of one bungled transition, one failed audit finding, or one
+      orphaned system discovered mid-incident. The map pays for itself the first time it
+      answers "what does this departure touch?" before HR does.</p>
+      <p>The deeper value: decisions about structure, systems, and people stop relying on
+      hallway memory and start relying on a shared, inspectable picture.</p>
+
+      <h4>What it is not</h4>
+      <p>It is not a live directory sync. It is a curated model: the validation engine keeps
+      it honest, the steward keeps it current. That is a feature. A curated map answers
+      "why" and "who", not just "what".</p>
+    </div>
+  `;
+  openModal('<i class="fa-solid fa-award"></i> Value Brief: Why This Tool', html, ()=>closeModal(), true);
+  document.getElementById("modal-foot").style.display = "none";
+  setTimeout(()=>{ document.getElementById("modal-foot").style.display = ""; }, 0);
+}
+
+function openHelp(){
+  const html = `
+    <div class="help-tabs">
+      <button class="help-tab active" data-pane="quick">Quick Start</button>
+      <button class="help-tab" data-pane="edit">Editing</button>
+      <button class="help-tab" data-pane="model">Modeling</button>
+      <button class="help-tab" data-pane="views">Views</button>
+      <button class="help-tab" data-pane="metrics">Metrics</button>
+      <button class="help-tab" data-pane="analysis">Analysis</button>
+      <button class="help-tab" data-pane="data">Data</button>
+      <button class="help-tab" data-pane="kbd">Shortcuts</button>
+      <button class="help-tab" data-pane="ref">Reference</button>
+    </div>
+    <div class="help-pane active" data-pane="quick">
+      <h4>What this is</h4>
+      <p>An offline-capable enterprise relationship graph. Use it to map how offices, systems, platforms, applications, sites, teams, mailboxes, workflows, datasets, and people relate. State auto-saves in your browser.</p>
+      <h4>The 60-second tour</h4>
+      <div class="step-grid">
+        <div class="step-num">1</div><div class="step-text"><strong>Click any node</strong> to see its profile (relationships organized by type) in the right panel.</div>
+        <div class="step-num">2</div><div class="step-text"><strong>Drag empty space</strong> to pan, <strong>scroll</strong> to zoom, <strong>drag nodes</strong> to reposition.</div>
+        <div class="step-num">3</div><div class="step-text"><strong>Type in Search</strong> to highlight matches. Hits glow briefly. Field operators narrow it: <code>type:Person owner:"jane smith" status:retired</code> — supported fields are type, tag, owner, lead, status, platform, office, directorate, id; plain words match name/type/tags; all terms must match.</div>
+        <div class="step-num">4</div><div class="step-text"><strong>Right-click anything</strong> for a context menu (edit, connect, delete).</div>
+        <div class="step-num">5</div><div class="step-text"><strong>Press <kbd>?</kbd></strong> any time to open this help.</div>
+      </div>
+    </div>
+    <div class="help-pane" data-pane="edit">
+      <h4>Adding a node</h4>
+      <p>Click <kbd>+ Node</kbd> in the sidebar (or right-click empty canvas → "Add node here"). Fill in name, pick type, and save. The form's ID auto-generates if you leave it blank.</p>
+      <h4>Adding a relationship: two ways</h4>
+      <p><strong>1. Quick-connect (recommended).</strong> Select a node, then press <kbd>C</kbd> (or click <i class="fa-solid fa-arrows-turn-to-dots"></i> Connect in its profile, or right-click → "Connect from here"). A dashed preview line follows your cursor. Click any target node: a small dialog asks just for the relationship type. The tool suggests a sensible default based on the two node types.</p>
+      <p><strong>2. Modal form.</strong> Click <kbd>+ Relation</kbd> in the sidebar. Pick source, target, and type from dropdowns.</p>
+      <h4>Custom node types</h4>
+      <p>The built-in 25 types cover most enterprise scenarios, but you can define your own. Click <strong>Manage node types</strong> in the Edit Graph sidebar section: add a new type with a name, color, shape (circle / square / diamond / triangle / hexagon), icon, and size. Custom types appear in the Type dropdown on the Add Node form under a "Custom" group, and behave identically to built-ins in filters, legend, and the renderer. Custom types are stored in your JSON file alongside nodes and edges, so they travel with your data.</p>
+      <h4>Editing & deleting</h4>
+      <p>Select an item, then use the <kbd>Edit</kbd> / <kbd>Delete selected</kbd> buttons in the sidebar, the action buttons inside the profile panel, or right-click → menu. <kbd>Backspace</kbd> deletes the selected item.</p>
+      <h4>Undo & redo</h4>
+      <p>Every change is undoable up to 30 steps, and redo works in both directions through the history. Use the sidebar buttons, the canvas toolbar, or <kbd>Ctrl+Z</kbd> / <kbd>Ctrl+Y</kbd>. History captures the full state: nodes, edges, custom types, and collapsed branches.</p>
+      <h4>Editing an edge inline</h4>
+      <p>Click any edge on the canvas and the right panel becomes a live editor. The <em>Type</em> dropdown changes the relationship type with a brief "&check; saved" confirmation. <em>Description</em> and <em>Notes</em> textareas save when you tab/click away. No modal needed for the common case.</p>
+      <h4>Reversing an edge</h4>
+      <p>Select an edge → "Reverse" in its profile or right-click menu. Useful when you realize you connected the wrong way.</p>
+    </div>
+    <div class="help-pane" data-pane="model">
+      <h4>What this guide covers</h4>
+      <p>The graph is most valuable when it captures the implicit dependencies in your operating model &mdash; who owns what, what runs on what, who serves whom. The patterns below have come out of real modeling conversations and they save rework later. Read end to end the first time you populate a real graph, then keep this tab open as a reference.</p>
+
+      <h4>1. Start with the org skeleton</h4>
+      <p>Every other node hangs off the org hierarchy. Build it once, top down:</p>
+      <pre>Executive Office
+  └─ Front Office
+      └─ Directorate
+          └─ Office
+              └─ Team
+                  └─ Person</pre>
+      <p>For each level, fill <strong>only the most specific structural field</strong>. <em>Parent</em>, <em>Directorate</em>, <em>Office</em>, and <em>Team</em> all create CONTAINS edges &mdash; filling two with the same value creates duplicate edges.</p>
+      <ul>
+        <li><strong>Front Office under Exec Office</strong> &rarr; fill <em>Parent</em></li>
+        <li><strong>Directorate under Front Office</strong> &rarr; fill <em>Parent</em></li>
+        <li><strong>Office under Directorate</strong> &rarr; fill <em>Directorate</em></li>
+        <li><strong>Team under Office</strong> &rarr; fill <em>Office</em></li>
+        <li><strong>Person under Team</strong> &rarr; fill <em>Team</em> (or <em>Office</em> if they're not on a specific team)</li>
+      </ul>
+
+      <h4>2. Assigning directors, leads, and managers</h4>
+      <p>The <em>Lead</em> field on any node auto-creates a RESPONSIBLE_FOR edge <strong>only if the value matches an existing Person node</strong> (case-insensitive). Two gotchas:</p>
+      <ol>
+        <li><strong>Create the Person first.</strong> Typing "Jane Doe" into Lead before Jane exists as a Person saves the text but doesn't create the edge.</li>
+        <li><strong>Re-save the host node if the Person was added later.</strong> The auto-edge fires on save, not retroactively. Open the Directorate again and just save it.</li>
+      </ol>
+      <p>To capture a person's title (Director, Manager, Architect), put it in their Person node's <em>description</em> field. Don't try to encode it in the Lead field of the org unit &mdash; that breaks the edge match.</p>
+      <p>For reporting lines, fill <em>Reports to</em> on the Person to auto-create the REPORTS_TO edge to their manager.</p>
+
+      <h4>3. Platform vs System vs Application</h4>
+      <p>The fuzzy distinction:</p>
+      <ul>
+        <li><strong>Platform</strong> &mdash; a foundation that hosts other entities in your graph. If anything else in your catalog has a HOSTED_ON edge pointing at it, it's a Platform.</li>
+        <li><strong>System</strong> &mdash; a named system used for a specific business function. Out-of-the-box; nothing in your graph is built on top of it.</li>
+        <li><strong>Application</strong> &mdash; a discrete app, typically hosted on a Platform.</li>
+      </ul>
+      <p><strong>The deciding test:</strong> does anything else in my graph point at this via HOSTED_ON? <em>Yes</em> &rarr; Platform. <em>No</em> &rarr; System.</p>
+      <p>Common edge cases:</p>
+      <ul>
+        <li><strong>ServiceNow / Salesforce</strong> &mdash; start as System; promote to Platform once you have 2+ custom or scoped apps on them. Most orgs end up calling them Platforms eventually.</li>
+        <li><strong>Power Platform</strong> &mdash; always Platform, and an umbrella for Power Apps, Power Automate, Power BI, Dataverse, Copilot Studio.</li>
+        <li><strong>SharePoint Online / Microsoft Teams / Exchange Online / Dataverse</strong> &mdash; always Platforms.</li>
+      </ul>
+      <p>Tip: it's much easier to upgrade a System to a Platform later (just change the type on the node) than to downgrade. Start conservative.</p>
+
+      <h4>4. The M365 stack recipe</h4>
+      <p>Create the M365 platforms once. Point everything else at them. On each child Platform, fill <em>Parent</em> = its parent's label to auto-create the CONTAINS edge upward:</p>
+      <pre>Microsoft 365 (Platform)
+  ├─[CONTAINS]→ SharePoint Online (Platform)
+  ├─[CONTAINS]→ Microsoft Teams (Platform)
+  ├─[CONTAINS]→ Exchange Online (Platform)
+  └─[CONTAINS]→ Power Platform (Platform)
+       ├─[CONTAINS]→ Power Apps (Platform)
+       ├─[CONTAINS]→ Power Automate (Platform)
+       ├─[CONTAINS]→ Power BI (Platform)
+       ├─[CONTAINS]→ Dataverse (Platform)
+       └─[CONTAINS]→ Copilot Studio (Platform)</pre>
+      <p>Now every site, team, mailbox, flow, dashboard, and Dataverse table just needs to point at the right Platform via HOSTED_ON. The metrics tab will surface M365 as the top-level hub.</p>
+
+      <h4>5. SharePoint sites &mdash; the three-tier pattern</h4>
+      <ol>
+        <li><strong>Tier 1 (always do this).</strong> Quick-Connect from the owning Office (or Directorate, or Executive Office) to the SharePoint Site. The dialog pre-fills <code>HAS_SITE</code>.</li>
+        <li><strong>Tier 2 (recommended).</strong> On the SharePoint Site node, fill <em>Platform</em> = <code>SharePoint Online</code>. Auto-creates <code>HOSTED_ON</code> &rarr; SharePoint Online. This makes SharePoint Online surface as a critical hub in the Risk tab.</li>
+        <li><strong>Tier 3 (completeness).</strong> Already done if you built the M365 stack above &mdash; SharePoint Online &rarr; CONTAINS &rarr; Microsoft 365.</li>
+      </ol>
+      <p>Same pattern applies to Microsoft Teams (<code>HAS_TEAM</code> + <code>HOSTED_ON Microsoft Teams</code>), Mailboxes (<code>HAS_MAILBOX</code> + <code>HOSTED_ON Exchange Online</code>), Power Automate flows (<code>HOSTED_ON Power Automate</code>), Power BI dashboards (<code>HOSTED_ON Power BI</code>), and so on.</p>
+
+      <h4>6. Teams vs Sites vs Groups vs Mailboxes</h4>
+      <p>Every Microsoft Team has an underlying O365 Group that automatically gets a SharePoint site, group mailbox, Planner board, OneNote, etc. <strong>Don't model that 1:1</strong> &mdash; it's too much duplication.</p>
+      <p>Recommended pattern:</p>
+      <ul>
+        <li><strong>Microsoft Team</strong> &mdash; whenever there's an active Teams workspace with channels and chat.</li>
+        <li><strong>SharePoint Site</strong> &mdash; when (a) the site has no Team behind it (intranet, communication sites), or (b) the site's content/structure matters separately from the Team chat.</li>
+        <li><strong>O365 Group</strong> &mdash; for <em>standalone</em> Groups: distribution lists, security/permission groups, non-Team Group uses. <strong>Skip</strong> when the Group is invisible behind a Team &mdash; it's redundant.</li>
+        <li><strong>Mailbox</strong> &mdash; for shared / function mailboxes (e.g. <code>helpdesk@org.com</code>), Group mailboxes you actively monitor. <strong>Skip</strong> individual person mailboxes &mdash; use the Person node.</li>
+      </ul>
+      <p><strong>Rule of thumb:</strong> if you'd talk about it in a leadership review, give it its own node. If it just exists silently behind another node, skip it.</p>
+
+      <h4>7. Worked example: the Executive Office</h4>
+      <p>A realistic leadership-level workspace, with all three tiers populated:</p>
+      <pre>Executive Office
+  ├─[HAS_TEAM]→     Microsoft Team "EO Team"          ─[HOSTED_ON]→ Microsoft Teams
+  ├─[HAS_SITE]→     SharePoint Site "EO Public"       ─[HOSTED_ON]→ SharePoint Online
+  ├─[HAS_SITE]→     SharePoint Site "EO Internal"     ─[HOSTED_ON]→ SharePoint Online
+  ├─[HAS_MAILBOX]→  Mailbox "executiveoffice@org"     ─[HOSTED_ON]→ Exchange Online
+  └─[HAS_O365_GROUP]→ O365 Group "EO Leadership DL"   ─[HOSTED_ON]→ Microsoft 365</pre>
+      <p>Read top to bottom: the EO has a Teams workspace for chat, two SharePoint sites (one public, one internal), a shared mailbox, and a standalone distribution Group for leadership announcements. Each surface points at its hosting platform. Every platform points at M365.</p>
+
+      <h4>8. Quick reference</h4>
+      <p>What to fill when you add each kind of node:</p>
+      <div class="ref-grid">
+        <div class="rk">New Front Office</div><div class="rv">Parent = Executive Office</div>
+        <div class="rk">New Directorate</div><div class="rv">Parent = Front Office; Lead = director's Person name</div>
+        <div class="rk">New Office</div><div class="rv">Directorate = directorate's name; Lead = office head's Person name</div>
+        <div class="rk">New Team (org)</div><div class="rv">Office = office's name; Lead = team lead's Person name</div>
+        <div class="rk">New Person</div><div class="rv">Team (or Office) = their org unit; Reports to = their manager</div>
+        <div class="rk">New System</div><div class="rv">Owner = owning office's name</div>
+        <div class="rk">New Platform (sub-platform)</div><div class="rv">Parent = host platform's name (e.g. SharePoint Online's Parent = Microsoft 365)</div>
+        <div class="rk">New Application</div><div class="rv">Owner = owning office; Platform = host platform (e.g. Power Apps)</div>
+        <div class="rk">New SharePoint Site</div><div class="rv">Quick-Connect from Office (HAS_SITE); Platform = SharePoint Online</div>
+        <div class="rk">New Microsoft Team</div><div class="rv">Quick-Connect from Office (HAS_TEAM); Platform = Microsoft Teams</div>
+        <div class="rk">New Mailbox (shared)</div><div class="rv">Quick-Connect from Office (HAS_MAILBOX); Platform = Exchange Online</div>
+        <div class="rk">New O365 Group (standalone)</div><div class="rv">Quick-Connect from Office (HAS_O365_GROUP); Platform = Microsoft 365</div>
+        <div class="rk">New Microsoft Form</div><div class="rv">Quick-Connect from Office (HAS_FORM); Platform = Microsoft 365 (or Microsoft Forms if you add the platform node)</div>
+        <div class="rk">New Distribution List</div><div class="rv">Quick-Connect from Office (HAS_DISTRIBUTION_LIST); Platform = Exchange Online. Use for traditional Exchange distribution lists (DLs), distinct from O365 Groups.</div>
+        <div class="rk">New Workflow / Flow</div><div class="rv">Owner = owning office; Platform = Power Automate (if it's a Power Automate flow)</div>
+        <div class="rk">New Power BI Dashboard</div><div class="rv">Owner = owning office; Platform = Power BI</div>
+        <div class="rk">New Vendor</div><div class="rv">Connect via Quick-Connect (USES / DEPENDS_ON) from systems that use them</div>
+      </div>
+
+      <h4>9. Signs you're modeling well</h4>
+      <ul>
+        <li>The <strong>Risk tab</strong> surfaces actual platforms as critical hubs (not just org units with many children).</li>
+        <li><strong>Cross-directorate dependency count</strong> on the Service tab is non-zero &mdash; real org work crosses boundaries.</li>
+        <li><strong>Ownership coverage</strong> is &gt;75%; few stub records.</li>
+        <li>Per-directorate footprint sizes feel <strong>proportionate</strong> to actual headcount.</li>
+        <li>The <strong>hierarchical layout</strong> looks like an org chart you could hand to a new hire.</li>
+      </ul>
+
+      <h4>10. Signs you're overcomplicating</h4>
+      <ul>
+        <li>Every Microsoft Team has a sibling SharePoint Site, O365 Group, AND Mailbox node. You're modeling M365's <em>implementation</em> rather than your <em>operating model</em>.</li>
+        <li>Person nodes for every individual contributor. You probably only need leaders, key roles, and SMEs.</li>
+        <li>Platform hierarchies three levels deep. Most orgs stop at two (M365 &rarr; SharePoint Online, not M365 &rarr; SharePoint Online &rarr; SharePoint Sites Service).</li>
+        <li>Edge counts where one office has &gt;50 outgoing edges. Either collapse some via Teams/Sites, or split the office.</li>
+      </ul>
+    </div>
+    <div class="help-pane" data-pane="views">
+      <h4>Layouts</h4>
+      <ul>
+        <li><strong>Force-directed:</strong> organic, good for exploring connectivity.</li>
+        <li><strong>Hierarchical (top-down) / Hierarchical (left-right):</strong> tree based on CONTAINS, REPORTS_TO, OWNS, etc. Good for general structure.</li>
+        <li><strong>Org Chart (people + reports):</strong> filters down to Person, Role, and the four org-unit types (Executive Office through Team) and arranges by REPORTS_TO chains. Picking a different layout from the dropdown silently restores your previous filter set and view.</li>
+        <li><strong>Radial tree / Concentric:</strong> rings by entity type (Executive at center, leaves outside).</li>
+        <li><strong>Group by attribute:</strong> clusters nodes by type / directorate / office / parent / status / platform. Pick the attribute in the secondary dropdown that appears.</li>
+        <li><strong>Grid:</strong> every node spaced evenly. Useful for an audit overview.</li>
+      </ul>
+      <h4>Filters</h4>
+      <p>Toggle node and relationship types on/off in the sidebar. Use <kbd>All</kbd> / <kbd>None</kbd> to quickly isolate. Filters apply to both the graph and the visible counts in the header.</p>
+      <h4>Neighborhood focus</h4>
+      <p>Select a node and click <kbd>Neighborhood</kbd> (or press the same in the profile panel). The graph hides everything except the selected node and its direct connections.</p>
+      <h4>Search</h4>
+      <p>Search matches name, type, or any tag. Hits pulse-glow on the canvas. Press <kbd>Jump to</kbd> to center on the first match and open its profile.</p>
+      <h4>Group collapse for clean views</h4>
+      <p>Large graphs can become noisy. Right-click any node that contains children (a Directorate, Office, Executive Office) and pick <strong>Collapse branch</strong>. All descendants reached via CONTAINS, HAS_SITE, HAS_TEAM, HAS_O365_GROUP, HAS_MAILBOX, OWNS, and MANAGES disappear from the canvas — so collapsing an Office hides its people, sites, teams, mailboxes, <em>and</em> the applications and systems that office owns or manages. The collapsed parent gets an amber "+N" badge showing how many nodes are hidden below it. Right-click again to <strong>Expand branch</strong>.</p>
+      <p>For a fast top-down overview, use <strong>Collapse all</strong> in View Controls — it collapses every parent in the org hierarchy (Executive Office, Front Offices, Directorates, Offices) so you see only the top-level structure. <strong>Expand all</strong> reverses it. Collapsed state is part of the graph data, so when you save a "clean board view" and share the JSON, your colleague sees the same arrangement.</p>
+      <h4>Path-finder: how is X connected to Y?</h4>
+      <p>Click <strong>"Find path between two nodes"</strong> in the View Controls section, then click the source node, then click the target. The shortest path is highlighted on the graph (golden) and the right panel shows it as a step-by-step chain with the relationship type at each hop. Edges are treated as undirected when finding the path, so you can investigate connections in either direction. Click <strong>Clear path</strong> (or press <kbd>Esc</kbd>) to return to normal view.</p>
+      <h4>Arranging the graph for screenshots</h4>
+      <p>When preparing a graph for a slide, a print, or an architecture diagram, you usually want to position nodes by hand without the details panel jumping around every time you click. Two ways:</p>
+      <ul>
+        <li><strong>Shift+drag a node:</strong> moves it without changing the current selection. The node is <em>pinned</em> in place (it won't drift back when the force simulation continues).</li>
+        <li><strong>Layout mode:</strong> click the move-arrows icon in the canvas toolbar (or press <kbd>M</kbd>). Every click-and-drag on a node only repositions and pins it; selection never changes. Press <kbd>M</kbd> again to exit. Best for rearranging many nodes in a row before exporting a PNG.</li>
+      </ul>
+      <p>Pinned nodes show a small gold pin glyph in their upper-right corner. To let the force simulation pull them back, click the <i class="fa-solid fa-thumbtack" aria-hidden="true" style="transform:rotate(45deg)"></i> button in the canvas toolbar to release all pins.</p>
+    </div>
+    <div class="help-pane" data-pane="metrics">
+      <h4>What it is</h4>
+      <p>Click the <i class="fa-solid fa-chart-line"></i> chart icon in the header (next to the help button) to open the <strong>Leadership Metrics</strong> dashboard. It computes a snapshot of metrics directly from the current graph state &mdash; no extra data is stored anywhere &mdash; so the numbers always reflect what's in the file right now.</p>
+      <h4>Trends &amp; the Top Risks watchlist</h4>
+      <p>The Executive Summary compares against a <strong>baseline snapshot</strong> (the "Compare to" picker; defaults to your most recent snapshot). Headline KPIs get &#9650;/&#9660; chips showing the change since the baseline, and a trend table tracks the headline numbers across your last 8 snapshots &mdash; save a snapshot at each milestone (monthly, pre/post reorg) and the dashboard shows direction, not just state. The <strong>Top risks</strong> list combines every risk signal &mdash; dependency load, missing backups, single points of failure, deprecated-but-connected, ownership gaps, staleness &mdash; into one ranked, owner-attributed watchlist: top 3 on the summary, the full ranked list on the Risk &amp; SPOFs tab, and the top 5 in the Copy summary export.</p>
+      <h4>The eight tabs</h4>
+      <ul>
+        <li><strong>Executive Summary</strong> &mdash; ten headline KPIs and an entity-composition donut showing scale at a glance.</li>
+        <li><strong>Pipeline</strong> &mdash; lifecycle distribution (Active / Pilot / Planned / Proposed / Retired), active delivery surfaces (workflows, automations, dashboards, sites, Teams), per-type lifecycle breakdown, and the governance pipeline.</li>
+        <li><strong>Service</strong> &mdash; EX scope (everything reachable from the Executive Office node), client bureaus (Office / Directorate / Front Office nodes <em>outside</em> EX scope), and cross-boundary service flows.</li>
+        <li><strong>Risk &amp; SPOFs</strong> &mdash; critical hubs (most-depended-upon entities), vendor exposure, bus-factor (people carrying 3+ leadership assignments), orphans, deprecated-but-still-in-use.</li>
+        <li><strong>Coverage</strong> &mdash; four radial gauges for ownership, lead, description, and tag completeness, plus a per-directorate ownership table.</li>
+        <li><strong>Org Footprint</strong> &mdash; stacked horizontal bars per directorate showing the offices / people / tech proportions.</li>
+        <li><strong>Org Intel</strong> &mdash; structural patterns: span of control (with healthy/thin/overloaded flags), longest reporting chains, knowledge concentration (top owners), bridge entities (nodes touching multiple directorates), and cross-directorate collaboration ratio.</li>
+        <li><strong>Complexity</strong> &mdash; top hubs by degree, integration count, automation count, longest dependency chain.</li>
+      </ul>
+      <h4>Sharing the numbers</h4>
+      <p>The modal footer has two action buttons:</p>
+      <ul>
+        <li><kbd>Copy summary</kbd> &mdash; copies a Markdown report (file name, freshness timestamp, all headline metrics, top critical hubs, per-directorate table, etc.) to your clipboard. Paste into email, Slack, Teams, Confluence, or any doc tool.</li>
+        <li><kbd>Print</kbd> &mdash; opens the system print dialog with a stylesheet that hides the dark theme and stacks all eight tabs as labeled sections. Use the browser's "Save as PDF" option to produce a printable report.</li>
+      </ul>
+      <h4>Drill-down</h4>
+      <p>Entity names in any chart bar or detail table are clickable. Clicking jumps to that node on the graph and closes the modal &mdash; useful when reviewing the metrics with someone and they ask "show me that one."</p>
+      <h4>Data assumptions</h4>
+      <ul>
+        <li><strong>EX scope</strong> is determined by walking <kbd>CONTAINS</kbd>, <kbd>HAS_*</kbd>, <kbd>OWNS</kbd>, and <kbd>MANAGES</kbd> edges down from every <strong>Executive Office</strong> node. If you don't have an Executive Office node, the Service tab will tell you what to add.</li>
+        <li><strong>Lifecycle stage</strong> is bucketed from the node's <kbd>status</kbd> field via regex: "live"/"in production" &rarr; Active, "pilot"/"beta"/"POC" &rarr; Pilot, "planned"/"backlog"/"approved" &rarr; Planned, "proposed"/"concept"/"requested" &rarr; Proposed, "retired"/"deprecated"/"sunset" &rarr; Retired. Blank status defaults to Active.</li>
+        <li><strong>Critical hubs</strong> are nodes with 2+ inbound DEPENDS_ON / USES / HOSTED_ON / INTEGRATES_WITH / CONNECTED_TO edges. The Risk tab flags hubs without a BACKUP_FOR edge in red.</li>
+        <li><strong>Client bureaus</strong> are Office / Directorate / Front Office nodes <em>outside</em> EX scope, ranked by edge count connecting to EX. The Service tab tells you how to model them if you don't yet have any.</li>
+      </ul>
+    </div>
+    <div class="help-pane" data-pane="analysis">
+      <h4>What this tab covers</h4>
+      <p>Three header buttons and one in-profile button that turn the graph into an analysis surface. Each one answers a specific operational question.</p>
+
+      <h4>Impact Analysis (the <i class="fa-solid fa-bolt"></i> button on any node profile)</h4>
+      <p>Select any node, click <strong>Impact</strong> in the profile panel, and a modal opens showing the dependency cascade if that node is removed, retired, or has an outage. The walk follows incoming dependency edges only (DEPENDS_ON, USES, HOSTED_ON, SUPPORTS, SECURES, INTEGRATES_WITH, CONNECTED_TO, RESPONSIBLE_FOR) up to 8 hops &mdash; pure "what breaks" without the noise of organizational reshuffling.</p>
+      <ul>
+        <li><strong>Dependency cascade KPI</strong> &mdash; total entities that break transitively, severity-colored at 5 and 15.</li>
+        <li><strong>Composition bar chart</strong> &mdash; which types are affected (Platforms? Applications? People?).</li>
+        <li><strong>Per-hop sections</strong> &mdash; every affected entity grouped by distance, with the edge type that made the connection.</li>
+        <li><strong>Directly owned section</strong> &mdash; things this node contains, owns, or manages directly (1 hop, no recursion). These don't <em>break</em> if the node is removed, but they need to be reassigned.</li>
+      </ul>
+      <p>Every entity in the modal is clickable and drills back to the graph. Useful when leadership asks "if we retire ServiceNow, what breaks first?" or "if this person leaves, what's homeless?"</p>
+
+      <h4>Data Quality (the <i class="fa-solid fa-clipboard-check"></i> button in the header)</h4>
+      <p>Opens a modal showing every node that violates one of 26 catalog-hygiene rules, grouped by severity:</p>
+      <ul>
+        <li><strong>Critical</strong> &mdash; distorts the Metrics dashboard (deprecated entities still in use).</li>
+        <li><strong>Warning</strong> &mdash; structural gaps (Directorate missing Lead, Office missing Directorate, orphans, SharePoint Sites without HAS_SITE from an org unit, Mailboxes/Teams/Forms similarly).</li>
+        <li><strong>Improve</strong> &mdash; completeness (Person missing email or office assignment, Platform missing Owner, sites missing HOSTED_ON Platform).</li>
+        <li><strong>Polish</strong> &mdash; nice-to-have (nodes without descriptions).</li>
+      </ul>
+      <p>Each violation row shows a one-line fix recommendation and is clickable to jump to the offending node. Use this view daily as you populate the graph &mdash; it surfaces gaps systematically rather than waiting for the Metrics tab to look weird.</p>
+
+      <h4>Recently Viewed (the <i class="fa-solid fa-clock-rotate-left"></i> button in the header)</h4>
+      <p>Tracks the last 15 entities you've clicked. Click the icon for a quick-jump popover with color-dotted entries showing label and type. Click any to jump straight to that entity on the graph. The list dedupes (re-visiting bumps to the top) and persists across page reloads via localStorage. "Clear history" resets it.</p>
+
+      <h4>Mermaid Export (the <i class="fa-solid fa-diagram-project"></i> button in the Data section)</h4>
+      <p>Copies a Mermaid <code>flowchart TD</code> diagram of the currently visible graph to your clipboard. Paste into any markdown editor that supports Mermaid &mdash; GitHub READMEs, GitLab wikis, Confluence (with the Mermaid plugin), Notion, Obsidian, VS Code preview. Type-aware shape syntax: Executive Office as double-rect, org units as rect, Persons/Roles as stadium, Platforms as parallelogram, M365 collab surfaces as cylinder, Workflows/Dashboards as hexagon, Decisions as diamond. The <code>classDef</code> color rules ship inline so the diagram is portable &mdash; no theme config needed in the consuming tool.</p>
+
+      <h4>Org Chart layout (Layout dropdown &rarr; "Org Chart (people + reports)")</h4>
+      <p>Snapshots your current filter set, narrows the view to Person + Role + the four org-unit types (Executive Office, Front Office, Directorate, Office, Team), and arranges by REPORTS_TO chains via the hierarchical algorithm. Picking any other layout silently restores your previous filter set and switches to that layout. Useful for printing a real org chart from your graph data.</p>
+    </div>
+    <div class="help-pane" data-pane="data">
+      <h4>Working file (source of truth)</h4>
+      <p>The intended workflow: <strong>open a JSON file, edit, save</strong>. The file on disk is the source of truth. The header shows the open file name plus an amber dot when there are unsaved changes. Click the chip (or press <kbd>Ctrl</kbd>+<kbd>S</kbd>) to save back to that file.</p>
+      <p>In Chrome and Edge, "Save" writes silently in-place. In Firefox and Safari (which don't yet support the File System Access API), "Save" downloads a fresh copy of the JSON; you replace the file on disk manually. The "Save As..." button always prompts for a new location.</p>
+      <p>You can also drag a <code>.json</code> file onto the window to open it.</p>
+      <h4>Layouts travel with the file</h4>
+      <p>Node positions (including pins from layout-mode drags) are saved into the JSON and into the local cache. Opening a file restores the arrangement exactly as it was saved instead of re-running the layout algorithm — so a hand-tuned diagram stays hand-tuned. Picking a layout from the dropdown recomputes positions as usual. Note that in force layout, unpinned nodes still drift gently as the simulation settles; pin the nodes you care about (Shift+drag or layout mode <kbd>M</kbd>).</p>
+      <h4>Crash-recovery cache</h4>
+      <p>Every change is also cached in <code>localStorage</code> so you don't lose work if you close the tab without saving. The cache is per-browser-profile and isn't a substitute for saving: when you reopen this file in a new tab or different browser, only the JSON file you Open will be the source of truth.</p>
+      <h4>Named snapshots</h4>
+      <p>"Save current as snapshot" stores a labeled, timestamped copy. Use them for milestones ("Sept 2025 baseline", "Post-reorg proposal") or to compare scenarios. Load from the snapshots list any time.</p>
+      <h4>Export formats</h4>
+      <ul>
+        <li><strong>CSV</strong> &mdash; <code>nodes.csv</code> + <code>edges.csv</code> for opening in Excel/Google Sheets or piping into other tools.</li>
+        <li><strong>Excel (.xlsx)</strong> &mdash; multi-sheet workbook with formatted nodes and edges.</li>
+        <li><strong>PNG</strong> &mdash; image of the currently visible graph at canvas resolution.</li>
+        <li><strong>Mermaid</strong> &mdash; copies a <code>flowchart TD</code> Mermaid diagram of the visible graph to your clipboard. Paste into GitHub, GitLab, Confluence, Notion, Obsidian, VS Code preview, or any Mermaid-rendering markdown editor. Type-aware shape syntax with embedded <code>classDef</code> color rules so the diagram is portable. See the Analysis tab for more detail.</li>
+      </ul>
+      <h4>Other export details</h4>
+      <ul>
+        <li><strong>JSON:</strong> complete round-trip backup. Every node and edge with every field, <em>plus all your saved snapshots</em>, bundled in one file. Best format for sharing your full workspace with a colleague: hand them the HTML file and this JSON, they import it, and they see exactly what you see including snapshot history. Import replaces the current graph (push to history first; you can undo) and merges snapshots by ID with newer timestamps winning. Old graph-only JSON files still import correctly.</li>
+        <li><strong>CSV:</strong> downloads two files (<code>nodes.csv</code> and <code>edges.csv</code>) with all fields. Edges include resolved source and target labels alongside their IDs, so the file is human-readable in Excel without cross-referencing. UTF-8 BOM included so Excel opens it cleanly.</li>
+        <li><strong>Excel:</strong> a single <code>.xlsx</code> workbook with two sheets, Nodes and Edges, auto-sized columns. The Excel exporter is downloaded from a CDN the first time you click the button (about 900 KB) and cached after.</li>
+        <li><strong>PNG:</strong> high-resolution image of the visible graph for slides and screenshots. Filters and zoom-fit are applied: what you see is what you get.</li>
+        <li><strong>Print / Save as PDF:</strong> press <kbd>Ctrl</kbd>+<kbd>P</kbd>. The print view hides all UI chrome, sets landscape orientation, fits the graph to the page, and adds a clean legend card. Use your browser's "Save as PDF" destination for shareable PDF output.</li>
+      </ul>
+      <h4>Sample data</h4>
+      <p>Wipes the graph and reloads the embedded sample (1 Executive Office, 1 Front Office, 4 directorates, 8 offices, plus systems, sites, mailboxes, etc.). Confirmation is required.</p>
+    </div>
+    <div class="help-pane" data-pane="kbd">
+      <h4>Keyboard shortcuts</h4>
+      <div class="kbd-grid">
+        <div class="rk"><kbd>?</kbd></div><div class="rv">Open this help</div>
+        <div class="rk"><kbd>F</kbd></div><div class="rv">Fit graph to view</div>
+        <div class="rk"><kbd>R</kbd></div><div class="rv">Reset view to 100%</div>
+        <div class="rk"><kbd>L</kbd></div><div class="rv">Toggle "always show edge labels"</div>
+        <div class="rk"><kbd>M</kbd></div><div class="rv">Toggle layout mode (drag nodes without selecting)</div>
+        <div class="rk"><kbd>Shift</kbd>+drag</div><div class="rv">Move a single node without changing selection</div>
+        <div class="rk"><kbd>&uarr;</kbd><kbd>&darr;</kbd><kbd>&larr;</kbd><kbd>&rarr;</kbd></div><div class="rv">Navigate nodes spatially (canvas focused)</div>
+        <div class="rk"><kbd>[</kbd> / <kbd>]</kbd></div><div class="rv">Cycle to previous / next node (canvas focused)</div>
+        <div class="rk"><kbd>C</kbd></div><div class="rv">Start quick-connect from selected node</div>
+        <div class="rk"><kbd>N</kbd></div><div class="rv">Open Add Node dialog</div>
+        <div class="rk"><kbd>E</kbd></div><div class="rv">Edit the selected item</div>
+        <div class="rk"><kbd>Esc</kbd></div><div class="rv">Cancel connect mode / clear selection / close modal</div>
+        <div class="rk"><kbd>Delete</kbd></div><div class="rv">Delete selected item</div>
+        <div class="rk"><kbd>Ctrl</kbd>+<kbd>Z</kbd></div><div class="rv">Undo</div>
+        <div class="rk"><kbd>Ctrl</kbd>+<kbd>Y</kbd></div><div class="rv">Redo</div>
+        <div class="rk"><kbd>Ctrl</kbd>+<kbd>F</kbd></div><div class="rv">Focus the search box</div>
+        <div class="rk"><kbd>Ctrl</kbd>+<kbd>S</kbd></div><div class="rv">Save the working file</div>
+        <div class="rk"><kbd>Ctrl</kbd>+<kbd>O</kbd></div><div class="rv">Open a JSON file</div>
+      </div>
+    </div>
+    <div class="help-pane" data-pane="ref">
+      <h4>Relationship types: what each one means</h4>
+      <div class="ref-grid">
+        <div class="rk">CONTAINS</div><div class="rv">A is the structural parent of B (Office contains a Person, Directorate contains an Office).</div>
+        <div class="rk">REPORTS_TO</div><div class="rv">A reports up to B in the org hierarchy.</div>
+        <div class="rk">OWNS</div><div class="rv">A is accountable for B as the owner-of-record.</div>
+        <div class="rk">MANAGES</div><div class="rv">A operates / administers B day-to-day.</div>
+        <div class="rk">SUPPORTS</div><div class="rv">A provides support for B without owning it.</div>
+        <div class="rk">SECURES</div><div class="rv">A's membership grants permissions / access to B (an O365 Group secures a SharePoint Site).</div>
+        <div class="rk">USES</div><div class="rv">A consumes B's functionality.</div>
+        <div class="rk">DEPENDS_ON</div><div class="rv">A cannot operate (or operates degraded) without B.</div>
+        <div class="rk">HOSTED_ON</div><div class="rv">A runs on platform/system B.</div>
+        <div class="rk">CONNECTED_TO</div><div class="rv">A and B are linked (use when nothing more specific fits).</div>
+        <div class="rk">INTEGRATES_WITH</div><div class="rv">A exchanges data/events with B via an integration.</div>
+        <div class="rk">HAS_SITE / HAS_TEAM / HAS_O365_GROUP / HAS_MAILBOX</div><div class="rv">Composition: A's official site / team / group / mailbox is B.</div>
+        <div class="rk">SENDS_TO / RECEIVES_FROM</div><div class="rv">Directed data or message flow.</div>
+        <div class="rk">AUTOMATES</div><div class="rv">A drives a workflow / flow B.</div>
+        <div class="rk">STORES_DATA_IN / VISUALIZED_IN</div><div class="rv">A's data lives in B / is displayed in B.</div>
+        <div class="rk">DOCUMENTED_IN / APPROVED_BY / REQUESTED_BY</div><div class="rv">Provenance and governance relationships.</div>
+        <div class="rk">RESPONSIBLE_FOR</div><div class="rv">A person/role is accountable for B.</div>
+        <div class="rk">BACKUP_FOR</div><div class="rv">A is the standby / failover for B.</div>
+        <div class="rk">PART_OF</div><div class="rv">A is a sub-component of B.</div>
+      </div>
+      <h4>Entity types: what to use them for</h4>
+      <div class="ref-grid">
+        <div class="rk">Executive Office, Front Office, Directorate, Office</div><div class="rv">Organizational structure, top-down.</div>
+        <div class="rk">Person, Role</div><div class="rv">Individuals (named) and roles (positions).</div>
+        <div class="rk">Platform, System, Application</div><div class="rv">Platforms host applications. Systems are large discrete software systems. Apps are specific tools.</div>
+        <div class="rk">SharePoint Site, Microsoft Team, O365 Group, Mailbox</div><div class="rv">Collaboration artifacts tied to an office.</div>
+        <div class="rk">Workflow, Power Automate Flow, Power BI Dashboard</div><div class="rv">Automation and reporting artifacts.</div>
+        <div class="rk">API, Dataset, Document</div><div class="rv">Technical and informational artifacts.</div>
+        <div class="rk">Requirement, Decision</div><div class="rv">Governance artifacts.</div>
+        <div class="rk">Vendor, Service, Environment</div><div class="rv">External vendors, internal services, runtime environments.</div>
+      </div>
+    </div>
+  `;
+  openModal('<i class="fa-solid fa-circle-question"></i> Help & Reference', html, ()=>closeModal(), true);
+  document.getElementById("modal-foot").style.display = "none";
+  setTimeout(()=>{ document.getElementById("modal-foot").style.display = ""; }, 0);
+  // tabs (with WAI-ARIA tab semantics so AT announces selection state)
+  const helpTablist = modalBody.querySelector(".help-tabs");
+  if (helpTablist) helpTablist.setAttribute("role", "tablist");
+  modalBody.querySelectorAll(".help-tab").forEach(tab=>{
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", tab.classList.contains("active") ? "true" : "false");
+    tab.onclick = ()=>{
+      modalBody.querySelectorAll(".help-tab").forEach(t=>{ t.classList.remove("active"); t.setAttribute("aria-selected","false"); });
+      modalBody.querySelectorAll(".help-pane").forEach(p=>p.classList.remove("active"));
+      tab.classList.add("active");
+      tab.setAttribute("aria-selected", "true");
+      modalBody.querySelector(`.help-pane[data-pane="${tab.dataset.pane}"]`).classList.add("active");
+    };
+  });
+  // Hide the save button, show only Close
+  document.getElementById("modal-save").style.display = "none";
+  document.getElementById("modal-cancel").innerHTML = '<i class="fa-solid fa-check"></i> Got it';
+}
+// (Footer reset is now built into closeModal directly, no override needed.)
+
+/* ============================================================================
+   LEADERSHIP METRICS MODAL
+   ----------------------------------------------------------------------------
+   Computes a snapshot of metrics leadership cares about from the current
+   graph state and renders them in a tabbed modal. Pure read of state.graph;
+   no persistence, no edits.
+   ============================================================================ */
+const METRICS_DEPENDENCY_EDGES = ["DEPENDS_ON","USES","HOSTED_ON","INTEGRATES_WITH","CONNECTED_TO"];
+const METRICS_ORG_TYPES    = ["Under Secretary","Bureau","Executive Office","Front Office","Directorate","Office","Team"];
+const METRICS_PEOPLE_TYPES = ["Person","Role"];
+const METRICS_TECH_TYPES   = ["System","Platform","Application","SPFx Application","API","Service"];
+const METRICS_COLLAB_TYPES = ["Site Collection","SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox","Distribution List","Microsoft Form"];
+const METRICS_PROCESS_TYPES= ["Workflow","Power Automate Flow","Power BI Dashboard","Dataset","Dataverse Table","Document","Requirement","Decision"];
+
+function computeLeadershipMetrics(){
+  const nodes = state.graph.nodes;
+  const edges = state.graph.edges;
+  const N = nodes.length, E = edges.length;
+
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const byLabel = new Map();
+  for (const n of nodes){
+    if (!byLabel.has(n.label)) byLabel.set(n.label, n);
+  }
+  const outE = new Map(), inE = new Map();
+  for (const n of nodes){ outE.set(n.id, []); inE.set(n.id, []); }
+  for (const e of edges){
+    if (outE.has(e.source)) outE.get(e.source).push(e);
+    if (inE.has(e.target))  inE.get(e.target).push(e);
+  }
+  const deg = id => (outE.get(id)||[]).length + (inE.get(id)||[]).length;
+  const inAny = (n, types) => n && types.includes(n.type);
+  const countIn = types => nodes.filter(n => inAny(n, types)).length;
+  const typeCount = t => nodes.filter(n => n.type === t).length;
+  const has = v => !!(v && String(v).trim());
+  const pct = (a,b) => b === 0 ? 0 : Math.round(a/b*100);
+
+  // Coverage — field-filled OR connected via the corresponding edge counts
+  // as "has a lead/owner". This matches the user's mental model: a node with
+  // a Quick-Connected RESPONSIBLE_FOR edge has a lead even if the field is empty.
+  const nodesWithIncomingOWNS = new Set();
+  const nodesWithIncomingRESPONSIBLE_FOR = new Set();
+  const nodesWithIncomingCONTAINS = new Set();
+  for (const e of edges){
+    if (e.type === "OWNS") nodesWithIncomingOWNS.add(e.target);
+    else if (e.type === "RESPONSIBLE_FOR") nodesWithIncomingRESPONSIBLE_FOR.add(e.target);
+    else if (e.type === "CONTAINS") nodesWithIncomingCONTAINS.add(e.target);
+  }
+  const hasOwnership = n => has(n.owner) || nodesWithIncomingOWNS.has(n.id);
+  const hasLead      = n => has(n.lead)  || nodesWithIncomingRESPONSIBLE_FOR.has(n.id);
+  const withOwner = nodes.filter(hasOwnership).length;
+  const withLead  = nodes.filter(hasLead).length;
+  const withDesc  = nodes.filter(n => has(n.description)).length;
+  const withTags  = nodes.filter(n => Array.isArray(n.tags) && n.tags.length > 0).length;
+  const lowQuality= nodes.filter(n => !hasOwnership(n) && !hasLead(n) && !has(n.description)).length;
+
+  // Risk
+  const depInCount = id => (inE.get(id)||[]).filter(e => METRICS_DEPENDENCY_EDGES.includes(e.type)).length;
+  const backupTargets = new Set(edges.filter(e => e.type === "BACKUP_FOR").map(e => e.target));
+  const criticalHubs = nodes
+    .map(n => ({ n, dep: depInCount(n.id), hasBackup: backupTargets.has(n.id) }))
+    .filter(x => x.dep >= 2)
+    .sort((a,b) => b.dep - a.dep);
+
+  const orphans = nodes.filter(n => deg(n.id) === 0);
+  const unownedTech = nodes.filter(n => inAny(n, METRICS_TECH_TYPES) && !has(n.owner));
+  const isDeprecated = n => /inactive|deprecated|retired/i.test(n.status || "");
+  const deprecatedInUse = nodes.filter(n => isDeprecated(n) && deg(n.id) > 0);
+
+  const vendors = nodes.filter(n => n.type === "Vendor");
+  const vendorExposure = vendors.map(v => ({ n: v, dependents: deg(v.id) }))
+    .filter(x => x.dependents > 0)
+    .sort((a,b) => b.dependents - a.dependents);
+
+  // Per-directorate footprint — walk descendants via the same edge set the
+  // collapse feature uses (CONTAINS / HAS_* / OWNS / MANAGES), then count by
+  // type. This catches People living under Offices and tech assets owned by
+  // Offices, which the directorate field alone misses.
+  const directorates = nodes.filter(n => n.type === "Directorate");
+  const nodeDir = new Map();  // node id -> directorate label (first match wins)
+  const dirDescendants = new Map();  // dir id -> Set of descendant node ids
+  for (const d of directorates){
+    const desc = (typeof getCollapseDescendants === "function")
+      ? getCollapseDescendants(d.id)
+      : new Set();
+    dirDescendants.set(d.id, desc);
+    for (const childId of desc){
+      if (!nodeDir.has(childId)) nodeDir.set(childId, d.label);
+    }
+    // The directorate itself belongs to its own bucket
+    if (!nodeDir.has(d.id)) nodeDir.set(d.id, d.label);
+  }
+  // Fallback: nodes with an explicit directorate field but not reached via edges
+  for (const n of nodes){
+    if (!nodeDir.has(n.id) && has(n.directorate)){
+      nodeDir.set(n.id, n.directorate);
+    }
+  }
+  const dirStats = directorates.map(d => {
+    const dname = d.label;
+    const descSet = dirDescendants.get(d.id) || new Set();
+    // Population = directorate itself plus descendants
+    const pop = [d.id, ...descSet].map(id => byId.get(id)).filter(Boolean);
+    let offices = 0, people = 0, systemsOwned = 0, ownedInDir = 0;
+    for (const n of pop){
+      if (n.id !== d.id && hasOwnership(n)) ownedInDir++;
+      if (n.type === "Office") offices++;
+      if (n.type === "Person" || n.type === "Role") people++;
+      if (inAny(n, METRICS_TECH_TYPES)) systemsOwned++;
+    }
+    const totalInDir = pop.length - 1;  // exclude the directorate node itself
+    return {
+      name: dname, offices, people, systemsOwned,
+      totalInDir, ownedInDir,
+      ownPct: pct(ownedInDir, totalInDir)
+    };
+  }).sort((a,b) => b.totalInDir - a.totalInDir);
+
+  // Cross-directorate dependencies — use the reverse map built above
+  let crossDirDeps = 0;
+  for (const e of edges){
+    if (!METRICS_DEPENDENCY_EDGES.includes(e.type)) continue;
+    const sd = nodeDir.get(e.source);
+    const td = nodeDir.get(e.target);
+    if (sd && td && sd !== td) crossDirDeps++;
+  }
+
+  // Complexity
+  const byDeg = nodes.map(n => ({ n, d: deg(n.id) })).filter(x => x.d > 0).sort((a,b) => b.d - a.d);
+  const integrationCount = edges.filter(e => e.type === "INTEGRATES_WITH" || e.type === "CONNECTED_TO").length;
+  const automationCount  = nodes.filter(n => n.type === "Workflow" || n.type === "Power Automate Flow").length;
+
+  function longestDepChain(){
+    const adj = new Map();
+    for (const n of nodes) adj.set(n.id, []);
+    for (const e of edges){
+      if (METRICS_DEPENDENCY_EDGES.includes(e.type) && adj.has(e.source)){
+        adj.get(e.source).push(e.target);
+      }
+    }
+    const memo = new Map();
+    function dfs(id, visiting){
+      if (memo.has(id)) return memo.get(id);
+      if (visiting.has(id)) return 0;
+      visiting.add(id);
+      let best = 0;
+      for (const nb of adj.get(id) || []){
+        const d = dfs(nb, visiting) + 1;
+        if (d > best) best = d;
+      }
+      visiting.delete(id);
+      memo.set(id, best);
+      return best;
+    }
+    let best = 0;
+    for (const n of nodes){
+      const d = dfs(n.id, new Set());
+      if (d > best) best = d;
+    }
+    return best;
+  }
+  const longest = longestDepChain();
+
+  const integDeg = id => (outE.get(id)||[]).filter(e => e.type==="INTEGRATES_WITH" || e.type==="CONNECTED_TO").length
+                       + (inE.get(id)||[]).filter(e => e.type==="INTEGRATES_WITH" || e.type==="CONNECTED_TO").length;
+  const mostIntegrated = nodes.filter(n => inAny(n, METRICS_TECH_TYPES))
+    .map(n => ({ n, c: integDeg(n.id) }))
+    .filter(x => x.c > 0)
+    .sort((a,b) => b.c - a.c);
+
+  /* ---------- Pipeline & Service metrics ---------- */
+  // Lifecycle bucket: maps any status string into one of five normalized stages.
+  // Blank/unset defaults to "active" to match the rest of the app's convention.
+  const lifecycleBucket = (statusRaw) => {
+    const s = (statusRaw || "").toLowerCase().trim();
+    if (!s) return "active";
+    if (/inactive|deprecated|retired|sunset|eol|end[- ]of[- ]life|decommission/.test(s)) return "retired";
+    if (/pilot|beta|preview|poc|trial/.test(s)) return "pilot";
+    if (/plan|future|roadmap|backlog|approved/.test(s)) return "planned";
+    if (/proposed|concept|idea|requested|considering/.test(s)) return "proposed";
+    return "active";  // active, in production, live, running, current, etc.
+  };
+  const lifecycle = { proposed:0, planned:0, pilot:0, active:0, retired:0 };
+  nodes.forEach(n => lifecycle[lifecycleBucket(n.status)]++);
+  const inFlightCount = lifecycle.proposed + lifecycle.planned + lifecycle.pilot;
+
+  // Per-type lifecycle breakdown for the major delivery types
+  const PIPELINE_TYPES = ["System","Platform","Application","SPFx Application","API","Service",
+                          "Workflow","Power Automate Flow","Power BI Dashboard","Microsoft Form",
+                          "SharePoint Site","SharePoint List","Dataverse Table",
+                          "Microsoft Team","Requirement","Decision"];
+  const perTypeLifecycle = PIPELINE_TYPES.map(t => {
+    const ns = nodes.filter(n => n.type === t);
+    const b = { proposed:0, planned:0, pilot:0, active:0, retired:0 };
+    ns.forEach(n => b[lifecycleBucket(n.status)]++);
+    return { type:t, total:ns.length, proposed:b.proposed, planned:b.planned,
+             pilot:b.pilot, active:b.active, retired:b.retired };
+  }).filter(x => x.total > 0)
+    .sort((a,b) => b.total - a.total);
+
+  // Active delivery surfaces — what's currently in production
+  const activeWorkflows   = nodes.filter(n => n.type === "Workflow"            && lifecycleBucket(n.status) === "active").length;
+  const activeAutomations = nodes.filter(n => n.type === "Power Automate Flow" && lifecycleBucket(n.status) === "active").length;
+  const activeDashboards  = nodes.filter(n => n.type === "Power BI Dashboard"  && lifecycleBucket(n.status) === "active").length;
+  const activeSites       = nodes.filter(n => n.type === "SharePoint Site"     && lifecycleBucket(n.status) === "active").length;
+  const activeTeams       = nodes.filter(n => n.type === "Microsoft Team"      && lifecycleBucket(n.status) === "active").length;
+
+  // Requirements & decisions pipeline
+  const reqsByStage = { proposed:0, planned:0, pilot:0, active:0, retired:0 };
+  nodes.filter(n => n.type === "Requirement").forEach(n => reqsByStage[lifecycleBucket(n.status)]++);
+  const decisionsCount = nodes.filter(n => n.type === "Decision").length;
+
+  // EX scope — every node in an Executive Office node's containment tree
+  const exRoots = nodes.filter(n => n.type === "Executive Office");
+  const exScope = new Set();
+  for (const r of exRoots){
+    exScope.add(r.id);
+    if (typeof getCollapseDescendants === "function"){
+      const desc = getCollapseDescendants(r.id);
+      for (const id of desc) exScope.add(id);
+    }
+  }
+  const exNodes = nodes.filter(n => exScope.has(n.id));
+  const exTechCount      = exNodes.filter(n => inAny(n, METRICS_TECH_TYPES)).length;
+  const exWorkflowsCount = exNodes.filter(n => n.type === "Workflow" || n.type === "Power Automate Flow").length;
+  const exServices       = exNodes.filter(n => n.type === "Service");
+  const exPeopleCount    = exNodes.filter(n => inAny(n, METRICS_PEOPLE_TYPES)).length;
+
+  // Client bureaus — Office / Directorate / Front Office nodes outside EX scope
+  const BUREAU_CANDIDATE_TYPES = ["Bureau","Office","Directorate","Front Office"];
+  const clientBureaus = nodes
+    .filter(n => BUREAU_CANDIDATE_TYPES.includes(n.type) && !exScope.has(n.id))
+    .map(b => {
+      const touching = edges.filter(e =>
+        (e.source === b.id && exScope.has(e.target)) ||
+        (e.target === b.id && exScope.has(e.source))
+      );
+      return {
+        n: b,
+        interactions: touching.length,
+        requests: touching.filter(e => e.type === "REQUESTED_BY").length,
+        servicesReceived: touching.filter(e => e.type === "SUPPORTS" || e.type === "RESPONSIBLE_FOR").length
+      };
+    })
+    .sort((a,b) => b.interactions - a.interactions);
+
+  // Cross-boundary service flows
+  const OUTBOUND_EDGE_TYPES = ["SUPPORTS","RESPONSIBLE_FOR","SENDS_TO","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST"];
+  const INBOUND_EDGE_TYPES  = ["REQUESTED_BY","RECEIVES_FROM","APPROVED_BY"];
+  let outboundServices = 0, inboundRequests = 0, crossBoundaryTotal = 0;
+  for (const e of edges){
+    const sIn = exScope.has(e.source);
+    const tIn = exScope.has(e.target);
+    if (sIn === tIn) continue;
+    crossBoundaryTotal++;
+    if (sIn && !tIn && OUTBOUND_EDGE_TYPES.includes(e.type)) outboundServices++;
+    if (!sIn && tIn && INBOUND_EDGE_TYPES.includes(e.type)) inboundRequests++;
+  }
+
+  // Bus-factor — surface People/Roles carrying the most leadership load
+  // (named as Owner or Lead on other nodes). Concentration is a structural
+  // risk leadership cares about: who would we miss most if they left?
+  // Track every (person, edge) pair we've already counted so combined field+edge
+  // sources don't double-count when the auto-edge sync has already created an edge.
+  const personLoad = new Map();  // person/role label -> { lead: count, owner: count }
+  const countedEdges = new Set();  // edge ids that have been counted
+  const bumpLoad = (key, kind) => {
+    if (!personLoad.has(key)) personLoad.set(key, { lead: 0, owner: 0 });
+    personLoad.get(key)[kind]++;
+  };
+  // First: count edge-based connections (edges are the canonical truth — every
+  // field-derived relationship also has a corresponding auto-created edge)
+  for (const e of edges){
+    if (e.type !== "RESPONSIBLE_FOR" && e.type !== "OWNS") continue;
+    const src = byId.get(e.source);
+    if (!src || (src.type !== "Person" && src.type !== "Role")) continue;
+    countedEdges.add(e.id);
+    bumpLoad(src.label, e.type === "RESPONSIBLE_FOR" ? "lead" : "owner");
+  }
+  // Then: catch field-filled cases where the name doesn't match a Person node
+  // (no edge gets auto-created, so this is the only signal). Skip if the field
+  // matches a person/role node since we already counted that via the edge.
+  for (const n of nodes){
+    if (has(n.lead)){
+      const key = n.lead.trim();
+      const node = byLabel.get(key);
+      if (!node || (node.type !== "Person" && node.type !== "Role")) bumpLoad(key, "lead");
+    }
+    if (has(n.owner)){
+      const key = n.owner.trim();
+      const node = byLabel.get(key);
+      if (node && (node.type === "Person" || node.type === "Role")){
+        // Already counted via the OWNS edge if it exists
+        const ownsEdge = edges.find(e => e.type === "OWNS" && e.source === node.id && e.target === n.id);
+        if (!ownsEdge) bumpLoad(key, "owner");
+      }
+    }
+  }
+  const busFactor = Array.from(personLoad.entries())
+    .map(([name, c]) => {
+      const node = byLabel.get(name);
+      return {
+        name,
+        nodeId: node ? node.id : null,
+        isKnownPerson: !!node,
+        lead: c.lead, owner: c.owner, total: c.lead + c.owner
+      };
+    })
+    .filter(x => x.total >= 3)  // 3+ assignments is the leadership-relevant threshold
+    .sort((a,b) => b.total - a.total);
+
+  // Messaging sprawl: O365 Groups / Mailboxes / Distribution Lists attached
+  // DIRECTLY to each org unit (children's objects are not rolled up). High
+  // counts are a long-term maintenance risk: every object is an access
+  // boundary to own, review, and re-home at each reorg.
+  const SPRAWL_OBJ = { "O365 Group":"groups", "Mailbox":"mailboxes", "Distribution List":"dls" };
+  const SPRAWL_ATTACH = ["OWNS","CONTAINS","MANAGES","HAS_O365_GROUP","HAS_MAILBOX","HAS_DISTRIBUTION_LIST"];
+  const sprawlByOrg = new Map(); // org id -> { seen:Set, groups, mailboxes, dls }
+  for (const e of edges){
+    if (!SPRAWL_ATTACH.includes(e.type)) continue;
+    const src = byId.get(e.source), tgt = byId.get(e.target);
+    if (!src || !tgt || !METRICS_ORG_TYPES.includes(src.type) || !(tgt.type in SPRAWL_OBJ)) continue;
+    let rec = sprawlByOrg.get(src.id);
+    if (!rec){ rec = { seen:new Set(), groups:0, mailboxes:0, dls:0 }; sprawlByOrg.set(src.id, rec); }
+    if (rec.seen.has(tgt.id)) continue; // dedupe: OWNS + HAS_* to the same object counts once
+    rec.seen.add(tgt.id);
+    rec[SPRAWL_OBJ[tgt.type]] += 1;
+  }
+  const messagingSprawl = [...sprawlByOrg.entries()]
+    .map(([id, r]) => ({ n: byId.get(id), groups:r.groups, mailboxes:r.mailboxes, dls:r.dls, total:r.seen.size }))
+    .sort((a,b) => b.total - a.total);
+
+  return {
+    N, E,
+    counts: {
+      org: countIn(METRICS_ORG_TYPES),
+      people: countIn(METRICS_PEOPLE_TYPES),
+      tech: countIn(METRICS_TECH_TYPES),
+      collab: countIn(METRICS_COLLAB_TYPES),
+      process: countIn(METRICS_PROCESS_TYPES),
+      vendors: typeCount("Vendor"),
+      directorates: typeCount("Directorate"),
+      offices: typeCount("Office"),
+    },
+    coverage: {
+      ownerPct: pct(withOwner, N), withOwner,
+      leadPct:  pct(withLead, N),  withLead,
+      descPct:  pct(withDesc, N),  withDesc,
+      tagPct:   pct(withTags, N),  withTags,
+      lowQuality
+    },
+    risk: { criticalHubs, orphans, unownedTech, deprecatedInUse, vendorExposure, busFactor, messagingSprawl },
+    org:  { dirStats, crossDirDeps },
+    complexity: { byDeg, integrationCount, automationCount, longest, mostIntegrated },
+    pipeline: {
+      lifecycle, inFlightCount,
+      perTypeLifecycle,
+      activeWorkflows, activeAutomations, activeDashboards, activeSites, activeTeams,
+      reqsByStage, decisionsCount
+    },
+    service: {
+      exScope, exNodes, exTechCount, exWorkflowsCount, exServices, exPeopleCount,
+      exRoots,
+      clientBureaus,
+      outboundServices, inboundRequests, crossBoundaryTotal
+    }
+  };
+}
+
+// Run the leadership metrics against an arbitrary graph object (e.g. a saved
+// snapshot) by temporarily swapping it into state. computeLeadershipMetrics
+// is a pure read of state.graph, so the swap is side-effect free.
+function computeMetricsFor(graph){
+  const prev = state.graph;
+  state.graph = graph;
+  try { return computeLeadershipMetrics(); }
+  finally { state.graph = prev; }
+}
+
+// Delta chip vs a baseline value. goodWhen ("up" | "down" | "neutral") decides
+// the color; the arrow and signed number convey direction in text as well, so
+// the information is never color-only. Returns "" when there is no baseline.
+function deltaChip(cur, prev, goodWhen, suffix){
+  if (prev == null || isNaN(prev) || cur == null || isNaN(cur)) return "";
+  const d = Math.round((cur - prev) * 10) / 10;
+  if (d === 0) return '<span class="delta flat" title="No change since baseline snapshot">±0</span>';
+  const arrow = d > 0 ? "▲" : "▼";
+  const good = goodWhen === "neutral" ? null : (goodWhen === "up" ? d > 0 : d < 0);
+  const cls = good == null ? "flat" : (good ? "good" : "bad");
+  return `<span class="delta ${cls}" title="Change since baseline snapshot">${arrow} ${d > 0 ? "+" : ""}${d}${suffix || ""}</span>`;
+}
+
+/* Composite "Top risks" watchlist — aggregates the individual risk signals
+   (dependency hubs, missing backups, articulation points, deprecated-in-use,
+   ownership gaps, staleness) into one ranked, owner-attributed list. The
+   weights are heuristic; what matters is stable relative ordering. */
+function computeTopRisks(m){
+  m = m || computeLeadershipMetrics();
+  const byId = new Map();
+  const bump = (node, pts, reason) => {
+    if (!node) return;
+    let rec = byId.get(node.id);
+    if (!rec){ rec = { node, score: 0, reasons: [] }; byId.set(node.id, rec); }
+    rec.score += pts;
+    rec.reasons.push(reason);
+  };
+  m.risk.criticalHubs.forEach(x => {
+    bump(x.n, 3 + Math.min(x.dep, 5), x.dep + " dependents");
+    if (!x.hasBackup) bump(x.n, 2, "no backup");
+  });
+  computeArticulationPoints().forEach(id => {
+    bump(findNode(id), 3, "single point of failure");
+  });
+  m.risk.deprecatedInUse.forEach(n => bump(n, 4, "deprecated but still connected"));
+  m.risk.unownedTech.forEach(n => bump(n, 2, "no owner"));
+  // Staleness only compounds an existing risk — alone it isn't watchlist-worthy
+  state.graph.nodes.forEach(n => {
+    if (!n.updatedAt || !byId.has(n.id)) return;
+    const days = (Date.now() - new Date(n.updatedAt).getTime()) / 86400000;
+    if (isFinite(days) && days > 180) bump(n, 1, "not reviewed in 6+ months");
+  });
+  return [...byId.values()].sort((a,b) => b.score - a.score);
+}
+
+function mKpi(lbl, val, sub, kind, delta){
+  const cls = kind ? " " + kind : "";
+  const subHtml = sub ? `<div class="sub">${sub}</div>` : "";
+  return `<div class="kpi${cls}"><div class="lbl">${lbl}</div><div class="val">${val}${delta ? " " + delta : ""}</div>${subHtml}</div>`;
+}
+function mEntityLink(node, opts){
+  // Render a clickable entity name. opts.includeType adds a small type-cell below.
+  // The click is wired via delegation inside openMetricsModal.
+  if (!node) return "";
+  const typeHtml = (opts && opts.includeType)
+    ? `<div class="type-cell">${escapeHtml(node.type)}</div>`
+    : "";
+  return `<span class="m-entity-link" role="link" tabindex="0" data-node-id="${escapeHtml(node.id)}" title="Click to jump to this entity on the graph">${escapeHtml(node.label)}</span>${typeHtml}`;
+}
+function mEntityLinkByName(name, nodeId){
+  // For lists where we only have a name string (e.g. bus-factor)
+  if (!nodeId) return escapeHtml(name);
+  return `<span class="m-entity-link" role="link" tabindex="0" data-node-id="${escapeHtml(nodeId)}" title="Click to jump to this entity on the graph">${escapeHtml(name)}</span>`;
+}
+function mBarRow(label, count, total){
+  const p = total === 0 ? 0 : Math.round(count/total*100);
+  const cls = p >= 80 ? "high" : (p >= 50 ? "mid" : "low");
+  return `<div class="m-bar-row">
+    <div class="bar-label">${escapeHtml(label)}</div>
+    <div class="m-bar"><div class="m-bar-fill ${cls}" style="width:${p}%"></div></div>
+    <div class="bar-val">${p}% <span style="color:var(--muted); font-weight:400">(${count}/${total})</span></div>
+  </div>`;
+}
+
+/* ---------- SVG chart helpers (Tailwind-ish, no external deps) ---------- */
+// Color palette for distribution charts — restrained, harmonious with theme
+const M_PALETTE = [
+  "#38BDF8", "#A78BFA", "#34D399", "#FBBF24", "#F472B6",
+  "#FB923C", "#22D3EE", "#A3E635", "#818CF8", "#FB7185",
+  "#60A5FA", "#C084FC", "#5EEAD4", "#FACC15", "#94A3B8"
+];
+
+function mDonut(pct, lbl, sublbl){
+  // Single-value radial gauge. pct in 0..100.
+  const r = 38, c = 2 * Math.PI * r;
+  const dash = c * Math.max(0, Math.min(100, pct)) / 100;
+  const gap  = c - dash;
+  const color = pct >= 80 ? "var(--ok)" : pct >= 50 ? "var(--warn)" : "var(--crit)";
+  return `<div class="m-donut">
+    <div class="m-donut-svg-wrap">
+      <svg viewBox="0 0 100 100" class="m-donut-svg" aria-hidden="true">
+        <circle cx="50" cy="50" r="${r}" fill="none" stroke="var(--card-2)" stroke-width="9"/>
+        <circle cx="50" cy="50" r="${r}" fill="none" stroke="${color}" stroke-width="9"
+                stroke-dasharray="${dash} ${gap}" stroke-linecap="round"
+                transform="rotate(-90 50 50)"/>
+      </svg>
+      <div class="m-donut-center"><div class="m-donut-val">${pct}<span class="m-donut-pct">%</span></div></div>
+    </div>
+    <div class="m-donut-lbl">${escapeHtml(lbl)}</div>
+    ${sublbl ? `<div class="m-donut-sub">${escapeHtml(sublbl)}</div>` : ""}
+  </div>`;
+}
+
+function mSegmentedDonut(segments, centerVal, centerLbl){
+  // Multi-segment donut. segments: [{label, value, color}]
+  const total = segments.reduce((s, x) => s + (x.value || 0), 0);
+  if (total === 0){
+    return `<div class="m-seg-donut">
+      <div class="m-seg-donut-svg-wrap">
+        <svg viewBox="0 0 100 100" class="m-seg-donut-svg" aria-hidden="true">
+          <circle cx="50" cy="50" r="38" fill="none" stroke="var(--card-2)" stroke-width="14"/>
+        </svg>
+        <div class="m-donut-center"><div class="m-donut-val">0</div></div>
+      </div>
+    </div>`;
+  }
+  const r = 38, c = 2 * Math.PI * r;
+  let acc = 0;
+  const arcs = segments.map((s, i) => {
+    const pct = (s.value || 0) / total;
+    const dash = c * pct;
+    const gap  = c - dash;
+    const offset = -c * acc;
+    acc += pct;
+    return `<circle cx="50" cy="50" r="${r}" fill="none"
+                    stroke="${s.color || M_PALETTE[i % M_PALETTE.length]}"
+                    stroke-width="14" stroke-dasharray="${dash} ${gap}"
+                    stroke-dashoffset="${offset}"
+                    transform="rotate(-90 50 50)"/>`;
+  }).join("");
+  return `<div class="m-seg-donut">
+    <div class="m-seg-donut-svg-wrap">
+      <svg viewBox="0 0 100 100" class="m-seg-donut-svg" aria-hidden="true">${arcs}</svg>
+      <div class="m-donut-center">
+        <div class="m-donut-val">${centerVal != null ? centerVal : total}</div>
+        ${centerLbl ? `<div class="m-donut-center-lbl">${escapeHtml(centerLbl)}</div>` : ""}
+      </div>
+    </div>
+  </div>`;
+}
+
+function mSegLegend(segments){
+  const total = segments.reduce((s, x) => s + (x.value || 0), 0);
+  return `<div class="m-seg-legend">${
+    segments.map((s, i) => {
+      const pct = total > 0 ? Math.round(s.value / total * 100) : 0;
+      const color = s.color || M_PALETTE[i % M_PALETTE.length];
+      return `<div class="m-seg-legend-row">
+        <span class="m-seg-dot" style="background:${color}"></span>
+        <span class="m-seg-lbl">${escapeHtml(s.label)}</span>
+        <span class="m-seg-val">${s.value} <span class="m-seg-pct">${pct}%</span></span>
+      </div>`;
+    }).join("")
+  }</div>`;
+}
+
+function mHBars(data, opts){
+  // Horizontal bar chart. data: [{label, value, nodeId?, sub?, color?}]
+  if (!data || data.length === 0) return '<div class="m-empty">No data.</div>';
+  const max = (opts && opts.max) || Math.max(...data.map(d => d.value || 0), 1);
+  const fmt = (opts && opts.valueFormat) || (v => v);
+  return `<div class="m-hbars">${
+    data.map(d => {
+      const pct = max > 0 ? (d.value / max * 100) : 0;
+      const color = d.color || 'var(--accent)';
+      const labelHtml = d.nodeId
+        ? `<span class="m-entity-link" role="link" tabindex="0" data-node-id="${escapeHtml(d.nodeId)}" title="Click to jump to this entity on the graph">${escapeHtml(d.label)}</span>`
+        : escapeHtml(d.label);
+      const subHtml = d.sub ? `<span class="m-hbar-sub">${escapeHtml(d.sub)}</span>` : '';
+      return `<div class="m-hbar-row">
+        <div class="m-hbar-label">${labelHtml}${subHtml}</div>
+        <div class="m-hbar-track" title="${escapeHtml(String(d.value))} of ${max}">
+          <div class="m-hbar-fill" style="width:${pct}%; background:${color}"></div>
+        </div>
+        <div class="m-hbar-val">${escapeHtml(String(fmt(d.value)))}</div>
+      </div>`;
+    }).join("")
+  }</div>`;
+}
+
+function mStackedHBar(stacks, opts){
+  // Multi-series horizontal stacked bars. stacks: [{label, segments:[{name, value, color}]}]
+  // All bars share a common scale derived from the largest total.
+  if (!stacks || stacks.length === 0) return '<div class="m-empty">No data.</div>';
+  const max = Math.max(...stacks.map(s => s.segments.reduce((a,b) => a + (b.value||0), 0)), 1);
+  return `<div class="m-stacked-hbars">${
+    stacks.map(stack => {
+      const total = stack.segments.reduce((a,b) => a + (b.value||0), 0);
+      const trackWidthPct = (total / max) * 100;
+      const segHtml = stack.segments.map((s, i) => {
+        const segPct = total > 0 ? (s.value / total) * 100 : 0;
+        const color = s.color || M_PALETTE[i % M_PALETTE.length];
+        return `<div class="m-stack-seg" style="width:${segPct}%; background:${color}" title="${escapeHtml(s.name)}: ${s.value}"></div>`;
+      }).join("");
+      return `<div class="m-stacked-row">
+        <div class="m-stacked-label">${escapeHtml(stack.label)}</div>
+        <div class="m-stacked-track-wrap">
+          <div class="m-stacked-track" style="width:${trackWidthPct}%">${segHtml}</div>
+        </div>
+        <div class="m-stacked-total">${total}</div>
+      </div>`;
+    }).join("")
+  }</div>`;
+}
+
+function openMetricsModal(){
+  const m = computeLeadershipMetrics();
+  const c = m.counts;
+  const cov = m.coverage;
+  const risk = m.risk;
+  const org = m.org;
+  const cx = m.complexity;
+
+  // ----- Baseline snapshot for trend deltas -----
+  // Default to the most recent snapshot; the user's pick persists. "none"
+  // disables deltas explicitly.
+  const snapsAll = loadSnapshots().sort((a,b)=>b.ts-a.ts);
+  let baselinePref = null;
+  try { baselinePref = localStorage.getItem("erg.metricsBaseline"); } catch(_){}
+  let baseline = null;
+  if (baselinePref !== "none"){
+    baseline = (baselinePref && snapsAll.find(s => s.id === baselinePref)) || snapsAll[0] || null;
+  }
+  let pm = null;
+  if (baseline && baseline.graph){
+    try { pm = computeMetricsFor(baseline.graph); }
+    catch(err){ console.error("Baseline metrics failed:", err); pm = null; }
+  }
+  const dc = (cur, prev, goodWhen, suffix) => pm ? deltaChip(cur, prev, goodWhen, suffix) : "";
+
+  // ----- Top risks (composite watchlist) -----
+  const topRisks = computeTopRisks(m);
+  const ownerCell = n => {
+    const own = (typeof effectiveOwner === "function" ? effectiveOwner(n) : n.owner) || "";
+    return own ? escapeHtml(own) : '<span class="m-pill warn">unowned</span>';
+  };
+
+  // ----- Trend table across snapshots (oldest -> newest -> current) -----
+  let trendTableHtml = "";
+  if (snapsAll.length >= 1){
+    const rows = [];
+    snapsAll.slice(0, 8).reverse().forEach(s => {
+      if (!s.graph) return;
+      try {
+        const sm = computeMetricsFor(s.graph);
+        rows.push({ name: s.name, ts: s.ts, N: sm.N, E: sm.E, owner: sm.coverage.ownerPct, hubs: sm.risk.criticalHubs.length, dep: sm.risk.deprecatedInUse.length });
+      } catch(err){ console.error("Trend metrics failed for snapshot", s.name, err); }
+    });
+    rows.push({ name: "Current", ts: null, N: m.N, E: m.E, owner: cov.ownerPct, hubs: risk.criticalHubs.length, dep: risk.deprecatedInUse.length });
+    if (rows.length >= 2){
+      trendTableHtml = `
+        <h4 style="margin:22px 0 10px; font-size:11px; letter-spacing:0.7px; color:var(--text-2); font-weight:600; text-transform:uppercase;">Trend across snapshots</h4>
+        <table class="m-table">
+          <thead><tr><th>Snapshot</th><th class="num">Entities</th><th class="num">Relations</th><th class="num">Owner %</th><th class="num">Critical hubs</th><th class="num">Deprecated in use</th></tr></thead>
+          <tbody>${rows.map(r=>`
+            <tr${r.ts === null ? ' style="font-weight:600"' : ''}>
+              <td>${escapeHtml(r.name)}${r.ts ? ` <span style="color:var(--muted); font-size:10.5px;">${new Date(r.ts).toLocaleDateString()}</span>` : ""}</td>
+              <td class="num">${r.N}</td><td class="num">${r.E}</td>
+              <td class="num">${r.owner}%</td><td class="num">${r.hubs}</td><td class="num">${r.dep}</td>
+            </tr>`).join("")}</tbody>
+        </table>`;
+    }
+  }
+
+  // Data-freshness header
+  function formatFreshness(){
+    const parts = [];
+    if (state.fileName){
+      parts.push(`Source: <strong>${escapeHtml(state.fileName)}</strong>`);
+    } else {
+      parts.push(`Source: <em>no file loaded</em>`);
+    }
+    if (state.lastModifiedAt){
+      const dt = new Date(state.lastModifiedAt);
+      if (!isNaN(dt.getTime())){
+        const ago = Math.round((Date.now() - dt.getTime()) / 86400000);
+        const agoTxt = ago === 0 ? "today" : ago === 1 ? "1 day ago" : ago + " days ago";
+        let line = `Last edited ${escapeHtml(agoTxt)} (${escapeHtml(dt.toLocaleString())})`;
+        if (state.lastModifiedBy) line += ` by <strong>${escapeHtml(state.lastModifiedBy)}</strong>`;
+        parts.push(line);
+      }
+    }
+    parts.push(`Snapshot generated ${new Date().toLocaleString()}`);
+    return parts.join(" &middot; ");
+  }
+  const summaryHtml = `
+    <div style="background:var(--card); border:1px solid var(--border); border-radius:8px; padding:8px 12px; font-size:11.5px; color:var(--text-2); margin-bottom:12px;">
+      <i class="fa-solid fa-clock-rotate-left" style="color:var(--muted); margin-right:4px;"></i> ${formatFreshness()}
+    </div>
+    <p class="m-lede">A live read of the graph from a leadership lens: scale, ownership coverage, structural risk, and operational complexity.</p>
+    <div class="m-baseline-row">
+      <label for="m-baseline">Compare to</label>
+      <select id="m-baseline">
+        <option value="none" ${!baseline ? "selected" : ""}>No baseline</option>
+        ${snapsAll.map(s=>`<option value="${escapeHtml(s.id)}" ${baseline && s.id===baseline.id ? "selected" : ""}>${escapeHtml(s.name)} (${new Date(s.ts).toLocaleDateString()})</option>`).join("")}
+      </select>
+      <span class="m-baseline-hint">${snapsAll.length === 0
+        ? "Save a snapshot (sidebar &rarr; Snapshots) to enable trend deltas."
+        : (pm ? "&#9650;&#9660; chips show change since the selected snapshot." : "")}</span>
+    </div>
+    <div class="kpi-grid">
+      ${mKpi("Total entities", m.N, "nodes in the graph", "accent", dc(m.N, pm && pm.N, "neutral"))}
+      ${mKpi("Relationships", m.E, "edges between entities", null, dc(m.E, pm && pm.E, "neutral"))}
+      ${mKpi("Org units", c.org, "Executive / Front / Directorate / Office")}
+      ${mKpi("People &amp; roles", c.people, "", null, dc(c.people, pm && pm.counts.people, "neutral"))}
+      ${mKpi("Tech (systems + platforms + apps)", c.tech, "", null, dc(c.tech, pm && pm.counts.tech, "neutral"))}
+      ${mKpi("Collaboration spaces", c.collab, "SharePoint / Teams / O365 / Mailbox")}
+      ${mKpi("Vendors", c.vendors, c.vendors > 0 ? "external dependencies" : "")}
+      ${mKpi("Ownership coverage", cov.ownerPct + "%", `${cov.withOwner} of ${m.N} have an owner`, cov.ownerPct >= 80 ? "ok" : (cov.ownerPct >= 50 ? "warn" : "crit"), dc(cov.ownerPct, pm && pm.coverage.ownerPct, "up", "%"))}
+      ${mKpi("Critical hubs", risk.criticalHubs.length, "&ge;2 dependents", risk.criticalHubs.length === 0 ? "ok" : (risk.criticalHubs.length <= 3 ? "warn" : "crit"), dc(risk.criticalHubs.length, pm && pm.risk.criticalHubs.length, "down"))}
+      ${mKpi("Cross-directorate deps", org.crossDirDeps, "spans org boundaries")}
+    </div>
+    <p style="font-size:11px; color:var(--muted); margin-top:6px;">Switch tabs above for the underlying detail behind each headline.</p>
+    ${topRisks.length ? `
+    <h4 style="margin:22px 0 10px; font-size:11px; letter-spacing:0.7px; color:var(--text-2); font-weight:600; text-transform:uppercase;">Top risks</h4>
+    <table class="m-table">
+      <tbody>
+        ${topRisks.slice(0,3).map((r,i)=>`<tr>
+          <td style="width:18px; color:var(--muted);">${i+1}</td>
+          <td>${mEntityLink(r.node, {includeType:true})}</td>
+          <td style="font-size:11.5px;">${escapeHtml(r.reasons.join(" · "))}</td>
+          <td style="font-size:11.5px;">${ownerCell(r.node)}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>
+    <p style="font-size:11px; color:var(--muted); margin-top:6px;">Full ranked watchlist on the <strong>Risk &amp; SPOFs</strong> tab.</p>` : ""}
+    ${trendTableHtml}
+    <h4 style="margin:22px 0 10px; font-size:11px; letter-spacing:0.7px; color:var(--text-2); font-weight:600; text-transform:uppercase;">Entity composition</h4>
+    <div class="m-seg-donut-wrap">
+      ${mSegmentedDonut([
+        { label:"Org units (Exec / Front / Directorate / Office)", value: c.org,     color:M_PALETTE[0] },
+        { label:"People & roles",                                   value: c.people,  color:M_PALETTE[2] },
+        { label:"Tech (systems / platforms / apps / APIs)",         value: c.tech,    color:M_PALETTE[5] },
+        { label:"Collaboration spaces",                             value: c.collab,  color:M_PALETTE[6] },
+        { label:"Process & artifacts",                              value: c.process, color:M_PALETTE[3] },
+        { label:"Vendors",                                          value: c.vendors, color:M_PALETTE[9] },
+        { label:"Other",                                            value: Math.max(0, m.N - c.org - c.people - c.tech - c.collab - c.process - c.vendors), color:"#64748B" }
+      ].filter(s => s.value > 0), m.N, "entities")}
+      ${mSegLegend([
+        { label:"Org units",      value: c.org,     color:M_PALETTE[0] },
+        { label:"People & roles", value: c.people,  color:M_PALETTE[2] },
+        { label:"Tech",           value: c.tech,    color:M_PALETTE[5] },
+        { label:"Collab spaces",  value: c.collab,  color:M_PALETTE[6] },
+        { label:"Process",        value: c.process, color:M_PALETTE[3] },
+        { label:"Vendors",        value: c.vendors, color:M_PALETTE[9] },
+        { label:"Other",          value: Math.max(0, m.N - c.org - c.people - c.tech - c.collab - c.process - c.vendors), color:"#64748B" }
+      ].filter(s => s.value > 0))}
+    </div>
+  `;
+
+  // Risk pane
+  const criticalRows = risk.criticalHubs.slice(0,8).map(x => `
+    <tr>
+      <td>${mEntityLink(x.n, {includeType:true})}</td>
+      <td class="num">${x.dep}</td>
+      <td>${x.hasBackup
+        ? '<span class="m-pill ok">backup defined</span>'
+        : '<span class="m-pill crit">no backup</span>'}</td>
+    </tr>`).join("");
+  const vendorRows = risk.vendorExposure.slice(0,5).map(v => `
+    <tr><td>${mEntityLink(v.n, {includeType:false})}</td><td class="num">${v.dependents}</td></tr>
+  `).join("");
+  const orphanList = risk.orphans.slice(0,8).map(n =>
+    `<tr><td>${mEntityLink(n, {includeType:true})}</td></tr>`
+  ).join("");
+  const sprawlFlagged = risk.messagingSprawl.filter(x => x.total >= 3);
+  const sprawlRows = risk.messagingSprawl.slice(0,10).map(x => `
+    <tr>
+      <td>${mEntityLink(x.n, {includeType:true})}</td>
+      <td class="num">${x.groups}</td>
+      <td class="num">${x.mailboxes}</td>
+      <td class="num">${x.dls}</td>
+      <td class="num">${x.total}</td>
+      <td>${x.total >= 5 ? '<span class="m-pill crit">high</span>' : x.total >= 3 ? '<span class="m-pill warn">elevated</span>' : '<span class="m-pill">ok</span>'}</td>
+    </tr>`).join("");
+  const riskHtml = `
+    <p class="m-lede">Where the graph reveals fragility: dependency concentrations, vendor exposure, ownership gaps, and entries that look obsolete but are still connected.</p>
+    ${topRisks.length ? `
+    <div class="m-section">
+      <h4>Top risks watchlist</h4>
+      <p style="font-size:11.5px; color:var(--muted); margin:0 0 8px;">All risk signals combined into one ranked list — dependency load, missing backups, single points of failure, deprecated-in-use, ownership gaps, staleness. Click an entity to jump to it.</p>
+      <table class="m-table">
+        <thead><tr><th style="width:18px;">#</th><th>Entity</th><th>Why it's on the list</th><th>Owner</th><th class="num">Score</th></tr></thead>
+        <tbody>${topRisks.slice(0,10).map((r,i)=>`
+          <tr>
+            <td style="color:var(--muted);">${i+1}</td>
+            <td>${mEntityLink(r.node, {includeType:true})}</td>
+            <td style="font-size:11.5px;">${escapeHtml(r.reasons.join(" · "))}</td>
+            <td style="font-size:11.5px;">${ownerCell(r.node)}</td>
+            <td class="num">${r.score}</td>
+          </tr>`).join("")}</tbody>
+      </table>
+    </div>` : ""}
+    <div class="kpi-grid">
+      ${mKpi("Critical hubs", risk.criticalHubs.length, "&ge;2 dependents", risk.criticalHubs.length === 0 ? "ok" : (risk.criticalHubs.length <= 3 ? "warn" : "crit"))}
+      ${mKpi("Orphaned entities", risk.orphans.length, "0 connections", risk.orphans.length === 0 ? "ok" : "warn")}
+      ${mKpi("Unowned tech assets", risk.unownedTech.length, "no Owner set", risk.unownedTech.length === 0 ? "ok" : "warn")}
+      ${mKpi("Deprecated, still in use", risk.deprecatedInUse.length, "status retired/inactive + &ge;1 edge", risk.deprecatedInUse.length === 0 ? "ok" : "crit")}
+      ${mKpi("Messaging sprawl", sprawlFlagged.length, "orgs w/ &ge;3 groups/mailboxes/DLs", sprawlFlagged.length === 0 ? "ok" : (sprawlFlagged.some(x => x.total >= 5) ? "crit" : "warn"))}
+    </div>
+    <div class="m-section">
+      <h4>Most depended-upon entities</h4>
+      ${risk.criticalHubs.length === 0
+        ? '<div class="m-empty">No entity has 2+ inbound dependency relationships yet.</div>'
+        : `${mHBars(risk.criticalHubs.slice(0,8).map(x => ({
+              label: x.n.label, value: x.dep, nodeId: x.n.id,
+              sub: x.hasBackup ? "" : "no backup",
+              color: x.hasBackup ? "var(--accent)" : "var(--crit)"
+            })))}
+           <details style="margin-top:10px">
+             <summary style="cursor:pointer; font-size:11.5px; color:var(--muted);">Show as detail table</summary>
+             <table class="m-table" style="margin-top:8px">
+              <thead><tr><th>Entity</th><th class="num">Dependents</th><th>Backup</th></tr></thead>
+              <tbody>${criticalRows}</tbody>
+             </table>
+           </details>`}
+    </div>
+    <div class="m-section">
+      <h4>Top vendor exposure</h4>
+      ${vendorRows
+        ? `<table class="m-table">
+            <thead><tr><th>Vendor</th><th class="num">Connected entities</th></tr></thead>
+            <tbody>${vendorRows}</tbody>
+           </table>`
+        : '<div class="m-empty">No vendors with connections recorded.</div>'}
+    </div>
+    <div class="m-section">
+      <h4>People carrying the most leadership load <span class="m-pill">${risk.busFactor.length}</span></h4>
+      ${risk.busFactor.length === 0
+        ? '<div class="m-empty">No individual is named as Lead or Owner on 3+ entities.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Person / role</th><th class="num">As Lead</th><th class="num">As Owner</th><th class="num">Total</th></tr></thead>
+            <tbody>${risk.busFactor.slice(0,8).map(b => `
+              <tr>
+                <td>${mEntityLinkByName(b.name, b.nodeId)}${b.isKnownPerson ? '' : ' <span class="m-pill warn" title="Name appears as Lead/Owner but is not a Person node in the graph">unmapped</span>'}</td>
+                <td class="num">${b.lead}</td>
+                <td class="num">${b.owner}</td>
+                <td class="num">${b.total}</td>
+              </tr>`).join("")}
+            </tbody>
+           </table>`}
+    </div>
+    <div class="m-section">
+      <h4>Messaging objects by org unit <span class="m-pill ${sprawlFlagged.some(x => x.total >= 5) ? "crit" : sprawlFlagged.length ? "warn" : ""}">${sprawlFlagged.length} flagged</span></h4>
+      ${sprawlRows
+        ? `<table class="m-table">
+            <thead><tr><th>Org unit</th><th class="num">O365 Groups</th><th class="num">Mailboxes</th><th class="num">Dist. lists</th><th class="num">Total</th><th>Status</th></tr></thead>
+            <tbody>${sprawlRows}</tbody>
+           </table>
+           <div style="font-size:11px; color:var(--muted); margin-top:4px;">&ge;3 elevated, &ge;5 high. Counts objects attached directly to the org unit (OWNS / CONTAINS / HAS_*); children's objects are not rolled up.</div>
+           ${risk.messagingSprawl.length > 10 ? `<div style="font-size:11px; color:var(--muted); margin-top:4px;">Showing 10 of ${risk.messagingSprawl.length}.</div>` : ""}`
+        : '<div class="m-empty">No O365 Groups, Mailboxes, or Distribution Lists attached to org units yet.</div>'}
+    </div>
+    <div class="m-section">
+      <h4>Orphaned entities <span class="m-pill">${risk.orphans.length}</span></h4>
+      ${orphanList
+        ? `<table class="m-table"><tbody>${orphanList}</tbody></table>`
+        : '<div class="m-empty">Every entity has at least one connection.</div>'}
+      ${risk.orphans.length > 8 ? `<div style="font-size:11px; color:var(--muted); margin-top:4px;">Showing 8 of ${risk.orphans.length}.</div>` : ""}
+    </div>
+  `;
+
+  // Coverage pane
+  const covHtml = `
+    <p class="m-lede">How complete the data behind the graph is. Low coverage means the diagram tells a thinner story than reality.</p>
+    <div class="m-section">
+      <h4>Field completeness across all ${m.N} entities</h4>
+      <div class="m-donut-grid">
+        ${mDonut(cov.ownerPct, "Has owner",       `${cov.withOwner} of ${m.N}`)}
+        ${mDonut(cov.leadPct,  "Has lead",        `${cov.withLead} of ${m.N}`)}
+        ${mDonut(cov.descPct,  "Has description", `${cov.withDesc} of ${m.N}`)}
+        ${mDonut(cov.tagPct,   "Has tags",        `${cov.withTags} of ${m.N}`)}
+      </div>
+    </div>
+    <div class="m-section">
+      <h4>Ownership coverage by directorate</h4>
+      ${org.dirStats.length === 0
+        ? '<div class="m-empty">No directorates defined yet.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Directorate</th><th class="num">Entities in scope</th><th class="num">% with owner</th></tr></thead>
+            <tbody>${org.dirStats.map(d => `
+              <tr>
+                <td>${escapeHtml(d.name)}</td>
+                <td class="num">${d.totalInDir}</td>
+                <td class="num">${d.totalInDir === 0 ? '<span style="color:var(--muted)">&mdash;</span>' : (d.ownPct + "%")}</td>
+              </tr>`).join("")}
+            </tbody>
+           </table>`}
+    </div>
+    <div class="m-section">
+      <h4>Stub records</h4>
+      <p style="font-size:12.5px; color:var(--text-2); margin:0;">
+        <strong>${cov.lowQuality}</strong> entities have no owner, lead, or description set &mdash;
+        ${cov.lowQuality === 0 ? "the catalog is well populated." : "these are placeholders that need filling out."}
+      </p>
+    </div>
+  `;
+
+  // Org footprint pane
+  const dirRows = org.dirStats.map(d => `
+    <tr>
+      <td>${escapeHtml(d.name)}</td>
+      <td class="num">${d.offices}</td>
+      <td class="num">${d.people}</td>
+      <td class="num">${d.systemsOwned}</td>
+      <td class="num">${d.totalInDir}</td>
+    </tr>`).join("");
+  const orgHtml = `
+    <p class="m-lede">The org as the graph sees it: where headcount, offices, and technology live.</p>
+    <div class="kpi-grid">
+      ${mKpi("Directorates",  c.directorates)}
+      ${mKpi("Offices",       c.offices)}
+      ${mKpi("People",        c.people)}
+      ${mKpi("Tech assets",   c.tech)}
+      ${mKpi("Collab spaces", c.collab)}
+      ${mKpi("Vendors",       c.vendors)}
+    </div>
+    <div class="m-section">
+      <h4>Per-directorate composition</h4>
+      ${dirRows
+        ? `${mStackedHBar(org.dirStats.map(d => ({
+              label: d.name,
+              segments: [
+                { name: "Offices", value: d.offices,      color: M_PALETTE[0] },
+                { name: "People",  value: d.people,       color: M_PALETTE[2] },
+                { name: "Tech",    value: d.systemsOwned, color: M_PALETTE[5] },
+                { name: "Other",   value: Math.max(0, d.totalInDir - d.offices - d.people - d.systemsOwned), color: "#64748B" }
+              ]
+            })))}
+           <div class="m-chart-legend">
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:${M_PALETTE[0]}"></span> Offices</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:${M_PALETTE[2]}"></span> People</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:${M_PALETTE[5]}"></span> Tech assets</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#64748B"></span> Other</span>
+           </div>
+           <details style="margin-top:12px">
+             <summary style="cursor:pointer; font-size:11.5px; color:var(--muted);">Show as detail table</summary>
+             <table class="m-table" style="margin-top:8px">
+              <thead><tr>
+                <th>Directorate</th>
+                <th class="num">Offices</th>
+                <th class="num">People</th>
+                <th class="num">Tech assets</th>
+                <th class="num">Total entities</th>
+              </tr></thead>
+              <tbody>${dirRows}</tbody>
+             </table>
+           </details>`
+        : '<div class="m-empty">No directorates defined yet.</div>'}
+    </div>
+    <div class="m-section">
+      <h4>Cross-directorate dependencies</h4>
+      <p style="font-size:12.5px; color:var(--text-2); margin:0;">
+        <strong>${org.crossDirDeps}</strong> dependency relationships (DEPENDS_ON, USES, HOSTED_ON, INTEGRATES_WITH, CONNECTED_TO) cross directorate boundaries.
+        ${org.crossDirDeps === 0
+          ? "Every dependency lives inside one directorate."
+          : "These are the integration seams worth monitoring."}
+      </p>
+    </div>
+  `;
+
+  // Complexity pane
+  const hubRows = cx.byDeg.slice(0,8).map(x => `
+    <tr>
+      <td>${mEntityLink(x.n, {includeType:true})}</td>
+      <td class="num">${x.d}</td>
+    </tr>`).join("");
+  const integRows = cx.mostIntegrated.slice(0,5).map(x => `
+    <tr>
+      <td>${mEntityLink(x.n, {includeType:true})}</td>
+      <td class="num">${x.c}</td>
+    </tr>`).join("");
+  const cxHtml = `
+    <p class="m-lede">How tangled the operational topology is. Hubs concentrate risk; long dependency chains concentrate change blast-radius.</p>
+    <div class="kpi-grid">
+      ${mKpi("Max connections (top hub)", cx.byDeg[0] ? cx.byDeg[0].d : 0, cx.byDeg[0] ? escapeHtml(cx.byDeg[0].n.label) : "&mdash;")}
+      ${mKpi("System integrations", cx.integrationCount, "INTEGRATES_WITH + CONNECTED_TO edges")}
+      ${mKpi("Automations cataloged", cx.automationCount, "Workflows + Power Automate flows")}
+      ${mKpi("Longest dependency chain", cx.longest, "hops along DEPENDS_ON / USES / HOSTED_ON")}
+    </div>
+    <div class="m-section">
+      <h4>Most-connected entities (hubs)</h4>
+      ${cx.byDeg.length === 0
+        ? '<div class="m-empty">No connections recorded.</div>'
+        : mHBars(cx.byDeg.slice(0,10).map(x => ({
+            label: x.n.label, value: x.d, nodeId: x.n.id,
+            sub: x.n.type, color: "var(--accent)"
+          })))}
+    </div>
+    <div class="m-section">
+      <h4>Most-integrated tech assets</h4>
+      ${integRows
+        ? `<table class="m-table">
+            <thead><tr><th>Entity</th><th class="num">Integrations</th></tr></thead>
+            <tbody>${integRows}</tbody>
+           </table>`
+        : '<div class="m-empty">No INTEGRATES_WITH or CONNECTED_TO edges yet.</div>'}
+    </div>
+  `;
+
+  // Pipeline + Service destructuring (computed below)
+  const pipeline = m.pipeline;
+  const service = m.service;
+  const lifecycle = pipeline.lifecycle;
+  const inFlightCount = pipeline.inFlightCount;
+  const perTypeLifecycle = pipeline.perTypeLifecycle;
+  const activeWorkflows = pipeline.activeWorkflows;
+  const activeAutomations = pipeline.activeAutomations;
+  const activeDashboards = pipeline.activeDashboards;
+  const activeSites = pipeline.activeSites;
+  const activeTeams = pipeline.activeTeams;
+  const reqsByStage = pipeline.reqsByStage;
+  const decisionsCount = pipeline.decisionsCount;
+  const exScope = service.exScope;
+  const exNodes = service.exNodes;
+  const exTechCount = service.exTechCount;
+  const exWorkflowsCount = service.exWorkflowsCount;
+  const exServices = service.exServices;
+  const exPeopleCount = service.exPeopleCount;
+  const exRoots = service.exRoots;
+  const clientBureaus = service.clientBureaus;
+  const outboundServices = service.outboundServices;
+  const inboundRequests = service.inboundRequests;
+  const crossBoundaryTotal = service.crossBoundaryTotal;
+  const pct = (a,b) => b === 0 ? 0 : Math.round(a/b*100);
+
+  // ---------- Pipeline pane ----------
+  const lifecycleSegments = [
+    { label:"Active",   value: lifecycle.active,   color:"#34D399" },
+    { label:"Pilot",    value: lifecycle.pilot,    color:"#38BDF8" },
+    { label:"Planned",  value: lifecycle.planned,  color:"#A78BFA" },
+    { label:"Proposed", value: lifecycle.proposed, color:"#FBBF24" },
+    { label:"Retired / Inactive",  value: lifecycle.retired,  color:"#94A3B8" }
+  ].filter(s => s.value > 0);
+  const pipelineHtml = `
+    <p class="m-lede">What the team is actually working on, where things are in their lifecycle, and what's flowing through the delivery pipeline.</p>
+    <div class="kpi-grid">
+      ${mKpi("Active in production", lifecycle.active, `${pct(lifecycle.active, m.N)}% of all entities`, lifecycle.active === 0 ? "warn" : "ok")}
+      ${mKpi("In flight", inFlightCount, "pilot + planned + proposed", inFlightCount === 0 ? "warn" : "accent")}
+      ${mKpi("Retired / deprecated", lifecycle.retired, "should be reviewed or removed", lifecycle.retired > 0 ? "warn" : "ok")}
+      ${mKpi("Active workflows", activeWorkflows, "manual + Power Automate", null)}
+      ${mKpi("Active automations", activeAutomations, "Power Automate flows in production")}
+      ${mKpi("Power BI dashboards", activeDashboards, "active analytics surfaces")}
+    </div>
+    <div class="m-section">
+      <h4>Lifecycle distribution</h4>
+      ${lifecycleSegments.reduce((a,s) => a + s.value, 0) === 0
+        ? '<div class="m-empty">No nodes have a recognizable lifecycle status yet.</div>'
+        : `<div class="m-seg-donut-wrap">
+            ${mSegmentedDonut(lifecycleSegments, m.N, "entities")}
+            ${mSegLegend(lifecycleSegments)}
+           </div>`}
+    </div>
+    <div class="m-section">
+      <h4>Per-type lifecycle</h4>
+      ${perTypeLifecycle.length === 0
+        ? '<div class="m-empty">No delivery-type entities catalogued yet.</div>'
+        : `${mStackedHBar(perTypeLifecycle.map(t => ({
+              label: t.type,
+              segments: [
+                { name:"Active",   value: t.active,   color:"#34D399" },
+                { name:"Pilot",    value: t.pilot,    color:"#38BDF8" },
+                { name:"Planned",  value: t.planned,  color:"#A78BFA" },
+                { name:"Proposed", value: t.proposed, color:"#FBBF24" },
+                { name:"Retired / Inactive",  value: t.retired,  color:"#94A3B8" }
+              ]
+            })))}
+           <div class="m-chart-legend">
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#34D399"></span> Active</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#38BDF8"></span> Pilot</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#A78BFA"></span> Planned</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#FBBF24"></span> Proposed</span>
+             <span class="m-chart-legend-item"><span class="m-seg-dot" style="background:#94A3B8"></span> Retired / Inactive</span>
+           </div>`}
+    </div>
+    <div class="m-section">
+      <h4>Governance pipeline</h4>
+      ${(reqsByStage.proposed + reqsByStage.planned + reqsByStage.pilot + reqsByStage.active + reqsByStage.retired + decisionsCount) === 0
+        ? '<div class="m-empty">No Requirement or Decision nodes catalogued yet. Model formal asks as <strong>Requirement</strong> nodes (their Status field drives these stages) and record key <strong>Decision</strong> nodes to populate this pipeline.</div>'
+        : `<div class="kpi-grid">
+        ${mKpi("Active requirements", reqsByStage.active, "delivered/in use")}
+        ${mKpi("In-flight requirements", reqsByStage.pilot + reqsByStage.planned, "pilot + planned")}
+        ${mKpi("Proposed requirements", reqsByStage.proposed, "awaiting approval", reqsByStage.proposed > 0 ? "accent" : null)}
+        ${mKpi("Decisions recorded", decisionsCount, "in the graph")}
+      </div>`}
+    </div>
+    <div class="m-section">
+      <h4>Active collaboration surfaces</h4>
+      <div class="kpi-grid">
+        ${mKpi("SharePoint sites", activeSites, "active")}
+        ${mKpi("Microsoft Teams", activeTeams, "active")}
+        ${mKpi("Total automations", activeWorkflows + activeAutomations, "workflows + flows in production")}
+      </div>
+    </div>
+  `;
+
+  // ---------- Service pane ----------
+  const nonExCount = m.N - exNodes.length;
+  const exDonutSegments = [
+    { label:"EX scope",        value: exNodes.length, color:"#38BDF8" },
+    { label:"Client bureaus",  value: clientBureaus.length, color:"#A78BFA" },
+    { label:"External (vendors / other)", value: Math.max(0, nonExCount - clientBureaus.length), color:"#94A3B8" }
+  ].filter(s => s.value > 0);
+  const exServiceList = exServices.slice(0, 6).map(s => `
+    <tr>
+      <td>${mEntityLink(s, {includeType:false})}</td>
+      <td>${statusBadge ? statusBadge(s.status) : escapeHtml(s.status || "Active")}</td>
+    </tr>`).join("");
+  const bureauRows = clientBureaus.slice(0, 8).map(b => `
+    <tr>
+      <td>${mEntityLink(b.n, {includeType:true})}</td>
+      <td class="num">${b.interactions}</td>
+      <td class="num">${b.requests}</td>
+      <td class="num">${b.servicesReceived}</td>
+    </tr>`).join("");
+  const serviceHtml = `
+    <p class="m-lede">What the Executive Office is responsible for and who it serves. EX scope = the Executive Office node plus everything reachable via CONTAINS / HAS_* / OWNS / MANAGES.</p>
+    ${exRoots.length === 0
+      ? `<div style="background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.3); border-radius:10px; padding:14px 16px; font-size:12.5px; color:var(--text-2);">
+          <i class="fa-solid fa-triangle-exclamation" style="color:var(--warn); margin-right:6px;"></i>
+          No <strong>Executive Office</strong> node found in the graph. Add one and connect downstream units via <code>CONTAINS</code> to populate the EX-scope views below.
+         </div>`
+      : ""}
+    <div class="kpi-grid">
+      ${mKpi("Entities in EX scope", exNodes.length, `${pct(exNodes.length, m.N)}% of the graph`, exNodes.length > 0 ? "accent" : "warn")}
+      ${mKpi("EX-owned tech assets", exTechCount, "systems / platforms / apps")}
+      ${mKpi("EX automations", exWorkflowsCount, "workflows + flows owned by EX")}
+      ${mKpi("EX people & roles", exPeopleCount, "in EX directorates / offices")}
+      ${mKpi("Client bureaus", clientBureaus.length, "outside EX, touching EX", clientBureaus.length === 0 ? "warn" : "accent")}
+      ${mKpi("Cross-boundary edges", crossBoundaryTotal, "EX <-> external flows")}
+    </div>
+    <div class="m-section">
+      <h4>EX vs external entities</h4>
+      ${exDonutSegments.length === 0
+        ? '<div class="m-empty">No EX scope detected.</div>'
+        : `<div class="m-seg-donut-wrap">
+            ${mSegmentedDonut(exDonutSegments, m.N, "entities")}
+            ${mSegLegend(exDonutSegments)}
+           </div>`}
+    </div>
+    <div class="m-section">
+      <h4>Service flow across the boundary</h4>
+      <div class="kpi-grid">
+        ${mKpi("Outbound services", outboundServices, "EX -> external (SUPPORTS / RESPONSIBLE_FOR / SENDS_TO)", outboundServices > 0 ? "ok" : null)}
+        ${mKpi("Inbound requests", inboundRequests, "external -> EX (REQUESTED_BY / RECEIVES_FROM / APPROVED_BY)", inboundRequests > 0 ? "accent" : null)}
+      </div>
+    </div>
+    <div class="m-section">
+      <h4>Client bureaus EX serves <span class="m-pill">${clientBureaus.length}</span></h4>
+      ${clientBureaus.length === 0
+        ? `<div class="m-empty">No client bureau nodes detected. Model them as <code>Office</code>, <code>Directorate</code>, or <code>Front Office</code> nodes <em>outside</em> the Executive Office containment tree, then connect them to EX nodes via <code>REQUESTED_BY</code>, <code>SUPPORTS</code>, or <code>RESPONSIBLE_FOR</code> edges.</div>`
+        : `${mHBars(clientBureaus.slice(0,8).map(b => ({
+              label: b.n.label, value: b.interactions, nodeId: b.n.id,
+              sub: b.n.type, color: "var(--violet)"
+            })), { valueFormat: v => v + " edges" })}
+           <details style="margin-top:10px">
+             <summary style="cursor:pointer; font-size:11.5px; color:var(--muted);">Show as detail table</summary>
+             <table class="m-table" style="margin-top:8px">
+              <thead><tr>
+                <th>Bureau</th>
+                <th class="num">All interactions</th>
+                <th class="num">Requests of EX</th>
+                <th class="num">Services received</th>
+              </tr></thead>
+              <tbody>${bureauRows}</tbody>
+             </table>
+           </details>`}
+    </div>
+    <div class="m-section">
+      <h4>EX service catalog <span class="m-pill">${exServices.length}</span></h4>
+      ${exServices.length === 0
+        ? '<div class="m-empty">No <code>Service</code>-typed nodes in EX scope yet.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Service</th><th>Status</th></tr></thead>
+            <tbody>${exServiceList}</tbody>
+           </table>
+           ${exServices.length > 6 ? `<div style="font-size:11px; color:var(--muted); margin-top:4px;">Showing 6 of ${exServices.length}.</div>` : ""}`}
+    </div>
+  `;
+
+
+  const html = `
+    <div class="m-tabs">
+      <button class="m-tab active" data-pane="summary">Executive Summary</button>
+      <button class="m-tab" data-pane="pipeline">Pipeline</button>
+      <button class="m-tab" data-pane="service">Service</button>
+      <button class="m-tab" data-pane="risk">Risk &amp; SPOFs</button>
+      <button class="m-tab" data-pane="coverage">Coverage</button>
+      <button class="m-tab" data-pane="org">Org Footprint</button>
+      <button class="m-tab" data-pane="orgintel">Org Intel</button>
+      <button class="m-tab" data-pane="complexity">Complexity</button>
+    </div>
+    <div class="m-pane active" data-pane="summary">${summaryHtml}</div>
+    <div class="m-pane" data-pane="pipeline">${pipelineHtml}</div>
+    <div class="m-pane" data-pane="service">${serviceHtml}</div>
+    <div class="m-pane" data-pane="risk">${riskHtml}</div>
+    <div class="m-pane" data-pane="coverage">${covHtml}</div>
+    <div class="m-pane" data-pane="org">${orgHtml}</div>
+    <div class="m-pane" data-pane="orgintel">${renderOrgIntelHtml(m)}</div>
+    <div class="m-pane" data-pane="complexity">${cxHtml}</div>
+  `;
+
+  openModal('<i class="fa-solid fa-chart-line"></i> Leadership Metrics', html, ()=>closeModal(), true);
+  document.getElementById("modal").classList.add("xl");
+  // Baseline picker: persist the choice and rebuild the modal with new deltas
+  const baseSel = document.getElementById("m-baseline");
+  if (baseSel) baseSel.onchange = () => {
+    try { localStorage.setItem("erg.metricsBaseline", baseSel.value); } catch(_){}
+    openMetricsModal();
+  };
+  // Tab switching (with WAI-ARIA tab semantics)
+  const mTablist = modalBody.querySelector(".m-tabs");
+  if (mTablist) mTablist.setAttribute("role", "tablist");
+  modalBody.querySelectorAll(".m-tab").forEach(tab=>{
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", tab.classList.contains("active") ? "true" : "false");
+    tab.onclick = ()=>{
+      modalBody.querySelectorAll(".m-tab").forEach(t=>{ t.classList.remove("active"); t.setAttribute("aria-selected","false"); });
+      modalBody.querySelectorAll(".m-pane").forEach(p=>p.classList.remove("active"));
+      tab.classList.add("active");
+      tab.setAttribute("aria-selected", "true");
+      modalBody.querySelector(`.m-pane[data-pane="${tab.dataset.pane}"]`).classList.add("active");
+    };
+  });
+  // Attach pane titles for the print stylesheet (which stacks all panes)
+  modalBody.querySelectorAll(".m-pane").forEach(p => {
+    const titleMap = { summary:"Executive Summary", pipeline:"Pipeline",
+                       service:"Service", risk:"Risk & SPOFs",
+                       coverage:"Coverage", org:"Org Footprint",
+                       orgintel:"Organizational Intelligence", complexity:"Complexity" };
+    p.setAttribute("data-pane-title", titleMap[p.dataset.pane] || p.dataset.pane);
+  });
+  // Drill-down: clicking an .m-entity-link closes the modal and jumps to the
+  // node on the graph. Listener is installed once per modalBody — repeat opens
+  // re-bind to the same DOM element so no duplicate handlers stack up.
+  if (!modalBody._metricsDrillDownAttached){
+    const jumpToNode = id => {
+      if (!id) return;
+      const exists = state.graph.nodes.some(n => n.id === id);
+      if (!exists){
+        showToast("That entity no longer exists in the graph", "err");
+        return;
+      }
+      closeModal();
+      try {
+        selectNode(id);
+        if (typeof centerOnNode === "function") centerOnNode(id);
+      } catch (err){
+        // Defensive: if selection plumbing changes, the metrics shouldn't crash
+        console.error("Drill-down failed:", err);
+      }
+    };
+    modalBody.addEventListener("click", e => {
+      const link = e.target.closest(".m-entity-link");
+      if (!link) return;
+      e.preventDefault();
+      jumpToNode(link.dataset.nodeId);
+    });
+    modalBody.addEventListener("keydown", e => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const link = e.target.closest(".m-entity-link");
+      if (!link) return;
+      e.preventDefault();
+      jumpToNode(link.dataset.nodeId);
+    });
+    modalBody._metricsDrillDownAttached = true;
+  }
+  // Info-style modal: hide Save, rename Cancel to "Done"
+  document.getElementById("modal-save").style.display = "none";
+  document.getElementById("modal-cancel").innerHTML = '<i class="fa-solid fa-check"></i> Done';
+  // Inject Copy + Print action buttons into the modal footer.
+  // Clean up first in case a previous open left stale buttons.
+  const foot = document.getElementById("modal-foot");
+  ["btn-metrics-copy","btn-metrics-print"].forEach(id => {
+    const e = document.getElementById(id);
+    if (e) e.remove();
+  });
+  const copyBtn = document.createElement("button");
+  copyBtn.id = "btn-metrics-copy";
+  copyBtn.className = "btn";
+  copyBtn.style.marginRight = "auto";  // push to the left of Done
+  copyBtn.innerHTML = '<i class="fa-solid fa-copy"></i> Copy summary';
+  copyBtn.onclick = () => {
+    const md = generateMetricsMarkdown(m);
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(md).then(
+        () => showToast("Metrics summary copied to clipboard", "ok"),
+        () => showToast("Copy failed — clipboard permission denied", "err")
+      );
+    } else {
+      showToast("Clipboard API not available in this browser", "err");
+    }
+  };
+  const printBtn = document.createElement("button");
+  printBtn.id = "btn-metrics-print";
+  printBtn.className = "btn";
+  printBtn.innerHTML = '<i class="fa-solid fa-print"></i> Print';
+  printBtn.onclick = () => {
+    document.getElementById("modal-backdrop").classList.add("metrics-print");
+    // Defer print so the class settles into the cascade first
+    setTimeout(() => {
+      window.print();
+      document.getElementById("modal-backdrop").classList.remove("metrics-print");
+    }, 50);
+  };
+  foot.insertBefore(copyBtn,  foot.firstChild);
+  foot.insertBefore(printBtn, document.getElementById("modal-cancel"));
+}
+
+/* Markdown export — keeps the same structure leadership sees on screen but
+   paste-friendly for email, Slack, or any doc tool. */
+function generateMetricsMarkdown(m){
+  const c = m.counts, cov = m.coverage, risk = m.risk, org = m.org, cx = m.complexity;
+  const lines = [];
+  lines.push("# Enterprise Relationship Graph — Leadership Snapshot");
+  lines.push("");
+  const meta = [];
+  if (state.fileName) meta.push(`Source: \`${state.fileName}\``);
+  if (state.lastModifiedAt){
+    const dt = new Date(state.lastModifiedAt);
+    if (!isNaN(dt.getTime())){
+      meta.push(`Last edited ${dt.toLocaleString()}${state.lastModifiedBy ? " by " + state.lastModifiedBy : ""}`);
+    }
+  }
+  meta.push(`Generated ${new Date().toLocaleString()}`);
+  lines.push("*" + meta.join(" · ") + "*");
+  lines.push("");
+
+  lines.push("## At a glance");
+  lines.push(`- **${m.N}** entities, **${m.E}** relationships`);
+  lines.push(`- **Ownership coverage: ${cov.ownerPct}%** (${cov.withOwner} of ${m.N} have an owner)`);
+  lines.push(`- **${risk.criticalHubs.length}** critical hubs (entities with 2+ dependents)`);
+  lines.push(`- **${org.crossDirDeps}** dependency relationships cross directorate boundaries`);
+  if (risk.busFactor.length > 0){
+    lines.push(`- **${risk.busFactor.length}** individuals carry 3+ leadership assignments`);
+  }
+  lines.push("");
+
+  lines.push("## Risk");
+  const watchlist = computeTopRisks(m);
+  if (watchlist.length > 0){
+    lines.push("**Top risks watchlist** (composite of all risk signals):");
+    watchlist.slice(0,5).forEach((r,i) => {
+      const own = (typeof effectiveOwner === "function" ? effectiveOwner(r.node) : r.node.owner) || "UNOWNED";
+      lines.push(`${i+1}. ${r.node.label} (${r.node.type}) — ${r.reasons.join("; ")} — owner: ${own}`);
+    });
+    lines.push("");
+  }
+  if (risk.criticalHubs.length > 0){
+    lines.push("**Most depended-upon entities** (top 5):");
+    risk.criticalHubs.slice(0,5).forEach((x,i) => {
+      const backup = x.hasBackup ? "backup defined" : "no backup";
+      lines.push(`${i+1}. ${x.n.label} (${x.n.type}) — ${x.dep} dependents, ${backup}`);
+    });
+    lines.push("");
+  }
+  if (risk.busFactor.length > 0){
+    lines.push("**People carrying the most leadership load** (top 5):");
+    risk.busFactor.slice(0,5).forEach((b,i) => {
+      lines.push(`${i+1}. ${b.name} — ${b.total} total (${b.lead} as lead, ${b.owner} as owner)`);
+    });
+    lines.push("");
+  }
+  lines.push("**Other risks:**");
+  lines.push(`- ${risk.orphans.length} orphaned entities (no connections)`);
+  lines.push(`- ${risk.unownedTech.length} unowned tech assets`);
+  lines.push(`- ${risk.deprecatedInUse.length} deprecated/retired entities still in use`);
+  if (risk.vendorExposure.length > 0){
+    lines.push(`- Top vendor by exposure: ${risk.vendorExposure[0].n.label} (${risk.vendorExposure[0].dependents} connections)`);
+  }
+  lines.push("");
+
+  lines.push("## Coverage");
+  lines.push("| Field | Coverage |");
+  lines.push("|---|---|");
+  lines.push(`| Has owner       | ${cov.ownerPct}% (${cov.withOwner}/${m.N}) |`);
+  lines.push(`| Has lead        | ${cov.leadPct}% (${cov.withLead}/${m.N}) |`);
+  lines.push(`| Has description | ${cov.descPct}% (${cov.withDesc}/${m.N}) |`);
+  lines.push(`| Has tags        | ${cov.tagPct}% (${cov.withTags}/${m.N}) |`);
+  lines.push("");
+  lines.push(`${cov.lowQuality} entities are stub records (no owner, lead, or description).`);
+  lines.push("");
+
+  if (org.dirStats.length > 0){
+    lines.push("## Per-directorate footprint");
+    lines.push("| Directorate | Entities | Offices | People | Tech | Owner % |");
+    lines.push("|---|---:|---:|---:|---:|---:|");
+    org.dirStats.forEach(d => {
+      lines.push(`| ${d.name} | ${d.totalInDir} | ${d.offices} | ${d.people} | ${d.systemsOwned} | ${d.totalInDir === 0 ? "—" : d.ownPct + "%"} |`);
+    });
+    lines.push("");
+  }
+
+  // Pipeline section
+  const pl = m.pipeline;
+  lines.push("## Pipeline");
+  lines.push(`- **${pl.lifecycle.active}** entities active in production`);
+  lines.push(`- **${pl.inFlightCount}** entities in flight (pilot + planned + proposed)`);
+  lines.push(`- **${pl.lifecycle.retired}** entities retired/deprecated`);
+  lines.push(`- Active automations: ${pl.activeWorkflows} workflows + ${pl.activeAutomations} Power Automate flows`);
+  lines.push(`- Active analytics: ${pl.activeDashboards} Power BI dashboards`);
+  lines.push(`- Active collaboration: ${pl.activeSites} SharePoint sites, ${pl.activeTeams} Microsoft Teams`);
+  if (pl.perTypeLifecycle.length > 0){
+    lines.push("");
+    lines.push("**Per-type lifecycle:**");
+    lines.push("| Type | Active | Pilot | Planned | Proposed | Retired | Total |");
+    lines.push("|---|---:|---:|---:|---:|---:|---:|");
+    pl.perTypeLifecycle.forEach(t => {
+      lines.push(`| ${t.type} | ${t.active} | ${t.pilot} | ${t.planned} | ${t.proposed} | ${t.retired} | ${t.total} |`);
+    });
+  }
+  lines.push("");
+  lines.push(`Governance pipeline: ${pl.reqsByStage.active} active requirements, ${pl.reqsByStage.pilot + pl.reqsByStage.planned} in flight, ${pl.reqsByStage.proposed} proposed; ${pl.decisionsCount} decisions recorded.`);
+  lines.push("");
+
+  // Service section
+  const sv = m.service;
+  lines.push("## Service");
+  if (sv.exRoots.length === 0){
+    lines.push("*No Executive Office node found in the graph. Add one and connect downstream units via CONTAINS to populate these views.*");
+  } else {
+    lines.push(`- **${sv.exNodes.length}** entities in EX scope (${Math.round(sv.exNodes.length / m.N * 100)}% of the graph)`);
+    lines.push(`- ${sv.exTechCount} EX-owned tech assets, ${sv.exWorkflowsCount} EX automations, ${sv.exPeopleCount} EX people/roles`);
+    lines.push(`- **${sv.clientBureaus.length}** client bureaus touching EX`);
+    lines.push(`- ${sv.crossBoundaryTotal} cross-boundary edges total: ${sv.outboundServices} outbound services, ${sv.inboundRequests} inbound requests`);
+    if (sv.clientBureaus.length > 0){
+      lines.push("");
+      lines.push("**Client bureaus by interaction volume:**");
+      lines.push("| Bureau | All interactions | Requests of EX | Services received |");
+      lines.push("|---|---:|---:|---:|");
+      sv.clientBureaus.slice(0, 8).forEach(b => {
+        lines.push(`| ${b.n.label} (${b.n.type}) | ${b.interactions} | ${b.requests} | ${b.servicesReceived} |`);
+      });
+    }
+    if (sv.exServices.length > 0){
+      lines.push("");
+      lines.push(`**EX service catalog:** ${sv.exServices.length} Service-typed nodes in EX scope.`);
+    }
+  }
+  lines.push("");
+
+  lines.push("## Complexity");
+  if (cx.byDeg[0]) lines.push(`- Top hub: **${cx.byDeg[0].n.label}** (${cx.byDeg[0].d} connections)`);
+  lines.push(`- System integrations: ${cx.integrationCount} (INTEGRATES_WITH + CONNECTED_TO edges)`);
+  lines.push(`- Automations cataloged: ${cx.automationCount} (workflows + Power Automate flows)`);
+  lines.push(`- Longest dependency chain: ${cx.longest} hops`);
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+
+
+/* ============================================================================
+   MERMAID EXPORT
+   ============================================================================ */
+function generateMermaid(){
+  const visNodes = state.graph.nodes.filter(isVisibleNode);
+  const visIds = new Set(visNodes.map(n => n.id));
+  const visEdges = state.graph.edges.filter(e =>
+    state.filtersEdge.has(e.type) && visIds.has(e.source) && visIds.has(e.target)
+  );
+
+  // Mermaid IDs must be alphanumeric/underscore. Prefix with n_ for safety.
+  const mid = id => "n_" + String(id).replace(/[^a-zA-Z0-9_]/g, "_");
+  // Mermaid uses # for HTML entities inside double-quoted strings
+  const esc = s => String(s || "").replace(/"/g, "#quot;").replace(/[<>]/g, "").trim() || "(unnamed)";
+
+  // Shape syntax per type. Mermaid shape vocabulary:
+  //   rect [..], rounded (..), stadium ([..]), subroutine [[..]],
+  //   cylindrical [(..)], parallelogram [/../], hexagon {{..}}, diamond {..}
+  const SHAPES = {
+    "Under Secretary":   (id,l) => `${id}[["${l}"]]:::execOffice`,
+    "Bureau":            (id,l) => `${id}[["${l}"]]:::execOffice`,
+    "Executive Office":  (id,l) => `${id}[["${l}"]]:::execOffice`,
+    "Front Office":      (id,l) => `${id}["${l}"]:::orgUnit`,
+    "Directorate":       (id,l) => `${id}["${l}"]:::orgUnit`,
+    "Office":            (id,l) => `${id}["${l}"]:::orgUnit`,
+    "Team":              (id,l) => `${id}["${l}"]:::orgUnit`,
+    "Person":            (id,l) => `${id}(["${l}"])`,
+    "Role":              (id,l) => `${id}(["${l}"])`,
+    "System":            (id,l) => `${id}[/"${l}"/]`,
+    "Platform":          (id,l) => `${id}[/"${l}"/]:::platform`,
+    "Application":       (id,l) => `${id}[/"${l}"/]`,
+    "SPFx Application":  (id,l) => `${id}[/"${l}"/]`,
+    "Site Collection":   (id,l) => `${id}[("${l}")]:::collab`,
+    "SharePoint Site":   (id,l) => `${id}[("${l}")]:::collab`,
+    "SharePoint List":   (id,l) => `${id}[("${l}")]:::collab`,
+    "Dataverse Table":   (id,l) => `${id}[("${l}")]:::collab`,
+    "Microsoft Team":    (id,l) => `${id}[("${l}")]:::collab`,
+    "Mailbox":           (id,l) => `${id}[("${l}")]:::collab`,
+    "O365 Group":        (id,l) => `${id}[("${l}")]:::collab`,
+    "Microsoft Form":    (id,l) => `${id}[("${l}")]:::collab`,
+    "Distribution List": (id,l) => `${id}[("${l}")]:::collab`,
+    "Workflow":          (id,l) => `${id}{{"${l}"}}`,
+    "Power Automate Flow": (id,l) => `${id}{{"${l}"}}`,
+    "Power BI Dashboard": (id,l) => `${id}{{"${l}"}}`,
+    "Vendor":            (id,l) => `${id}["${l}"]:::vendor`,
+    "Decision":          (id,l) => `${id}{"${l}"}`,
+    "Requirement":       (id,l) => `${id}["${l}"]:::req`,
+  };
+  const defShape = (id, l) => `${id}["${l}"]`;
+
+  const lines = [
+    "%% Enterprise Relationship Graph — Mermaid export",
+    "%% Generated " + new Date().toISOString(),
+    "flowchart TD"
+  ];
+  for (const n of visNodes){
+    lines.push("  " + (SHAPES[n.type] || defShape)(mid(n.id), esc(n.label)));
+  }
+  if (visEdges.length) lines.push("");
+  for (const e of visEdges){
+    lines.push(`  ${mid(e.source)} -->|${e.type}| ${mid(e.target)}`);
+  }
+  // Class definitions for visual differentiation
+  lines.push("");
+  lines.push("  classDef execOffice fill:#FBBF24,stroke:#92400E,color:#000,font-weight:bold");
+  lines.push("  classDef orgUnit fill:#7DD3FC,stroke:#0369A1,color:#000");
+  lines.push("  classDef platform fill:#818CF8,stroke:#3730A3,color:#FFF");
+  lines.push("  classDef collab fill:#C084FC,stroke:#6B21A8,color:#FFF");
+  lines.push("  classDef vendor fill:#FCA5A5,stroke:#991B1B,color:#000");
+  lines.push("  classDef req fill:#FEF3C7,stroke:#92400E,color:#000");
+  return lines.join("\n");
+}
+
+function exportMermaid(){
+  const md = generateMermaid();
+  // Wrap the raw mermaid in a markdown document so it renders properly when
+  // previewed by any markdown tool (GitHub, GitLab, Confluence Mermaid plugin,
+  // Notion, Obsidian, VS Code preview, etc.).
+  const stamp = new Date().toLocaleString();
+  const source = state.fileName ? `\nSource: \`${state.fileName}\`` : "";
+  const wrapped = `# Enterprise Relationship Graph\n\n` +
+                  `Generated ${stamp}${source}\n\n` +
+                  "```mermaid\n" + md + "\n```\n";
+  // Derive filename from the loaded JSON if present, else generic.
+  let outName = "enterprise-relationship-graph.md";
+  if (state.fileName){
+    const base = state.fileName.replace(/\.(json|md)$/i, "");
+    outName = base + ".md";
+  }
+  const blob = new Blob([wrapped], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = outName;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
+  showToast(`Exported ${outName} (${md.split("\n").length} mermaid lines)`, "ok");
+}
+
+/* ============================================================================
+   MERMAID IMPORT  — parse a mermaid.live flowchart into the graph (replace)
+   ============================================================================ */
+/* ----------------------------------------------------------------------------
+   parseMermaid(text) -> { graph:{nodes,edges,customNodeTypes,collapsedNodes},
+                           report:{...counts...} }
+
+   Imports a Mermaid `flowchart` / `graph` diagram (the kind built at
+   mermaid.live) into the app's graph shape. Mermaid is a lossy source: it
+   carries node id, label, an inferred type (from :::class / classDef / shape),
+   and the edge label as the relationship type. Everything else (metadata,
+   positions) is not present and defaults at read time. Round-tripping the
+   app's OWN Mermaid export recovers shapes/edge-types and the class-group of
+   each node; exact node types collapse (the export is many-to-one), so some
+   nodes land on "Other" for the user to retype. Best-effort by design.
+---------------------------------------------------------------------------- */
+function parseMermaid(text){
+  const NUL = "\u0000";
+  const report = {
+    nodes:0, edges:0,
+    typedFromClass:0, typedFromShape:0, defaultedOther:0,
+    edgesDefaulted:0, subgraphs:0, skipped:0, skippedSamples:[]
+  };
+  text = String(text == null ? "" : text);
+
+  // 1. If the user pasted a fenced ```mermaid block (or our own .md export),
+  //    keep only the fence body.
+  const fence = text.match(/```(?:mermaid)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1];
+
+  // 2. Normalise newlines and strip %%{init}%% directive blocks. NOTE: %% line
+  //    comments are stripped LATER (after masking) so a literal %% inside a
+  //    label (e.g. "100%%") doesn't truncate the line.
+  text = text.replace(/\r\n?/g, "\n");
+  text = text.replace(/%%\{[\s\S]*?\}%%/g, "");
+  const rawLines = text.split("\n");
+
+  const nodes = new Map();          // id -> { id, label, shape, cls }
+  const edges = [];                 // { source, target, type }
+  const classDefFill = {};          // className -> fill hex (hint, currently unused)
+  const classAssign = [];           // { ids:[...], cls }
+
+  // ---- constants (declared before the execution block below) ----
+  // opener (longest first) -> [closerToken|null, shapeName]; null closer = /] or \]
+  const OPENERS = [
+    ["(((", ")))", "dblcirc"],
+    ["[[",  "]]",  "subroutine"],
+    ["[(",  ")]",  "cylinder"],
+    ["[/",  null,  "para"],
+    ["[\\", null,  "para"],
+    ["([",  "])",  "stadium"],
+    ["((",  "))",  "circle"],
+    ["{{",  "}}",  "hexagon"],
+    ["[",   "]",   "rect"],
+    ["(",   ")",   "round"],
+    ["{",   "}",   "rhombus"]
+  ];
+  // a Mermaid link: optional leading head (< x o), a body of -- / == / -.- /
+  // ~~~ , optional trailing head (> o x), optional |label|. The leading head
+  // must be GLUED to the body: a whitespace-preceded `x`/`o` head (x--x, o--o)
+  // can't swallow the trailing char of a node id ("Box-->Fox") NOR a standalone
+  // node named x/o sitting between arrows ("A --> x --> B"), because in both
+  // cases the x/o isn't immediately followed by the link body. `<` (left arrows)
+  // may be glued to the source.
+  const LINK_SRC = "((?:(?<=\\s)[xo])|<)?(-{2,}|={2,}|-\\.+-|~{2,})([>ox]?)\\s*(?:\\|([^|]*)\\|)?";
+  const LINK_RE  = new RegExp(LINK_SRC);
+  const LINK_G   = new RegExp("\\s*" + LINK_SRC + "\\s*", "g");
+  const PLACEHOLDER_RE = new RegExp(NUL + "@(\\d+)" + NUL, "g");
+
+  const CLASSDEF_TO_TYPE = {
+    execoffice:"Executive Office", orgunit:"Office", platform:"Platform",
+    collab:"SharePoint Site", vendor:"Vendor", req:"Requirement"
+  };
+  const SHAPE_TO_TYPE = {
+    subroutine:"Executive Office", cylinder:"Dataset", stadium:"Person",
+    hexagon:"Workflow", rhombus:"Decision", para:"System"
+    // dblcirc / circle / round / rect / flag -> Other
+  };
+  const NODE_TYPE_NORM = {};
+  for (const t of NODE_TYPES) NODE_TYPE_NORM[t.toLowerCase().replace(/[^a-z0-9]/g,"")] = t;
+  const EDGE_TYPE_SET = new Set(EDGE_TYPES);
+
+  // ---- helpers ----
+  function ensureNode(id){
+    id = id.trim();
+    if (!id) return null;
+    let n = nodes.get(id);
+    if (!n){ n = { id, label:null, shape:null, cls:null }; nodes.set(id, n); }
+    return n;
+  }
+
+  // scan for `closer` token from `from`, honouring "..." quotes. Returns the
+  // index where the closer starts, or -1.
+  function scanTo(line, from, closer){
+    let q = false;
+    for (let i = from; i < line.length; i++){
+      const c = line[i];
+      if (c === '"'){ q = !q; continue; }
+      if (q) continue;
+      if (line.startsWith(closer, i)) return i;
+    }
+    return -1;
+  }
+  function scanToEither(line, from, a, b){
+    let q = false;
+    for (let i = from; i < line.length; i++){
+      const c = line[i];
+      if (c === '"'){ q = !q; continue; }
+      if (q) continue;
+      if (line.startsWith(a, i) || line.startsWith(b, i)) return i;
+    }
+    return -1;
+  }
+
+  // Replace every shape-delimited label payload AND every |...| edge-label
+  // payload on a line with a placeholder, so statement-splitting / comment-
+  // stripping / link-tokenising never trip over brackets, dashes, spaces, ';',
+  // '%%' or '|' inside a label. Each store entry keeps `raw` (the exact text it
+  // replaced) so labels can be reconstructed verbatim.
+  function maskLabels(line){
+    const store = [];
+    let out = "", i = 0;
+    const n = line.length;
+    const push = entry => { const k = store.length; store.push(entry); return NUL + "@" + k + NUL; };
+    while (i < n){
+      const c = line[i];
+      // |edge label|  (quote-aware) — mask the inner span, keep the pipes so the
+      // link regex still sees a |...| group.
+      if (c === "|"){
+        const r = scanTo(line, i+1, "|");
+        if (r >= 0){
+          out += "|" + push({ at:"pipe", raw: line.slice(i+1, r) }) + "|";
+          i = r + 1; continue;
+        }
+      }
+      // @{ shape: ..., label: "..." }  (Mermaid 11 new-shape syntax)
+      if (c === "@" && line[i+1] === "{"){
+        const r = scanTo(line, i+2, "}");
+        if (r >= 0){
+          out += push({ at:"new", inner: line.slice(i+2, r), raw: line.slice(i, r+1) });
+          i = r + 1; continue;
+        }
+      }
+      // flag shape  id>label]  (">" glued to a word char, not part of -->)
+      if (c === ">" && out.length && /\w/.test(out[out.length-1])){
+        const r = scanTo(line, i+1, "]");
+        if (r >= 0){
+          out += push({ shape:"flag", label: line.slice(i+1, r), raw: line.slice(i, r+1) });
+          i = r + 1; continue;
+        }
+      }
+      let matched = null;
+      for (const m of OPENERS){ if (line.startsWith(m[0], i)){ matched = m; break; } }
+      if (matched){
+        const op = matched[0], closer = matched[1], shape = matched[2];
+        const end = (closer === null)
+          ? scanToEither(line, i+op.length, "/]", "\\]")
+          : scanTo(line, i+op.length, closer);
+        if (end >= 0){
+          const closerLen = (closer === null ? 2 : closer.length);
+          out += push({ shape, label: line.slice(i+op.length, end), raw: line.slice(i, end+closerLen) });
+          i = end + closerLen;
+          continue;
+        }
+      }
+      out += c; i++;
+    }
+    return { masked: out, store };
+  }
+
+  // Restore placeholders to their original (verbatim) text — used on captured
+  // edge labels so brackets/pipes that were masked come back before the label
+  // is normalised into a relationship type.
+  function unmaskLabel(text, store){
+    if (text == null) return text;
+    PLACEHOLDER_RE.lastIndex = 0;
+    return text.replace(PLACEHOLDER_RE, (_, k) => {
+      const e = store[+k];
+      return e ? (e.raw != null ? e.raw : "") : "";
+    });
+  }
+
+  function processStatement(stmt, store){
+    const bare = stmt.trim();
+    if (!bare) return;
+
+    if (/^subgraph\b/i.test(bare)){ report.subgraphs++; return; }
+    if (/^end$/i.test(bare)){ return; }
+    // directives we intentionally ignore (incl. accessibility titles, which in
+    // the single-line brace form would otherwise leak in as a node).
+    if (/^(direction|linkStyle|click|style|accTitle|accDescr)\b/i.test(bare)) return;
+
+    let m;
+    if ((m = bare.match(/^classDef\s+([\w,]+)\s+(.*)$/i))){
+      const fill = (m[2].match(/fill\s*:\s*(#[0-9a-fA-F]{3,8})/) || [])[1];
+      if (fill) m[1].split(",").forEach(nm => { classDefFill[nm] = fill; });
+      return;
+    }
+    if ((m = bare.match(/^class\s+([\w,\s]+?)\s+(\w+)\s*$/i))){
+      classAssign.push({ ids: m[1].split(",").map(s=>s.trim()).filter(Boolean), cls: m[2] });
+      return;
+    }
+
+    // Unify inline-label link forms (`-- text -->`, `-. text .->`) into pipe
+    // form BEFORE deciding edge-vs-node: a dotted inline link has no contiguous
+    // operator for LINK_RE to recognise until it's normalised.
+    const norm = normaliseInlineLabels(bare);
+    if (LINK_RE.test(norm)){
+      parseEdgeChain(norm, store);
+    } else {
+      if (!parseNodeToken(bare, store)){
+        report.skipped++;
+        if (report.skippedSamples.length < 5)
+          report.skippedSamples.push(stmt.split(NUL).join(""));
+      }
+    }
+  }
+
+  function parseEdgeChain(s, store){
+    const groups = [];   // arrays of node ids
+    const links  = [];   // { label, lhead, rhead }
+    let last = 0, mm;
+    LINK_G.lastIndex = 0;
+    while ((mm = LINK_G.exec(s)) !== null){
+      if (LINK_G.lastIndex === mm.index){ LINK_G.lastIndex++; continue; }
+      groups.push(parseNodeGroup(s.slice(last, mm.index), store));
+      links.push({ label: mm[4] != null ? mm[4] : null, lhead: mm[1] || "", rhead: mm[3] || "" });
+      last = LINK_G.lastIndex;
+    }
+    groups.push(parseNodeGroup(s.slice(last), store));
+
+    for (let i = 0; i < links.length; i++){
+      const from = groups[i] || [], to = groups[i+1] || [];
+      const type = mapEdgeType(links[i].label, store);
+      if (links[i].label == null) report.edgesDefaulted += from.length * to.length;
+      // A left-pointing arrowhead with no right head (`<--`, `x--`, `o--`) means
+      // the relationship flows right-to-left, so swap source/target.
+      const reverse = !links[i].rhead && /[<xo]/.test(links[i].lhead);
+      for (const a of from) for (const b of to){
+        const src = reverse ? b : a, tgt = reverse ? a : b;
+        if (src && tgt && src !== tgt) edges.push({ source:src, target:tgt, type });
+      }
+    }
+  }
+
+  function normaliseInlineLabels(s){
+    return s
+      .replace(/-\.\s+(\S.*?\S|\S)\s+\.-([>ox])/g, (_,l,h)=>`-.-${h}|${l}|`)
+      .replace(/-\.\s+(\S.*?\S|\S)\s+\.-(?![>ox-])/g, (_,l)=>`-.-|${l}|`)
+      .replace(/==\s+(\S.*?\S|\S)\s+==([>ox])/g, (_,l,h)=>`==${h}|${l}|`)
+      .replace(/==\s+(\S.*?\S|\S)\s+==(?![>ox=])/g, (_,l)=>`===|${l}|`)
+      .replace(/--\s+(\S.*?\S|\S)\s+--([>ox])/g, (_,l,h)=>`--${h}|${l}|`)
+      .replace(/--\s+(\S.*?\S|\S)\s+--(?![>ox-])/g, (_,l)=>`---|${l}|`);
+  }
+
+  function parseNodeGroup(seg, store){
+    return seg.split("&").map(t => parseNodeToken(t, store)).filter(Boolean);
+  }
+
+  // "id" | "id[label]" | "id:::cls" | "id[label]:::cls" -> records label/shape/
+  // class on the node and returns the id, or null if no valid id present.
+  function parseNodeToken(tok, store){
+    let t = tok.trim();
+    if (!t) return null;
+    let cls = null;
+    const cm = t.match(/:::(\w+)\s*$/);
+    if (cm){ cls = cm[1]; t = t.slice(0, cm.index).trim(); }
+
+    let placeholderEntry = null, idPart;
+    const pm = t.match(new RegExp("^(.*?)" + NUL + "@(\\d+)" + NUL + "\\s*$"));
+    if (pm){ idPart = pm[1].trim(); placeholderEntry = store[+pm[2]] || null; }
+    else   { idPart = t; }
+
+    // Unicode-aware id (Mermaid allows accented / non-ASCII identifiers).
+    if (!/^[\p{L}\p{N}_][\p{L}\p{N}_.\-]*$/u.test(idPart)) return null;
+    const nrec = ensureNode(idPart);
+    if (!nrec) return null;
+
+    if (placeholderEntry){
+      if (placeholderEntry.at === "new"){
+        const ns = parseNewShape(placeholderEntry.inner);
+        if (ns.label != null && nrec.label == null) nrec.label = ns.label;
+        if (ns.shape && !nrec.shape) nrec.shape = ns.shape;
+      } else if (placeholderEntry.at !== "pipe"){
+        if (nrec.label == null) nrec.label = cleanLabel(placeholderEntry.label);
+        if (!nrec.shape) nrec.shape = placeholderEntry.shape;
+      }
+    }
+    if (cls && !nrec.cls) nrec.cls = cls;
+    return idPart;
+  }
+
+  function parseNewShape(inner){
+    const out = { shape:null, label:null };
+    const sm = inner.match(/shape\s*:\s*"?([\w-]+)"?/i);
+    const lm = inner.match(/label\s*:\s*"([^"]*)"/i) || inner.match(/label\s*:\s*([^,}]+)/i);
+    if (lm) out.label = cleanLabel(lm[1]);
+    if (sm){
+      const NEW = {
+        cyl:"cylinder", cylinder:"cylinder", db:"cylinder",
+        circle:"circle", "dbl-circ":"dblcirc", "double-circle":"dblcirc",
+        diam:"rhombus", diamond:"rhombus", decision:"rhombus", hex:"hexagon", hexagon:"hexagon",
+        stadium:"stadium", pill:"stadium", subproc:"subroutine", subroutine:"subroutine",
+        "lean-r":"para", "lean-l":"para", "trap-b":"para", "trap-t":"para",
+        rect:"rect", rounded:"round"
+      };
+      out.shape = NEW[sm[1].toLowerCase()] || null;
+    }
+    return out;
+  }
+
+  function cleanLabel(s){
+    if (s == null) return "";
+    let v = String(s).trim();
+    if (v.length >= 2 && v[0] === '"' && v[v.length-1] === '"') v = v.slice(1,-1);
+    return v.replace(/<br\s*\/?>/gi, " ")
+            .replace(/#quot;/g, '"').replace(/&quot;/g, '"')
+            .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+            .replace(/&#?\w+;/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+  }
+
+  function classToType(cls){
+    if (!cls) return null;
+    const k = cls.toLowerCase();
+    if (CLASSDEF_TO_TYPE[k]) return CLASSDEF_TO_TYPE[k];
+    return NODE_TYPE_NORM[k.replace(/[^a-z0-9]/g, "")] || null;
+  }
+  function inferType(rec){
+    const byClass = classToType(rec.cls);
+    if (byClass){ report.typedFromClass++; return byClass; }
+    if (rec.shape && SHAPE_TO_TYPE[rec.shape]){ report.typedFromShape++; return SHAPE_TO_TYPE[rec.shape]; }
+    report.defaultedOther++;
+    return "Other";
+  }
+  function mapEdgeType(label, store){
+    if (label == null) return "OTHER";
+    const raw = cleanLabel(unmaskLabel(label, store)).trim();
+    if (!raw) return "OTHER";
+    if (EDGE_TYPE_SET.has(raw)) return raw;
+    const norm = raw.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "");
+    if (EDGE_TYPE_SET.has(norm)) return norm;
+    return norm || "OTHER";
+  }
+
+  // ---- execution: walk the lines ----
+  let headerSeen = false;
+  for (let rawLine of rawLines){
+    let line = rawLine.trim();
+    if (!line) continue;
+    if (!headerSeen){
+      const h = line.match(/^(flowchart|graph)\b[ \t]*([A-Za-z]{2})?[ \t]*;?/i);
+      headerSeen = true;
+      if (h){ line = line.slice(h[0].length).trim(); if (!line) continue; }
+      else if (/^(sequenceDiagram|classDiagram|stateDiagram(-v2)?|erDiagram|journey|gantt|pie\b|mindmap|timeline|gitGraph|quadrantChart|requirementDiagram|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment|sankey(-beta)?|xychart(-beta)?|block(-beta)?|packet(-beta)?)\b/i.test(line)){
+        // A non-flowchart Mermaid diagram — not importable as a node/edge graph.
+        // Return empty so the caller rejects it ("is this a Mermaid flowchart?")
+        // rather than turning the diagram-type keyword into a junk node.
+        report.notFlowchart = true;
+        return { graph:{ nodes:[], edges:[], customNodeTypes:[], collapsedNodes:[] }, report };
+      }
+    }
+    const { masked, store } = maskLabels(line);
+    // Strip %% line comments now that labels are masked (a literal %% inside a
+    // node/edge label is safely inside a placeholder and won't be touched).
+    const cleaned = masked.replace(/%%.*$/, "");
+    for (const stmt of cleaned.split(";")){ processStatement(stmt, store); }
+  }
+
+  // apply `class A,B name` assignments after all nodes are known
+  for (const a of classAssign){
+    for (const id of a.ids){
+      const nrec = nodes.get(id);
+      if (nrec && !nrec.cls) nrec.cls = a.cls;
+    }
+  }
+
+  // ---- finalise ----
+  const outNodes = [];
+  for (const rec of nodes.values()){
+    outNodes.push({
+      id: rec.id,
+      label: (rec.label != null && rec.label !== "") ? rec.label : rec.id,
+      type: inferType(rec)
+    });
+  }
+  const outEdges = edges.map(e => ({ id: uid("e"), source:e.source, target:e.target, type:e.type }));
+  report.nodes = outNodes.length;
+  report.edges = outEdges.length;
+
+  return {
+    graph: { nodes: outNodes, edges: outEdges, customNodeTypes:[], collapsedNodes:[] },
+    report
+  };
+}
+
+function openMermaidImport(){
+  const html = `
+    <p style="margin:0 0 8px; color:var(--muted); font-size:12.5px; line-height:1.5">
+      Paste a Mermaid <code>flowchart</code> / <code>graph</code> diagram (e.g. one built at
+      <strong>mermaid.live</strong>) and import it as a brand-new graph.
+      <strong>This replaces the entire current graph.</strong> Mermaid is a lossy source:
+      node ids, labels, a best-guess type (from shape / class) and edge labels come across;
+      nodes whose type can't be inferred land on <em>Other</em> for you to retype.
+      You can undo with Ctrl+Z right after importing.
+    </p>
+    <textarea id="mm-input" spellcheck="false" aria-label="Mermaid diagram source"
+      placeholder="flowchart TD&#10;  A[Start] --> B{Decide}&#10;  B -->|yes| C([Done])"
+      style="width:100%; min-height:220px; box-sizing:border-box; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px; line-height:1.45"></textarea>
+    <div style="display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap">
+      <button class="btn primary" id="mm-do-import"><i class="fa-solid fa-file-import" aria-hidden="true"></i> Import (replace graph)</button>
+      <label class="btn" style="margin:0; cursor:pointer">
+        <i class="fa-solid fa-folder-open" aria-hidden="true"></i> Load .mmd / .md file
+        <input type="file" id="mm-file" accept=".mmd,.mermaid,.txt,.md,.markdown,text/plain" style="display:none">
+      </label>
+      <span id="mm-hint" style="color:var(--muted); font-size:12px"></span>
+    </div>`;
+  openModal('<i class="fa-solid fa-diagram-project" aria-hidden="true"></i> Import Mermaid diagram', html, null, true);
+
+  const fileInput = document.getElementById("mm-file");
+  if (fileInput) fileInput.onchange = e => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      document.getElementById("mm-input").value = reader.result;
+      const h = document.getElementById("mm-hint");
+      if (h) h.textContent = "Loaded " + f.name;
+    };
+    reader.readAsText(f);
+  };
+  const go = document.getElementById("mm-do-import");
+  if (go) go.onclick = runMermaidImport;
+}
+
+function runMermaidImport(){
+  const ta = document.getElementById("mm-input");
+  const text = ta ? ta.value : "";
+  if (!text.trim()){ showToast("Paste a Mermaid diagram first", "err"); return; }
+
+  let parsed;
+  try { parsed = parseMermaid(text); }
+  catch(err){ showToast("Mermaid parse failed: " + err.message, "err"); return; }
+
+  const { graph, report } = parsed;
+  if (!report.nodes){
+    showToast("No nodes found — is this a Mermaid flowchart?", "err");
+    return;
+  }
+  if (!confirm("Replace the entire graph with " + report.nodes + " node" + (report.nodes===1?"":"s") +
+               " and " + report.edges + " relationship" + (report.edges===1?"":"s") +
+               " parsed from this Mermaid diagram?\n\nThe current graph will be cleared (Ctrl+Z to undo).")) return;
+
+  // ---- clean-slate replace (mirrors loadSample) ----
+  state.graph = graph;
+  coerceLoadedGraph(state.graph);
+  if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
+  if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
+  state.positions.clear();
+  state.selectedNode = state.selectedEdge = null;
+  // Imported data has no backing JSON file: clear the handle so a later Save
+  // prompts for a new location instead of overwriting a previously-open file.
+  state.fileHandle = null; state.fileName = null;
+  state.lastModifiedBy = null; state.lastModifiedAt = null; updateModifiedChip();
+  clearLoadedViewState();
+  resetFiltersFromGraph();
+  ensurePositions();
+  applyLayout(state.layout);
+  afterMutate();                 // pushes undo history, persists, marks dirty
+  renderViewList(); renderWalkthroughList(); fitGraph();
+
+  closeModal();
+  showMermaidImportSummary(report);
+}
+
+function showMermaidImportSummary(r){
+  const row = (label, val) => `<tr><td style="padding:3px 14px 3px 0; color:var(--muted)">${label}</td><td style="padding:3px 0; font-weight:600; text-align:right">${val}</td></tr>`;
+  let skipped = "";
+  if (r.skipped){
+    const samples = (r.skippedSamples || []).map(s => `<code>${escapeHtml(s.length>60?s.slice(0,60)+"…":s)}</code>`).join("<br>");
+    skipped = `<p style="margin:10px 0 0; color:var(--muted); font-size:12px"><strong>${r.skipped}</strong> line${r.skipped===1?"":"s"} skipped (not nodes/edges)${samples?":<br>"+samples:""}</p>`;
+  }
+  const html = `
+    <table style="border-collapse:collapse; font-size:13px">
+      ${row("Nodes imported", r.nodes)}
+      ${row("Relationships imported", r.edges)}
+      ${row("Types inferred from class", r.typedFromClass)}
+      ${row("Types inferred from shape", r.typedFromShape)}
+      ${row("Nodes set to “Other”", r.defaultedOther)}
+      ${row("Edges set to “OTHER”", r.edgesDefaulted)}
+      ${r.subgraphs ? row("Subgraphs flattened", r.subgraphs) : ""}
+    </table>
+    ${skipped}
+    <p style="margin:12px 0 0; color:var(--muted); font-size:12px; line-height:1.5">
+      Types are best-effort — retype any <em>Other</em> nodes from the legend or each node's
+      detail panel. Nothing is saved yet: use <strong>Save As…</strong> to keep this graph as a JSON file.
+    </p>`;
+  openModal('<i class="fa-solid fa-circle-check" aria-hidden="true"></i> Mermaid import complete', html, ()=>closeModal(), false);
+  showToast("Imported " + r.nodes + " nodes, " + r.edges + " relationships", "ok");
+}
+
+/* ============================================================================
+   DATA QUALITY VALIDATION
+   ============================================================================ */
+function computeValidationViolations(){
+  const nodes = state.graph.nodes;
+  const edges = state.graph.edges;
+  const has = v => !!(v && String(v).trim());
+
+  // Build per-node adjacency maps keyed by edge type for fast checks
+  const inE = new Map(), outE = new Map();
+  for (const n of nodes){ inE.set(n.id, new Map()); outE.set(n.id, new Map()); }
+  for (const e of edges){
+    if (inE.has(e.target)){
+      const m = inE.get(e.target);
+      m.set(e.type, (m.get(e.type) || 0) + 1);
+    }
+    if (outE.has(e.source)){
+      const m = outE.get(e.source);
+      m.set(e.type, (m.get(e.type) || 0) + 1);
+    }
+  }
+  const hasIncoming = (id, type) => ((inE.get(id) || new Map()).get(type) || 0) > 0;
+  const hasOutgoing = (id, type) => ((outE.get(id) || new Map()).get(type) || 0) > 0;
+  const totalEdges = id => {
+    let n = 0;
+    const im = inE.get(id), om = outE.get(id);
+    if (im) for (const v of im.values()) n += v;
+    if (om) for (const v of om.values()) n += v;
+    return n;
+  };
+
+  // ---- Containment-aware helpers for structural-integrity rules ----
+  const CONTAINMENT_TYPES = ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","HAS_DISTRIBUTION_LIST"];
+  const nodeById = new Map(nodes.map(n => [n.id, n]));
+  const containersOf = new Map();      // target id -> [{src, type, srcType}]
+  const containsPairSet = new Set();   // "src>tgt" for CONTAINS edges
+  for (const e of edges){
+    if (CONTAINMENT_TYPES.includes(e.type) && nodeById.has(e.target)){
+      if (!containersOf.has(e.target)) containersOf.set(e.target, []);
+      containersOf.get(e.target).push({ src:e.source, type:e.type, srcType:(nodeById.get(e.source) || {}).type });
+    }
+    if (e.type === "CONTAINS") containsPairSet.add(e.source + ">" + e.target);
+  }
+  const containmentParentCount = id => (containersOf.get(id) || []).length;
+
+  // ---- Messaging sprawl (O365 Groups / Mailboxes / DLs per org unit) ----
+  const SPRAWL_OBJ_TYPES = ["O365 Group","Mailbox","Distribution List"];
+  const SPRAWL_ATTACH_TYPES = ["OWNS","CONTAINS","MANAGES","HAS_O365_GROUP","HAS_MAILBOX","HAS_DISTRIBUTION_LIST"];
+  const sprawlSets = new Map(); // org id -> Set of directly attached messaging-object ids
+  for (const e of edges){
+    if (!SPRAWL_ATTACH_TYPES.includes(e.type)) continue;
+    const src = nodeById.get(e.source), tgt = nodeById.get(e.target);
+    if (!src || !tgt) continue;
+    if (!METRICS_ORG_TYPES.includes(src.type) || !SPRAWL_OBJ_TYPES.includes(tgt.type)) continue;
+    if (!sprawlSets.has(src.id)) sprawlSets.set(src.id, new Set());
+    sprawlSets.get(src.id).add(tgt.id);
+  }
+  const sprawlCountOf = n => METRICS_ORG_TYPES.includes(n.type) ? (sprawlSets.get(n.id) || { size:0 }).size : 0;
+  const hasContainmentParentOfType = (id, t) => (containersOf.get(id) || []).some(c => c.srcType === t);
+  const SINGLE_HOME_EXCLUDE = new Set(["Mailbox","Distribution List","Microsoft Form","O365 Group","Document","Dataset"]);
+  // Cardinality helpers — relationships that should occur at most once.
+  const countIncoming = (id, t) => ((inE.get(id) || new Map()).get(t) || 0);
+  const countOutgoing = (id, t) => ((outE.get(id) || new Map()).get(t) || 0);
+  const _edgeKeyCount = new Map();
+  for (const e of edges){ const k = e.source + "|" + e.target + "|" + e.type; _edgeKeyCount.set(k, (_edgeKeyCount.get(k) || 0) + 1); }
+  const nodesWithDupEdge = new Set();
+  for (const e of edges){ if ((_edgeKeyCount.get(e.source + "|" + e.target + "|" + e.type) || 0) > 1){ nodesWithDupEdge.add(e.source); nodesWithDupEdge.add(e.target); } }
+  const ownsSourcesOf = new Map();
+  for (const e of edges){ if (e.type === "OWNS" && nodeById.has(e.target)){ if (!ownsSourcesOf.has(e.target)) ownsSourcesOf.set(e.target, []); ownsSourcesOf.get(e.target).push(nodeById.get(e.source)); } }
+
+  const RULES = [
+    // CRITICAL — distorts metrics or breaks the trust of the dashboard
+    { id:"crit-deprecated-in-use", title:"Deprecated/retired entity still in use", severity:"critical",
+      fix:"Either delete (and clean its edges) or change status back to Active.",
+      check: n => /inactive|deprecated|retired/i.test(n.status || "") && totalEdges(n.id) > 0 },
+
+    // WARNINGS — structural gaps that hurt the metrics tab's accuracy.
+    // These rules treat a filled field OR an incoming structural edge as
+    // equivalent (since Quick-Connect creates the edge directly, bypassing
+    // the form field).
+    { id:"warn-directorate-no-lead", title:"Directorate missing Lead", severity:"warn",
+      fix:"Either fill Lead with the director's Person name, or Quick-Connect a Person to this Directorate with RESPONSIBLE_FOR.",
+      check: n => n.type === "Directorate" && !has(n.lead) && !hasIncoming(n.id, "RESPONSIBLE_FOR") },
+    { id:"warn-office-no-lead", title:"Office missing Lead", severity:"warn",
+      fix:"Either fill Lead with the office head's Person name, or Quick-Connect a Person to this Office with RESPONSIBLE_FOR.",
+      check: n => n.type === "Office" && !has(n.lead) && !hasIncoming(n.id, "RESPONSIBLE_FOR") },
+    { id:"warn-office-orphaned", title:"Office orphaned in org tree", severity:"warn",
+      fix:"Edit and fill Directorate (or Parent for non-Directorate placements), or Quick-Connect from a Directorate/Front Office/Executive Office via CONTAINS.",
+      check: n => n.type === "Office" && !has(n.directorate) && !has(n.parent) && !hasIncoming(n.id, "CONTAINS") },
+    { id:"warn-team-orphaned", title:"Team orphaned in org tree", severity:"warn",
+      fix:"Edit and fill the Office field (or Parent), or Quick-Connect from an Office/Directorate via CONTAINS.",
+      check: n => n.type === "Team" && !has(n.office) && !has(n.parent) && !hasIncoming(n.id, "CONTAINS") },
+    { id:"warn-orphan", title:"Orphaned node (zero connections)", severity:"warn",
+      fix:"Either delete the node or connect it to its parent via Quick-Connect.",
+      check: n => totalEdges(n.id) === 0 },
+    { id:"warn-system-no-owner", title:"System missing Owner", severity:"warn",
+      fix:"Either fill Owner with the responsible Office, or Quick-Connect from an Office via OWNS.",
+      check: n => n.type === "System" && !has(n.owner) && !hasIncoming(n.id, "OWNS") },
+    { id:"warn-site-no-office", title:"SharePoint Site missing HAS_SITE from any org unit", severity:"warn",
+      fix:"Quick-Connect from the owning Office (or Directorate) to the site.",
+      check: n => n.type === "SharePoint Site" && !hasIncoming(n.id, "HAS_SITE") },
+    { id:"warn-team-no-has-team", title:"Microsoft Team missing HAS_TEAM from any org unit", severity:"warn",
+      fix:"Quick-Connect from the owning Office to the Team.",
+      check: n => n.type === "Microsoft Team" && !hasIncoming(n.id, "HAS_TEAM") },
+    { id:"warn-mailbox-no-office", title:"Mailbox missing HAS_MAILBOX from any org unit", severity:"warn",
+      fix:"Quick-Connect from the owning Office to the Mailbox.",
+      check: n => n.type === "Mailbox" && !hasIncoming(n.id, "HAS_MAILBOX") },
+    { id:"warn-form-no-office", title:"Microsoft Form missing HAS_FORM from any org unit", severity:"warn",
+      fix:"Quick-Connect from the owning Office to the Form.",
+      check: n => n.type === "Microsoft Form" && !hasIncoming(n.id, "HAS_FORM") },
+    { id:"warn-messaging-sprawl", title:"Messaging sprawl: 5+ O365 Groups / Mailboxes / Distribution Lists", severity:"warn",
+      fix:"Long-term maintenance risk. Audit this org's messaging objects for overlapping audiences: consolidate duplicates into one O365 Group, retire stale distribution lists, and confirm each survivor has an owner.",
+      check: n => sprawlCountOf(n) >= 5 },
+    { id:"info-messaging-buildup", title:"Messaging buildup: 3\u20134 O365 Groups / Mailboxes / Distribution Lists", severity:"info",
+      fix:"Watch for audience overlap as this grows. Prefer one O365 Group per audience over a parallel group + shared mailbox + distribution list.",
+      check: n => { const c = sprawlCountOf(n); return c >= 3 && c < 5; } },
+
+    // INFO — data completeness improvements
+    { id:"info-person-no-email", title:"Person missing email", severity:"info",
+      fix:"Edit the Person and add their work email.",
+      check: n => n.type === "Person" && !has(n.email) },
+    { id:"info-person-no-office", title:"Person not assigned to an Office or Team", severity:"info",
+      fix:"Edit and fill Office or Team, Quick-Connect from an org unit via CONTAINS, or make them a Lead/Owner/Manager of something (counts as org-integrated).",
+      check: n => n.type === "Person"
+        && !has(n.office) && !has(n.team) && !has(n.parent)
+        && !hasIncoming(n.id, "CONTAINS")
+        // Leadership edges count as org integration: leading, owning, or
+        // managing something means the person is structurally embedded in
+        // the operating model even without an explicit office assignment.
+        && !hasOutgoing(n.id, "RESPONSIBLE_FOR")
+        && !hasOutgoing(n.id, "OWNS")
+        && !hasOutgoing(n.id, "MANAGES")
+        // Reporting chain also counts — if she's someone's manager or has a
+        // manager, she's part of an org hierarchy regardless of office field.
+        && !hasIncoming(n.id, "REPORTS_TO")
+        && !hasOutgoing(n.id, "REPORTS_TO") },
+    { id:"info-platform-no-owner", title:"Platform missing Owner", severity:"info",
+      fix:"Either fill Owner, or Quick-Connect from an Office via OWNS.",
+      check: n => n.type === "Platform" && !has(n.owner) && !hasIncoming(n.id, "OWNS") },
+    { id:"info-site-no-platform", title:"SharePoint Site missing Platform (HOSTED_ON)", severity:"info",
+      fix:"Edit the Site and fill Platform = SharePoint Online (create the platform node first if needed).",
+      check: n => n.type === "SharePoint Site" && !has(n.platform) && !hasOutgoing(n.id, "HOSTED_ON") && !hasContainmentParentOfType(n.id, "Site Collection") && !hasContainmentParentOfType(n.id, "SharePoint Site") },
+    { id:"info-msteam-no-platform", title:"Microsoft Team missing Platform (HOSTED_ON)", severity:"info",
+      fix:"Edit the Team and fill Platform = Microsoft Teams.",
+      check: n => n.type === "Microsoft Team" && !has(n.platform) && !hasOutgoing(n.id, "HOSTED_ON") },
+
+    // ADDITIONAL WARNINGS (audit additions)
+    { id:"warn-app-no-owner", title:"Application missing Owner", severity:"warn",
+      fix:"Edit and fill Owner with the responsible Office, or Quick-Connect from an Office via OWNS.",
+      check: n => n.type === "Application" && !has(n.owner) && !hasIncoming(n.id, "OWNS") },
+    { id:"warn-workflow-no-owner", title:"Workflow/Flow missing Owner", severity:"warn",
+      fix:"Either fill Owner with the responsible Office, or Quick-Connect from an Office via OWNS.",
+      check: n => (n.type === "Workflow" || n.type === "Power Automate Flow") && !has(n.owner) && !hasIncoming(n.id, "OWNS") },
+    { id:"crit-self-loop", title:"Node has self-referencing edge", severity:"critical",
+      fix:"Edit the node's edges and delete the self-loop — a node should never connect to itself (rename gone wrong, accidental Quick-Connect on the source node, etc.).",
+      check: n => edges.some(e => e.source === n.id && e.target === n.id) },
+
+    // ADDITIONAL IMPROVEMENTS (audit additions)
+    { id:"info-role-no-lead", title:"Role missing a Person filling it", severity:"info",
+      fix:"Roles (e.g., 'Chief Architect') should have a Person assigned. Edit and fill Lead with the Person's name, or Quick-Connect a Person to this Role via RESPONSIBLE_FOR.",
+      check: n => n.type === "Role" && !has(n.lead) && !hasIncoming(n.id, "RESPONSIBLE_FOR") },
+    { id:"info-app-no-platform", title:"Application missing Platform (HOSTED_ON)", severity:"info",
+      fix:"Edit and fill Platform with the host (e.g., ServiceNow, Salesforce, Power Apps). Captures the runtime dependency for Risk tab cascades.",
+      check: n => n.type === "Application" && !has(n.platform) && !hasOutgoing(n.id, "HOSTED_ON") },
+
+    // LOW — polish, not urgent
+    { id:"low-no-description", title:"Node without description", severity:"low",
+      fix:"Add a one-line description so others know what this is.",
+      check: n => n.type !== "Person" && !has(n.description) },
+
+    // STRUCTURAL INTEGRITY — relationship correctness (not just missing fields)
+    { id:"warn-sitecoll-no-tenant", title:"Site Collection not contained by SharePoint Online", severity:"warn",
+      fix:"A site collection should sit under its tenant. Set Parent = SharePoint Online (creates CONTAINS), or Quick-Connect SharePoint Online -> this collection.",
+      check: n => n.type === "Site Collection" && !hasContainmentParentOfType(n.id, "Platform") },
+
+    // CARDINALITY — relationships that must not occur more than once
+    { id:"warn-owner-field-mismatch", title:"Owner field disagrees with the OWNS edge", severity:"warn",
+      fix:"The Owner field names a different node than the actual OWNS edge. Set the Owner field to the owning node (the OWNS source), or clear the field and rely on the edge.",
+      check: n => has(n.owner) && (ownsSourcesOf.get(n.id) || []).length > 0 && !(ownsSourcesOf.get(n.id) || []).some(s => (s.label || "").trim().toLowerCase() === String(n.owner).trim().toLowerCase()) },
+  ];
+
+  const violations = [];
+  for (const rule of RULES){
+    const affected = nodes.filter(rule.check);
+    if (affected.length > 0) violations.push({ rule, nodes: affected });
+  }
+  return violations;
+}
+
+/* Relationship issues from the shared guardrail engine — single source of truth
+   with the creation-time warnings and the canvas dash-flags. */
+function computeRelationshipIssues(){
+  const CRIT = new Set(["duplicate","multi-owner","multi-host","self"]);
+  const idx = buildRelIndex(state.graph.edges);
+  const out = [];
+  for (const e of state.graph.edges){
+    const a = assessRelationship(e.source, e.target, e.type, e.id, idx);
+    if (a.level === "caution") out.push({ edge:e, code:a.code, message:a.message, suggest:a.suggest, sev: CRIT.has(a.code) ? "critical" : "warn" });
+  }
+  return out;
+}
+
+function openDataQualityModal(){
+  const groups = computeValidationViolations();
+  const relIssues = computeRelationshipIssues();
+  const total = groups.reduce((s, g) => s + g.nodes.length, 0) + relIssues.length;
+  const bySev = { critical:0, warn:0, info:0, low:0 };
+  groups.forEach(g => { bySev[g.rule.severity] += g.nodes.length; });
+  relIssues.forEach(it => { bySev[it.sev] += 1; });
+  const affectedIds = new Set();
+  groups.forEach(g => g.nodes.forEach(n => affectedIds.add(n.id)));
+  const cleanCount = state.graph.nodes.length - affectedIds.size;
+
+  const sevLabel = { critical:"Critical", warn:"Warning", info:"Improve", low:"Polish" };
+  const sevPill = { critical:"crit", warn:"warn", info:"", low:"" };
+
+  const summaryHtml = `
+    <div class="kpi-grid">
+      ${mKpi("Total violations", total, "across all rules", total === 0 ? "ok" : (bySev.critical > 0 ? "crit" : "warn"))}
+      ${mKpi("Critical", bySev.critical, "distorts the metrics tab", bySev.critical > 0 ? "crit" : "ok")}
+      ${mKpi("Warnings", bySev.warn, "structural gaps", bySev.warn > 0 ? "warn" : "ok")}
+      ${mKpi("Improvements", bySev.info, "data completeness", "accent")}
+      ${mKpi("Polish", bySev.low, "nice to have")}
+      ${mKpi("Clean nodes", cleanCount, "no rules violated", "ok")}
+    </div>`;
+
+  // Order groups by severity within each tier
+  const sevOrder = { critical:0, warn:1, info:2, low:3 };
+  groups.sort((a,b) => sevOrder[a.rule.severity] - sevOrder[b.rule.severity]);
+
+  const sectionsHtml = (groups.length === 0 && relIssues.length === 0)
+    ? '<div class="m-empty" style="text-align:center; padding:40px 0;"><i class="fa-solid fa-circle-check" style="color:var(--ok); font-size:32px;"></i><div style="margin-top:12px; font-size:14px; color:var(--text);">No violations. Catalog is clean.</div></div>'
+    : groups.map(g => `
+        <div class="m-section">
+          <h4>
+            <span class="m-pill ${sevPill[g.rule.severity]}">${sevLabel[g.rule.severity]}</span>
+            ${escapeHtml(g.rule.title)}
+            <span class="m-pill">${g.nodes.length}</span>
+          </h4>
+          <div style="font-size:11.5px; color:var(--muted); margin:0 0 8px;"><i class="fa-solid fa-lightbulb" style="margin-right:4px;"></i> ${escapeHtml(g.rule.fix)}</div>
+          <table class="m-table"><tbody>
+            ${g.nodes.slice(0,15).map(n => `<tr><td>${mEntityLink(n, {includeType:true})}</td></tr>`).join("")}
+            ${g.nodes.length > 15 ? `<tr><td style="color:var(--muted); font-size:11px;">Showing 15 of ${g.nodes.length} &mdash; the rest follow the same fix.</td></tr>` : ""}
+          </tbody></table>
+        </div>`).join("");
+
+  const relHtml = relIssues.length === 0 ? "" : `
+    <div class="m-section">
+      <h4><span class="m-pill crit">Relationships</span> Relationship issues <span class="m-pill">${relIssues.length}</span></h4>
+      <div style="font-size:11.5px; color:var(--muted); margin:0 0 8px;"><i class="fa-solid fa-diagram-project" style="margin-right:4px;"></i> Flagged by the same checks that warn you at creation time. Click a row to jump to the relationship.</div>
+      <table class="m-table"><tbody>
+        ${relIssues.slice(0,30).map(it => {
+          const s = findNode(it.edge.source), t = findNode(it.edge.target);
+          const sl = s ? s.label : it.edge.source, tl = t ? t.label : it.edge.target;
+          return `<tr><td>
+            <a class="m-entity-link" role="link" tabindex="0" data-node-id="${escapeHtml(it.edge.source)}"><span class="m-pill ${it.sev==='critical'?'crit':'warn'}">${it.sev==='critical'?'Critical':'Warning'}</span> ${escapeHtml(sl)} <span style="color:var(--muted)">&mdash;${escapeHtml(it.edge.type)}&rarr;</span> ${escapeHtml(tl)}</a>
+            <div style="font-size:11px; color:var(--muted); margin-top:3px;">${escapeHtml(it.message)}${it.suggest ? " · " + escapeHtml(it.suggest) : ""}</div>
+          </td></tr>`;
+        }).join("")}
+        ${relIssues.length > 30 ? `<tr><td style="color:var(--muted); font-size:11px;">Showing 30 of ${relIssues.length}.</td></tr>` : ""}
+      </tbody></table>
+    </div>`;
+  const html = `
+    <p class="m-lede">Catalog gaps and relationship problems to fix. Click any entity or relationship to jump to it on the graph.</p>
+    ${summaryHtml}
+    ${relHtml}
+    ${sectionsHtml}
+  `;
+
+  openModal('<i class="fa-solid fa-clipboard-check"></i> Data Quality', html, ()=>closeModal(), true);
+  document.getElementById("modal").classList.add("xl");
+
+  // Reuse the drill-down click handler that the metrics modal already installs.
+  // Since modalBody._metricsDrillDownAttached persists, clicks on .m-entity-link
+  // here work automatically.
+  if (!modalBody._metricsDrillDownAttached){
+    const jumpToNode = id => {
+      if (!id) return;
+      const exists = state.graph.nodes.some(n => n.id === id);
+      if (!exists){ showToast("That entity no longer exists in the graph", "err"); return; }
+      closeModal();
+      try { selectNode(id); if (typeof centerOnNode === "function") centerOnNode(id); }
+      catch (err){ console.error("Drill-down failed:", err); }
+    };
+    modalBody.addEventListener("click", e => {
+      const link = e.target.closest(".m-entity-link");
+      if (!link) return;
+      e.preventDefault();
+      jumpToNode(link.dataset.nodeId);
+    });
+    modalBody.addEventListener("keydown", e => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const link = e.target.closest(".m-entity-link");
+      if (!link) return;
+      e.preventDefault();
+      jumpToNode(link.dataset.nodeId);
+    });
+    modalBody._metricsDrillDownAttached = true;
+  }
+  document.getElementById("modal-save").style.display = "none";
+  document.getElementById("modal-cancel").innerHTML = '<i class="fa-solid fa-check"></i> Done';
+}
+
+
+
+/* ============================================================================
+   RECENTLY VIEWED NODES
+   ============================================================================ */
+const RECENT_MAX = 15;
+
+function pushRecentNode(id){
+  if (!id) return;
+  if (!Array.isArray(state.recentNodes)) state.recentNodes = [];
+  // Move-to-front semantics: remove any existing, prepend
+  state.recentNodes = state.recentNodes.filter(x => x !== id);
+  state.recentNodes.unshift(id);
+  if (state.recentNodes.length > RECENT_MAX){
+    state.recentNodes = state.recentNodes.slice(0, RECENT_MAX);
+  }
+  saveUIState({ recentNodes: state.recentNodes });
+  const pop = document.getElementById("recent-popover");
+  if (pop && pop.classList.contains("open")) renderRecentPopover();
+}
+
+function loadRecentNodesFromStorage(){
+  const ui = loadUIState();
+  if (Array.isArray(ui.recentNodes)) state.recentNodes = ui.recentNodes;
+  else state.recentNodes = [];
+}
+
+function renderRecentPopover(){
+  const pop = document.getElementById("recent-popover");
+  if (!pop) return;
+  const validRecent = state.recentNodes
+    .map(id => state.graph.nodes.find(n => n.id === id))
+    .filter(Boolean);
+  if (validRecent.length === 0){
+    pop.innerHTML = '<div class="recent-empty">No recently viewed entities. Click any node on the graph and it lands here.</div>';
+    return;
+  }
+  pop.innerHTML = `
+    <div class="recent-head">Recently viewed <span style="color:var(--muted); font-weight:400">(${validRecent.length})</span></div>
+    <div class="recent-list">
+      ${validRecent.map(n => {
+        const ts = typeStyle(n.type);
+        return `<div class="recent-item" data-node-id="${escapeHtml(n.id)}" role="button" tabindex="0">
+          <span class="recent-dot" style="background:${ts.color}"></span>
+          <div class="recent-meta">
+            <div class="recent-name">${escapeHtml(n.label)}</div>
+            <div class="recent-type">${escapeHtml(n.type)}</div>
+          </div>
+        </div>`;
+      }).join("")}
+    </div>
+    <button class="btn ghost block recent-clear" style="margin-top:6px"><i class="fa-solid fa-xmark"></i> Clear history</button>
+  `;
+  pop.querySelectorAll(".recent-item").forEach(el => {
+    const go = () => {
+      const id = el.dataset.nodeId;
+      pop.classList.remove("open");
+      selectNode(id);
+      if (typeof centerOnNode === "function") centerOnNode(id);
+    };
+    el.onclick = go;
+    el.onkeydown = e => { if (e.key === "Enter" || e.key === " "){ e.preventDefault(); go(); } };
+  });
+  pop.querySelector(".recent-clear").onclick = () => {
+    state.recentNodes = [];
+    saveUIState({ recentNodes: [] });
+    renderRecentPopover();
+  };
+}
+
+function toggleRecentPopover(){
+  const pop = document.getElementById("recent-popover");
+  if (!pop) return;
+  const trigger = document.getElementById("btn-recent");
+  if (trigger) trigger.setAttribute("aria-expanded", pop.classList.contains("open") ? "false" : "true");
+  if (pop.classList.contains("open")){
+    pop.classList.remove("open");
+  } else {
+    renderRecentPopover();
+    pop.classList.add("open");
+  }
+}
+
+/* ============================================================================
+   IMPACT ANALYSIS — what depends on this node?
+   ============================================================================ */
+// PURE DEPENDENCY WALK: only follow incoming dependency edges, never
+// transitive ownership. This keeps the impact analysis honest — if X
+// breaks, only things that DEPEND on X transitively break. Ownership
+// edges (CONTAINS, OWNS, etc.) are surfaced separately on hop 0 as
+// "things this node directly owns or contains" without recursive expansion,
+// since those represent organizational restructuring rather than breakage.
+const IMPACT_DEPENDENCY_EDGES = ["DEPENDS_ON","USES","HOSTED_ON","SUPPORTS","SECURES","INTEGRATES_WITH","CONNECTED_TO","RESPONSIBLE_FOR"];
+const IMPACT_OWNERSHIP_EDGES = ["CONTAINS","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM","OWNS","MANAGES"];
+
+function computeImpactTree(nodeId, maxDepth){
+  maxDepth = maxDepth || 8;
+  const visited = new Set([nodeId]);
+  const byHop = new Map();
+  const startNode = state.graph.nodes.find(n => n.id === nodeId);
+  if (!startNode) return { byHop, totalAffected: 0, depth: 0, directlyOwned: [] };
+  byHop.set(0, [{ node: startNode, viaEdge: null }]);
+
+  // Pure incoming-dependency walk (transitive)
+  let frontier = new Set([nodeId]);
+  for (let depth = 1; depth <= maxDepth; depth++){
+    const nextFrontier = new Set();
+    const hopList = [];
+    for (const curId of frontier){
+      for (const e of state.graph.edges){
+        if (e.target === curId && IMPACT_DEPENDENCY_EDGES.includes(e.type)){
+          if (!visited.has(e.source)){
+            visited.add(e.source);
+            nextFrontier.add(e.source);
+            const sNode = state.graph.nodes.find(n => n.id === e.source);
+            if (sNode) hopList.push({ node: sNode, viaEdge: e, parentId: curId });
+          }
+        }
+      }
+    }
+    if (hopList.length > 0) byHop.set(depth, hopList);
+    if (nextFrontier.size === 0) break;
+    frontier = nextFrontier;
+  }
+
+  // Hop 0 also exposes one-shot organizational impact: things this node
+  // directly contains/owns/manages. Not transitive — restructuring concern,
+  // not a breakage cascade.
+  const directlyOwned = [];
+  for (const e of state.graph.edges){
+    if (e.source === nodeId && IMPACT_OWNERSHIP_EDGES.includes(e.type)){
+      const tNode = state.graph.nodes.find(n => n.id === e.target);
+      if (tNode) directlyOwned.push({ node: tNode, viaEdge: e });
+    }
+  }
+
+  return { byHop, totalAffected: visited.size - 1, depth: byHop.size - 1, directlyOwned };
+}
+
+function openImpactModal(nodeId){
+  const node = state.graph.nodes.find(n => n.id === nodeId);
+  if (!node){ showToast("Node not found", "err"); return; }
+  const impact = computeImpactTree(nodeId);
+
+  // Count by node type for a quick "impact composition" view
+  const typeCounts = new Map();
+  for (const [hop, list] of impact.byHop){
+    if (hop === 0) continue;
+    for (const item of list){
+      typeCounts.set(item.node.type, (typeCounts.get(item.node.type) || 0) + 1);
+    }
+  }
+  const topTypes = [...typeCounts.entries()].sort((a,b) => b[1] - a[1]).slice(0,8);
+
+  const sevForCount = c => c === 0 ? "ok" : (c > 15 ? "crit" : c > 5 ? "warn" : "accent");
+  const directCount = impact.byHop.get(1)?.length || 0;
+  const lede = `<p class="m-lede">If <strong>${escapeHtml(node.label)}</strong> (${escapeHtml(node.type)}) is removed, retired, or has an outage, here's what's affected. The cascade walks dependency edges transitively (DEPENDS_ON, USES, HOSTED_ON, SUPPORTS, SECURES, INTEGRATES_WITH, CONNECTED_TO, RESPONSIBLE_FOR). Ownership edges (CONTAINS, OWNS, MANAGES, HAS_*) are listed separately below as direct organizational impact — they are not walked recursively.</p>`;
+
+  const kpiHtml = `
+    <div class="kpi-grid">
+      ${mKpi("Dependency cascade", impact.totalAffected, "things that break transitively", sevForCount(impact.totalAffected))}
+      ${mKpi("Direct dependents", directCount, "1 hop away")}
+      ${mKpi("Cascade depth", impact.depth, "hops to deepest dependent")}
+      ${mKpi("Directly owned", impact.directlyOwned.length, "1-hop containment / ownership")}
+    </div>
+  `;
+
+  const ownedHtml = impact.directlyOwned.length === 0 ? "" : `
+    <div class="m-section">
+      <h4>Organizational impact (not a cascade)</h4>
+      <p style="font-size:12px; color:var(--text-2); margin:0 0 8px;">Entities this node directly contains, owns, or manages. If this node is removed, these items don't break but need to be reassigned.</p>
+      <table class="m-table"><thead><tr><th>Entity</th><th>Via</th></tr></thead><tbody>
+        ${impact.directlyOwned.slice(0,20).map(item => `
+          <tr>
+            <td>${mEntityLink(item.node, {includeType:true})}</td>
+            <td style="color:var(--muted); font-size:11px;">${escapeHtml(item.viaEdge.type)}</td>
+          </tr>`).join("")}
+        ${impact.directlyOwned.length > 20 ? `<tr><td colspan="2" style="color:var(--muted); font-size:11px;">Showing 20 of ${impact.directlyOwned.length}.</td></tr>` : ""}
+      </tbody></table>
+    </div>
+  `;
+
+  const compositionHtml = topTypes.length === 0 ? "" : `
+    <div class="m-section">
+      <h4>What kinds of things are affected</h4>
+      ${mHBars(topTypes.map(([t, c]) => ({ label: t, value: c, color: typeStyle(t).color })))}
+    </div>
+  `;
+
+  let hopsHtml = "";
+  for (let depth = 1; depth <= impact.depth; depth++){
+    const hops = impact.byHop.get(depth) || [];
+    if (hops.length === 0) continue;
+    const visible = hops.slice(0, 25);
+    hopsHtml += `
+      <div class="m-section">
+        <h4>Hop ${depth} <span class="m-pill">${hops.length}</span></h4>
+        <table class="m-table"><thead><tr><th>Entity</th><th>Via</th></tr></thead><tbody>
+          ${visible.map(item => `
+            <tr>
+              <td>${mEntityLink(item.node, {includeType:true})}</td>
+              <td style="color:var(--muted); font-size:11px;">${item.viaEdge ? escapeHtml(item.viaEdge.type) : ""}</td>
+            </tr>`).join("")}
+          ${hops.length > visible.length ? `<tr><td colspan="2" style="color:var(--muted); font-size:11px;">Showing ${visible.length} of ${hops.length} at this hop.</td></tr>` : ""}
+        </tbody></table>
+      </div>
+    `;
+  }
+
+  const html = lede + kpiHtml + (impact.totalAffected === 0
+    ? '<div class="m-empty" style="margin-top:14px;">Nothing depends on this entity transitively. Removing it has no breakage cascade.</div>'
+    : compositionHtml + hopsHtml) + ownedHtml;
+
+  openModal(`<i class="fa-solid fa-bolt"></i> Impact &mdash; ${escapeHtml(node.label)}`, html, ()=>closeModal(), true);
+  document.getElementById("modal").classList.add("xl");
+  if (!modalBody._metricsDrillDownAttached){
+    const jumpToNode = id => {
+      if (!id) return;
+      const exists = state.graph.nodes.some(n => n.id === id);
+      if (!exists){ showToast("That entity no longer exists", "err"); return; }
+      closeModal();
+      try { selectNode(id); if (typeof centerOnNode === "function") centerOnNode(id); }
+      catch (err){ console.error("Drill-down failed:", err); }
+    };
+    modalBody.addEventListener("click", e => {
+      const link = e.target.closest(".m-entity-link");
+      if (!link) return;
+      e.preventDefault();
+      jumpToNode(link.dataset.nodeId);
+    });
+    // Keyboard parity with the metrics/data-quality modals: without this,
+    // opening Impact first in a session would set the shared flag with no
+    // Enter/Space handling, breaking keyboard drill-down everywhere.
+    modalBody.addEventListener("keydown", e => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const link = e.target.closest(".m-entity-link");
+      if (!link) return;
+      e.preventDefault();
+      jumpToNode(link.dataset.nodeId);
+    });
+    modalBody._metricsDrillDownAttached = true;
+  }
+  document.getElementById("modal-save").style.display = "none";
+  document.getElementById("modal-cancel").innerHTML = '<i class="fa-solid fa-check"></i> Done';
+}
+
+/* ============================================================================
+   ORGANIZATIONAL INTELLIGENCE — span of control, reporting depth,
+   bridge nodes, knowledge concentration, cross-boundary collaboration.
+   ============================================================================ */
+function computeOrgIntelligence(){
+  const nodes = state.graph.nodes;
+  const edges = state.graph.edges;
+  const has = v => !!(v && String(v).trim());
+
+  // ---- Span of control (REPORTS_TO incoming) ----
+  // Edge semantics: A REPORTS_TO B means A's manager is B. So B's direct
+  // reports count = # of incoming REPORTS_TO edges.
+  const directReports = new Map();
+  for (const e of edges){
+    if (e.type !== "REPORTS_TO") continue;
+    directReports.set(e.target, (directReports.get(e.target) || 0) + 1);
+  }
+  const managers = nodes
+    .filter(n => (n.type === "Person" || n.type === "Role") && (directReports.get(n.id) || 0) > 0)
+    .map(n => ({ node: n, reports: directReports.get(n.id) }))
+    .sort((a,b) => b.reports - a.reports);
+  const overloadedManagers = managers.filter(m => m.reports > 10);
+  const thinManagers = managers.filter(m => m.reports === 1);
+
+  // ---- Reporting depth (longest REPORTS_TO chain) ----
+  const adj = new Map();
+  for (const e of edges){
+    if (e.type !== "REPORTS_TO") continue;
+    if (!adj.has(e.target)) adj.set(e.target, []);
+    adj.get(e.target).push(e.source);
+  }
+  const reportsToSomeone = new Set();
+  for (const e of edges){ if (e.type === "REPORTS_TO") reportsToSomeone.add(e.source); }
+  const peopleRoots = nodes.filter(n => (n.type === "Person" || n.type === "Role") && !reportsToSomeone.has(n.id) && adj.has(n.id));
+  function chainDepth(id){
+    const memo = new Map();
+    function dfs(curId, visiting){
+      if (memo.has(curId)) return memo.get(curId);
+      if (visiting.has(curId)) return 0;
+      visiting.add(curId);
+      let best = 0;
+      for (const c of (adj.get(curId) || [])){
+        const d = 1 + dfs(c, visiting);
+        if (d > best) best = d;
+      }
+      visiting.delete(curId);
+      memo.set(curId, best);
+      return best;
+    }
+    return dfs(id, new Set());
+  }
+  const rootDepths = peopleRoots.map(r => ({ node: r, depth: chainDepth(r.id) })).sort((a,b) => b.depth - a.depth);
+  const maxReportingDepth = rootDepths.length > 0 ? rootDepths[0].depth : 0;
+
+  // ---- Knowledge concentration (people named as Owner or Lead) ----
+  // Count edges first (canonical), then field-only cases where the name
+  // doesn't resolve to a Person/Role node.
+  const ownerLoad = new Map();
+  const bumpOwner = (key) => ownerLoad.set(key, (ownerLoad.get(key) || 0) + 1);
+  for (const e of edges){
+    if (e.type !== "OWNS" && e.type !== "RESPONSIBLE_FOR") continue;
+    const src = nodes.find(n => n.id === e.source);
+    if (!src || (src.type !== "Person" && src.type !== "Role")) continue;
+    bumpOwner(src.label);
+  }
+  // Field-only cases (no auto-edge created because the name doesn't match a Person).
+  // Skip names that resolve to ANY node (e.g. an Office named as owner) — the
+  // table is titled "People named as Owner", so org-unit owners don't belong;
+  // they're already represented structurally. Mirrors the bus-factor logic.
+  const personLabels = new Set(nodes.filter(n => n.type === "Person" || n.type === "Role").map(n => n.label));
+  const anyLabel = new Set(nodes.map(n => (n.label || "").trim()));
+  for (const n of nodes){
+    if (has(n.owner) && !personLabels.has(n.owner.trim()) && !anyLabel.has(n.owner.trim())) bumpOwner(n.owner.trim());
+    if (has(n.lead)  && !personLabels.has(n.lead.trim())  && !anyLabel.has(n.lead.trim()))  bumpOwner(n.lead.trim());
+  }
+  const ownersAsPersons = [];
+  for (const [name, count] of ownerLoad){
+    const node = nodes.find(n => n.label === name && (n.type === "Person" || n.type === "Role"));
+    ownersAsPersons.push({ name, count, nodeId: node ? node.id : null, isKnownPerson: !!node });
+  }
+  ownersAsPersons.sort((a,b) => b.count - a.count);
+  const topOwners = ownersAsPersons.slice(0, 10);
+
+  // ---- Bridge nodes (touch many distinct directorates) ----
+  const dirs = nodes.filter(n => n.type === "Directorate");
+  const dirOf = new Map();
+  for (const d of dirs){
+    dirOf.set(d.id, d.label);
+    if (typeof getCollapseDescendants === "function"){
+      const desc = getCollapseDescendants(d.id);
+      for (const id of desc){ if (!dirOf.has(id)) dirOf.set(id, d.label); }
+    }
+  }
+  for (const n of nodes){
+    if (!dirOf.has(n.id) && has(n.directorate)) dirOf.set(n.id, n.directorate);
+  }
+  const dirReach = new Map();
+  for (const n of nodes) dirReach.set(n.id, new Set());
+  for (const e of edges){
+    const sd = dirOf.get(e.source), td = dirOf.get(e.target);
+    if (sd){ const r = dirReach.get(e.target); if (r) r.add(sd); }
+    if (td){ const r = dirReach.get(e.source); if (r) r.add(td); }
+  }
+  const bridges = nodes
+    .map(n => ({ node: n, dirCount: (dirReach.get(n.id) || new Set()).size }))
+    .filter(b => b.dirCount >= 2)
+    .filter(b => b.node.type !== "Under Secretary" && b.node.type !== "Bureau" && b.node.type !== "Executive Office" && b.node.type !== "Front Office")
+    .sort((a,b) => b.dirCount - a.dirCount)
+    .slice(0, 10);
+
+  // ---- Cross-directorate collaboration ratio ----
+  const COLLAB_EDGE_TYPES = ["SUPPORTS","SENDS_TO","RECEIVES_FROM","REQUESTED_BY","RESPONSIBLE_FOR"];
+  let crossDir = 0, sameDir = 0;
+  for (const e of edges){
+    if (!COLLAB_EDGE_TYPES.includes(e.type)) continue;
+    const sd = dirOf.get(e.source), td = dirOf.get(e.target);
+    if (!sd || !td) continue;
+    if (sd === td) sameDir++;
+    else crossDir++;
+  }
+  const totalCollab = crossDir + sameDir;
+  const crossPct = totalCollab === 0 ? 0 : Math.round(crossDir / totalCollab * 100);
+
+  return {
+    managers, overloadedManagers, thinManagers,
+    rootDepths, maxReportingDepth,
+    topOwners,
+    bridges,
+    crossDir, sameDir, totalCollab, crossPct
+  };
+}
+
+function renderOrgIntelHtml(m){
+  // m is the metrics object; we recompute org intel here for freshness
+  const oi = computeOrgIntelligence();
+  const managerRows = oi.managers.slice(0, 10).map(x => `
+    <tr>
+      <td>${mEntityLink(x.node, {includeType:true})}</td>
+      <td class="num">${x.reports}</td>
+      <td>${x.reports > 10 ? '<span class="m-pill warn">overloaded</span>' : x.reports === 1 ? '<span class="m-pill">thin</span>' : '<span class="m-pill ok">healthy</span>'}</td>
+    </tr>`).join("");
+  const depthRows = oi.rootDepths.slice(0, 5).map(x => `
+    <tr>
+      <td>${mEntityLink(x.node, {includeType:true})}</td>
+      <td class="num">${x.depth}</td>
+    </tr>`).join("");
+  const ownerRows = oi.topOwners.map(o => `
+    <tr>
+      <td>${o.nodeId ? mEntityLinkByName(o.name, o.nodeId) : escapeHtml(o.name)}${o.isKnownPerson ? "" : ' <span class="m-pill warn" title="Name appears as Owner but is not a Person/Role node">unmapped</span>'}</td>
+      <td class="num">${o.count}</td>
+    </tr>`).join("");
+  const bridgeRows = oi.bridges.map(b => `
+    <tr>
+      <td>${mEntityLink(b.node, {includeType:true})}</td>
+      <td class="num">${b.dirCount}</td>
+    </tr>`).join("");
+
+  return `
+    <p class="m-lede">Structural patterns in how your organization is wired: who manages whom, how deep the org runs, who quietly connects everything together, and how much real work crosses directorate boundaries.</p>
+    <div class="kpi-grid">
+      ${mKpi("Managers detected", oi.managers.length, "people with direct reports")}
+      ${mKpi("Span overloads", oi.overloadedManagers.length, ">10 direct reports", oi.overloadedManagers.length > 0 ? "warn" : "ok")}
+      ${mKpi("Single-report managers", oi.thinManagers.length, "may be unnecessary layer", oi.thinManagers.length > 0 ? "accent" : "ok")}
+      ${mKpi("Reporting depth", oi.maxReportingDepth, "longest chain of reports")}
+      ${mKpi("Bridge entities", oi.bridges.length, "touch &ge;2 directorates", oi.bridges.length > 0 ? "accent" : null)}
+      ${mKpi("Cross-dir collaboration", oi.crossPct + "%", `${oi.crossDir} of ${oi.totalCollab} collaboration edges`)}
+    </div>
+    <div class="m-section">
+      <h4>Span of control</h4>
+      ${oi.managers.length === 0
+        ? '<div class="m-empty">No REPORTS_TO edges modeled yet. Add reporting lines on Person nodes to populate this view.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Manager</th><th class="num">Direct reports</th><th>Span health</th></tr></thead>
+            <tbody>${managerRows}</tbody>
+           </table>
+           <div style="font-size:11px; color:var(--muted); margin-top:6px;">Industry rule of thumb: 5&ndash;9 direct reports is healthy. &gt;10 is overloaded; &lt;3 may indicate an unnecessary layer.</div>`}
+    </div>
+    <div class="m-section">
+      <h4>Deepest reporting chains</h4>
+      ${oi.rootDepths.length === 0
+        ? '<div class="m-empty">No multi-level reporting chains detected.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Top of chain</th><th class="num">Layers below</th></tr></thead>
+            <tbody>${depthRows}</tbody>
+           </table>`}
+    </div>
+    <div class="m-section">
+      <h4>Knowledge concentration (top owners)</h4>
+      <p style="font-size:12px; color:var(--text-2); margin:0 0 8px;">People named as Owner on the most entities. High concentrations mean if they leave, knowledge transfer becomes urgent.</p>
+      ${oi.topOwners.length === 0
+        ? '<div class="m-empty">No Owner fields populated yet.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Owner</th><th class="num">Entities owned</th></tr></thead>
+            <tbody>${ownerRows}</tbody>
+           </table>`}
+    </div>
+    <div class="m-section">
+      <h4>Bridge entities <span class="m-pill">${oi.bridges.length}</span></h4>
+      <p style="font-size:12px; color:var(--text-2); margin:0 0 8px;">Entities that touch multiple directorates. They knit the org together &mdash; valuable but also concentration risks if they fail or move.</p>
+      ${oi.bridges.length === 0
+        ? '<div class="m-empty">No entities span multiple directorates yet.</div>'
+        : `<table class="m-table">
+            <thead><tr><th>Entity</th><th class="num">Directorates touched</th></tr></thead>
+            <tbody>${bridgeRows}</tbody>
+           </table>`}
+    </div>
+    <div class="m-section">
+      <h4>Cross-boundary collaboration</h4>
+      <p style="font-size:12.5px; color:var(--text-2); margin:0;">
+        <strong>${oi.crossPct}%</strong> of collaboration edges (SUPPORTS, SENDS_TO, RECEIVES_FROM, REQUESTED_BY, RESPONSIBLE_FOR) cross directorate boundaries
+        (${oi.crossDir} cross-directorate / ${oi.sameDir} within-directorate, ${oi.totalCollab} total).
+        ${oi.crossPct < 20 ? " Heavily siloed organization." : oi.crossPct < 50 ? " Mostly siloed with some cross-pollination." : oi.crossPct < 75 ? " Healthy mix of within and cross-directorate work." : " Highly cross-functional organization."}
+      </p>
+    </div>
+  `;
+}
+
+
+/* ============================================================================
+   WIRE UP
+   ============================================================================ */
+function wireUp(){
+  document.getElementById("search-input").addEventListener("input", e=>{
+    state.search = e.target.value.trim();
+    state.searchPulseUntil = performance.now() + 1500;
+    updateStats(); requestRedraw();
+  });
+  document.getElementById("btn-clear-search").onclick = ()=>{
+    document.getElementById("search-input").value = "";
+    state.search = ""; updateStats(); requestRedraw();
+  };
+  document.getElementById("btn-focus-search").onclick = ()=>{
+    if (!state.search) return;
+    // Prefer a label match for plain terms, fall back to any structured match
+    const s = state.search.toLowerCase();
+    const hit = state.graph.nodes.find(n=>(n.label||"").toLowerCase().includes(s))
+             || state.graph.nodes.find(n=>nodeMatchesSearch(n));
+    if (hit){ selectNode(hit.id); centerOnNode(hit.id); }
+  };
+
+  document.getElementById("layout-select").onchange = e=>{
+    applyLayout(e.target.value);
+    setTimeout(fitGraph, 60);
+  };
+  const clusterAttrSel = document.getElementById("cluster-attr");
+  if (clusterAttrSel){
+    clusterAttrSel.value = state.clusterAttr || "type";
+    clusterAttrSel.onchange = e=>{
+      state.clusterAttr = e.target.value;
+      if (state.layout === "cluster"){
+        applyLayout("cluster");
+        setTimeout(fitGraph, 60);
+      }
+    };
+  }
+  document.getElementById("btn-fit").onclick = fitGraph;
+  document.getElementById("btn-reset-view").onclick = resetView;
+  document.getElementById("btn-neighborhood").onclick = ()=>{
+    if (!state.selectedNode){ showToast("Select a node first","err"); return; }
+    state.showNeighborhoodOnly = !state.showNeighborhoodOnly;
+    updateStats(); requestRedraw();
+  };
+  document.getElementById("btn-clear-sel").onclick = clearSelection;
+
+  document.getElementById("btn-add-node").onclick = ()=>openNodeModal(null);
+  document.getElementById("btn-add-edge").onclick = ()=>openEdgeModal(null);
+  document.getElementById("btn-connect-mode").onclick = ()=>{
+    if (!state.selectedNode){ showToast("Select a source node first","err"); return; }
+    startConnect(state.selectedNode);
+  };
+  document.getElementById("btn-edit-sel").onclick = ()=>{
+    if (state.selectedNode) openNodeModal(findNode(state.selectedNode));
+    else if (state.selectedEdge) openEdgeModal(findEdge(state.selectedEdge));
+    else showToast("Nothing selected","err");
+  };
+  document.getElementById("btn-delete-sel").onclick = ()=>{
+    if (state.selectedNode){
+      const n = findNode(state.selectedNode);
+      if (n && confirm("Delete '"+n.label+"'?")) deleteNode(n.id);
+    } else if (state.selectedEdge){
+      if (confirm("Delete selected relationship?")) deleteEdge(state.selectedEdge);
+    } else showToast("Nothing selected","err");
+  };
+  document.getElementById("btn-undo").onclick = undo;
+  document.getElementById("btn-redo").onclick = redo;
+
+  // New file-based workflow
+  document.getElementById("btn-file-open").onclick = openFile;
+  document.getElementById("btn-file-save").onclick = saveFile;
+  document.getElementById("btn-file-save-as").onclick = saveFileAs;
+  // File chip in header doubles as a Save shortcut
+  document.getElementById("file-chip").onclick = saveFile;
+  // Modified chip lets the user update their stamped name
+  document.getElementById("modified-chip").onclick = ()=>{
+    getEditorName(true); // force prompt
+    updateModifiedChip();
+  };
+  // Keep the "Saved by · 2m ago" label fresh while the page sits open
+  setInterval(updateModifiedChip, 60*1000);
+  // Hidden file input for non-FSA browsers
+  document.getElementById("file-input").addEventListener("change", e=>{
+    if (e.target.files && e.target.files[0]) loadFileBlob(e.target.files[0]);
+    e.target.value = "";
+  });
+  document.getElementById("btn-sample").onclick = loadSample;
+  document.getElementById("btn-export-png").onclick = exportPng;
+  document.getElementById("btn-export-csv").onclick = exportCsv;
+  document.getElementById("btn-export-xlsx").onclick = exportXlsx;
+
+  document.getElementById("btn-snap-save").onclick = saveCurrentSnapshot;
+  document.getElementById("btn-help").onclick = openHelp;
+  document.getElementById("btn-value-brief").onclick = openValueBrief;
+  document.getElementById("btn-metrics").onclick = openMetricsModal;
+  document.getElementById("btn-data-quality").onclick = openDataQualityModal;
+  document.getElementById("btn-export-mermaid").onclick = exportMermaid;
+  document.getElementById("btn-import-mermaid").onclick = openMermaidImport;
+  document.getElementById("btn-recent").onclick = toggleRecentPopover;
+  // Org Chart banner exit button — restores the layout that was active
+  // before the user switched to Org Chart mode.
+  const ocClose = document.getElementById("org-chart-banner-close");
+  if (ocClose){
+    ocClose.onclick = () => {
+      const restoreTo = (state.orgChartSnapshot && state.orgChartSnapshot.layout) || "force";
+      const sel = document.getElementById("layout-select");
+      if (sel) sel.value = restoreTo;
+      applyLayout(restoreTo);
+    };
+  }
+  // Close Recently Viewed popover on outside click
+  __ergOn(document, "click", e => {
+    const pop = document.getElementById("recent-popover");
+    if (!pop || !pop.classList.contains("open")) return;
+    if (pop.contains(e.target)) return;
+    if (e.target.closest("#btn-recent")) return;
+    pop.classList.remove("open");
+    const rb = document.getElementById("btn-recent");
+    if (rb) rb.setAttribute("aria-expanded", "false");
+  });
+  // Load recently-viewed from storage on boot
+  loadRecentNodesFromStorage();
+  document.getElementById("btn-manage-types").onclick = openManageTypesModal;
+
+  document.getElementById("tb-zoom-in").onclick = ()=>{
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const wx = (w/2 - state.transform.x)/state.transform.scale;
+    const wy = (h/2 - state.transform.y)/state.transform.scale;
+    state.transform.scale = Math.min(4, state.transform.scale*1.2);
+    state.transform.x = w/2 - wx*state.transform.scale;
+    state.transform.y = h/2 - wy*state.transform.scale;
+    updateZoomLabel(); requestRedraw();
+  };
+  document.getElementById("tb-zoom-out").onclick = ()=>{
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const wx = (w/2 - state.transform.x)/state.transform.scale;
+    const wy = (h/2 - state.transform.y)/state.transform.scale;
+    state.transform.scale = Math.max(0.15, state.transform.scale/1.2);
+    state.transform.x = w/2 - wx*state.transform.scale;
+    state.transform.y = h/2 - wy*state.transform.scale;
+    updateZoomLabel(); requestRedraw();
+  };
+  document.getElementById("tb-fit").onclick = fitGraph;
+  document.getElementById("tb-reset").onclick = resetView;
+  document.getElementById("tb-undo").onclick = undo;
+  document.getElementById("tb-redo").onclick = redo;
+  // Edge-labels-always-on toggle (with localStorage persistence)
+  const edgeLabelsBtn = document.getElementById("tb-edge-labels");
+  function syncEdgeLabelBtn(){
+    edgeLabelsBtn.classList.toggle("active", state.showAllEdgeLabels);
+    edgeLabelsBtn.setAttribute("aria-pressed", state.showAllEdgeLabels ? "true" : "false");
+    edgeLabelsBtn.title = state.showAllEdgeLabels
+      ? "Hide edge labels (L)" : "Show all edge labels (L)";
+  }
+  syncEdgeLabelBtn();
+  edgeLabelsBtn.onclick = ()=>{
+    state.showAllEdgeLabels = !state.showAllEdgeLabels;
+    localStorage.setItem("erg.alwaysLabels", state.showAllEdgeLabels ? "1" : "0");
+    syncEdgeLabelBtn();
+    requestRedraw();
+    showToast(state.showAllEdgeLabels ? "Edge labels: always shown" : "Edge labels: on hover/select", "ok");
+  };
+  // Layout mode: drag-without-select (also toggled via Shift modifier per-drag)
+  const layoutBtn = document.getElementById("tb-layout-mode");
+  function syncLayoutBtn(){
+    layoutBtn.classList.toggle("active", state.layoutMode);
+    layoutBtn.setAttribute("aria-pressed", state.layoutMode ? "true" : "false");
+    canvas.classList.toggle("layout-mode", state.layoutMode);
+    document.getElementById("footer-mode").innerHTML = state.layoutMode
+      ? '<i class="fa-solid fa-up-down-left-right" aria-hidden="true"></i> Layout mode (M to exit)'
+      : "";
+    layoutBtn.title = state.layoutMode
+      ? "Exit layout mode (M)" : "Layout mode: drag nodes without selecting (M)";
+  }
+  syncLayoutBtn();
+  layoutBtn.onclick = ()=>{
+    state.layoutMode = !state.layoutMode;
+    syncLayoutBtn();
+    showToast(state.layoutMode
+      ? "Layout mode on: drag pins nodes in place. Selection won't change."
+      : "Layout mode off", "ok");
+    requestRedraw();
+  };
+  // Release all pinned positions
+  document.getElementById("tb-unpin").onclick = ()=>{
+    let count = 0;
+    state.positions.forEach(p => {
+      if (p.pinned){ p.pinned = false; p.fixed = false; count++; }
+    });
+    if (count === 0){ showToast("No pinned nodes", "err"); return; }
+    requestRedraw();
+    schedulePositionPersist(); // pin flags are part of the persisted layout
+    showToast("Released " + count + " pinned node" + (count===1?"":"s"), "ok");
+  };
+
+  document.getElementById("legend-toggle").onclick = ()=>{
+    const lg = document.getElementById("legend");
+    lg.classList.toggle("collapsed");
+    const collapsed = lg.classList.contains("collapsed");
+    const tg = document.getElementById("legend-toggle");
+    tg.textContent = collapsed ? "show" : "hide";
+    tg.setAttribute("aria-label", collapsed ? "Show legend" : "Hide legend");
+    tg.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    captureLegendCollapse();
+  };
+  const legendTablist = document.querySelector(".legend-tabs");
+  if (legendTablist) legendTablist.setAttribute("role", "tablist");
+  document.querySelectorAll(".legend-tab").forEach(tab=>{
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", tab.classList.contains("active") ? "true" : "false");
+    tab.onclick = ()=>{
+      document.querySelectorAll(".legend-tab").forEach(t=>{ t.classList.remove("active"); t.setAttribute("aria-selected","false"); });
+      tab.classList.add("active");
+      tab.setAttribute("aria-selected", "true");
+      const which = tab.dataset.tab;
+      document.getElementById("legend-grid-nodes").style.display = which==="nodes" ? "" : "none";
+      document.getElementById("legend-grid-edges").style.display = which==="edges" ? "" : "none";
+    };
+  });
+
+  document.getElementById("connect-banner-close").onclick = cancelConnect;
+  document.getElementById("path-banner-close").onclick = ()=>{ cancelPathFinding(); requestRedraw(); };
+  document.getElementById("btn-find-path").onclick = ()=>{
+    if (state.pathFinding.active){
+      cancelPathFinding();
+      requestRedraw();
+      showToast("Path-finder cancelled", "ok");
+    } else if (state.pathFinding.pathNodes.size > 0){
+      clearPath();
+      showToast("Path cleared", "ok");
+    } else {
+      startPathFinding();
+    }
+  };
+  document.getElementById("btn-collapse-all").onclick = collapseAllParents;
+  document.getElementById("btn-expand-all").onclick   = expandAllBranches;
+
+  // Section collapse (toggles aria-expanded so screen readers announce state)
+  document.querySelectorAll(".section-head").forEach(h=>{
+    h.onclick = ()=>{
+      const collapsed = h.parentElement.classList.toggle("collapsed");
+      h.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      captureSidebarCollapse();
+    };
+  });
+  // Filter all/none
+  document.getElementById("ntf-all").onclick = ()=>{ state.filtersNode = new Set(allNodeTypes()); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
+  document.getElementById("ntf-none").onclick = ()=>{ state.filtersNode = new Set(); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
+  document.getElementById("etf-all").onclick = ()=>{ state.filtersEdge = new Set(allEdgeTypes()); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
+  document.getElementById("etf-none").onclick = ()=>{ state.filtersEdge = new Set(); persistFilters(); buildFilterUI(); updateStats(); requestRedraw(); };
+
+  // ----- v1.1 feature wiring -----
+  document.getElementById("tb-heatmap").onclick = toggleHeatmap;
+  document.getElementById("btn-heatmap").onclick = toggleHeatmap;
+  document.getElementById("tb-dim-edges").onclick = toggleDimEdges;
+  setBtnActive("tb-dim-edges", state.dimEdges);
+  document.getElementById("btn-whatif").onclick  = ()=> state.whatif.active ? exitWhatif() : startWhatif();
+  document.getElementById("btn-spof").onclick    = ()=> state.spof.size ? clearSpof() : runSpof();
+  document.getElementById("btn-bulk-edit").onclick = openBulkEditModal;
+  document.getElementById("btn-view-save").onclick = saveView;
+  document.getElementById("btn-present-manage").onclick = openPresentManager;
+  document.getElementById("whatif-banner-close").onclick = exitWhatif;
+  document.getElementById("spof-banner-close").onclick    = clearSpof;
+  document.getElementById("scope-banner-close").onclick = clearScope;
+  document.getElementById("scope-select").onchange = e => { const v = e.target.value; if (v) scopeToBranch(v); else clearScope(); };
+  document.getElementById("present-prev").onclick = ()=>presentGoto(state.present.idx-1);
+  document.getElementById("present-next").onclick = ()=>presentGoto(state.present.idx+1);
+  document.getElementById("present-exit").onclick = exitPresent;
+  document.getElementById("present-play").onclick = presentTogglePlay;
+  document.getElementById("present-isolate").onclick = presentToggleIsolate;
+  renderViewList(); renderWalkthroughList();
+
+  // ----- Drag-and-drop JSON files onto the window to open them -----
+  const dropOverlay = document.getElementById("drop-overlay");
+  let dragDepth = 0;
+  __ergOn(window, "dragenter", e=>{
+    if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes("Files")) return;
+    dragDepth++;
+    dropOverlay.classList.add("active");
+  });
+  __ergOn(window, "dragleave", e=>{
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) dropOverlay.classList.remove("active");
+  });
+  __ergOn(window, "dragover", e=>{
+    if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files")){
+      e.preventDefault();
+    }
+  });
+  __ergOn(window, "drop", e=>{
+    e.preventDefault();
+    dragDepth = 0;
+    dropOverlay.classList.remove("active");
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!file) return;
+    if (!/\.json$/i.test(file.name)){
+      showToast("Drop a .json file to open", "err");
+      return;
+    }
+    loadFileBlob(file);
+  });
+
+  // ----- Resize canvas before/after print so the graph fills the page -----
+  __ergOn(window, "beforeprint", ()=>{
+    // Browser reflows layout for print between beforeprint and the actual print;
+    // queueing the resize lets us pick up the new canvas dimensions.
+    setTimeout(()=>{ resizeCanvas(); fitGraph(); render(); }, 0);
+  });
+  __ergOn(window, "afterprint", ()=>{
+    setTimeout(()=>{ resizeCanvas(); fitGraph(); }, 0);
+  });
+
+  // ----- Warn before unload if there are unsaved changes -----
+  __ergOn(window, "beforeunload", e=>{
+    if (state.dirty){
+      e.preventDefault();
+      e.returnValue = ""; // browsers show their default generic prompt
+      return "";
+    }
+  });
+
+  // Ctrl/Cmd+S to save
+  __ergOn(document, "keydown", e=>{
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") {
+      if (e.key === "Escape"){
+        if (state.connectingFrom) cancelConnect();
+        else if (modal.classList.contains("open")) closeModal(); // Esc closes the dialog even from a form field
+      }
+      return;
+    }
+    if (state.present.active){
+      if (e.key === "ArrowRight" || e.key === " "){ e.preventDefault(); presentGoto(state.present.idx+1); return; }
+      if (e.key === "ArrowLeft"){ e.preventDefault(); presentGoto(state.present.idx-1); return; }
+      if (e.key === "p" || e.key === "P"){ e.preventDefault(); presentTogglePlay(); return; }
+      if (e.key === "Escape"){ e.preventDefault(); exitPresent(); return; }
+      return;
+    }
+    if (e.key === "Escape"){
+      const recentPop = document.getElementById("recent-popover");
+      if (recentPop && recentPop.classList.contains("open")){
+        toggleRecentPopover();
+        const rb = document.getElementById("btn-recent"); if (rb) rb.focus();
+        return;
+      }
+      if (state.whatif.active){ exitWhatif(); return; }
+      if (state.spof.size){ clearSpof(); return; }
+      if (state.multiSelect.size){ state.multiSelect.clear(); updateStats(); requestRedraw(); return; }
+      if (state.connectingFrom){ cancelConnect(); return; }
+      if (state.pathFinding.active){ cancelPathFinding(); requestRedraw(); return; }
+      if (state.pathFinding.pathNodes.size > 0){ clearPath(); return; }
+      if (modal.classList.contains("open")) closeModal();
+      else clearSelection();
+      hideContextMenu();
+    } else if (modal.classList.contains("open")){
+      // A modal is open with focus on a non-field element (button, swatch...):
+      // swallow single-key shortcuts so n/e/c/Delete don't replace the modal
+      // or delete the selection underneath it. Escape is handled above.
+      return;
+    } else if (e.key === "?" || (e.shiftKey && e.key === "/")){
+      openHelp();
+    } else if (e.key === "f" || e.key === "F"){ fitGraph(); }
+    else if (e.key === "r" || e.key === "R"){ resetView(); }
+    else if (e.key === "l" || e.key === "L"){ document.getElementById("tb-edge-labels").click(); }
+    else if (e.key === "m" || e.key === "M"){ document.getElementById("tb-layout-mode").click(); }
+    else if (e.key === "h" || e.key === "H"){ document.getElementById("tb-heatmap").click(); }
+    else if (e.key === "c" || e.key === "C"){
+      if (state.selectedNode) startConnect(state.selectedNode);
+    } else if (e.key === "n" || e.key === "N"){
+      openNodeModal(null);
+    } else if (e.key === "e" || e.key === "E"){
+      if (state.selectedNode) openNodeModal(findNode(state.selectedNode));
+      else if (state.selectedEdge) openEdgeModal(findEdge(state.selectedEdge));
+    } else if ((e.key === "Delete" || e.key === "Backspace") && (state.selectedNode || state.selectedEdge)){
+      document.getElementById("btn-delete-sel").click();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z"){
+      e.preventDefault(); undo();
+    } else if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase()==="z"))){
+      e.preventDefault(); redo();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f"){
+      e.preventDefault(); document.getElementById("search-input").focus();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s"){
+      e.preventDefault(); saveFile();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o"){
+      e.preventDefault(); openFile();
+    }
+  });
+}
+
+/* ============================================================================
+   BOOTSTRAP
+   ============================================================================ */
+
+/* ============================================================================
+   v1.1 FEATURES: multi-select & bulk edit, staleness heatmap, what-if mode,
+   single-point-of-failure detection, saved views, presentation walkthroughs.
+   ========================================================================== */
+
+/* ----- Multi-selection & bulk edit ----- */
+function toggleMultiSelect(id){
+  if (state.multiSelect.has(id)) state.multiSelect.delete(id);
+  else state.multiSelect.add(id);
+  state.selectedNode = null; state.selectedEdge = null;
+  renderDetails(); updateStats(); requestRedraw();
+}
+function commitLassoSelection(){
+  const b = state.selectBox; if (!b) return;
+  const t = state.transform;
+  const toWorld = (sx,sy)=>({ x:(sx-t.x)/t.scale, y:(sy-t.y)/t.scale });
+  const a = toWorld(b.x0,b.y0), c = toWorld(b.x1,b.y1);
+  const minX=Math.min(a.x,c.x), maxX=Math.max(a.x,c.x);
+  const minY=Math.min(a.y,c.y), maxY=Math.max(a.y,c.y);
+  if (Math.abs(b.x1-b.x0) < 4 && Math.abs(b.y1-b.y0) < 4) return; // treat as click, not lasso
+  let added = 0;
+  visibleNodes().forEach(n=>{
+    const p = state.positions.get(n.id); if (!p) return;
+    if (p.x>=minX && p.x<=maxX && p.y>=minY && p.y<=maxY){ state.multiSelect.add(n.id); added++; }
+  });
+  if (added){ state.selectedNode = null; renderDetails(); }
+  updateStats(); requestRedraw();
+  if (added) showToast(added + " node" + (added===1?"":"s") + " added to selection (" + state.multiSelect.size + " total)", "ok");
+}
+function syncMultiUI(){
+  const btn = document.getElementById("btn-bulk-edit");
+  if (!btn) return;
+  const n = state.multiSelect.size;
+  btn.disabled = n === 0;
+  btn.innerHTML = n > 0
+    ? '<i class="fa-solid fa-layer-group"></i> Bulk edit ' + n + ' node' + (n===1?"":"s")
+    : '<i class="fa-solid fa-layer-group"></i> Bulk edit selection';
+}
+function openBulkEditModal(){
+  const ids = [...state.multiSelect];
+  if (!ids.length){ showToast("Select nodes first: Ctrl/Cmd+click, or Shift+drag a box", "err"); return; }
+  const typeOpts = allNodeTypes().map(t=>`<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join("");
+  // [field, label, kind]  kind: "select-type" | "text"
+  const FIELDS = [
+    ["type","Type","select-type"],
+    ["status","Status","text"],
+    ["owner","Owner","text"],
+    ["lead","Lead","text"],
+    ["directorate","Directorate","text"],
+    ["office","Office","text"],
+    ["platform","Platform","text"]
+  ];
+  const rows = FIELDS.map(([f,label,kind])=>{
+    const ctrl = kind==="select-type"
+      ? `<select id="be-val-${f}" disabled>${typeOpts}</select>`
+      : `<input type="text" id="be-val-${f}" disabled placeholder="New ${label.toLowerCase()} value" />`;
+    return `<div class="be-row">
+      <input type="checkbox" id="be-chk-${f}" aria-label="Change ${label}" />
+      <div class="be-field"><label class="be-name" for="be-val-${f}">${label}</label>${ctrl}</div>
+    </div>`;
+  }).join("");
+  const html = `
+    <div class="form-callout"><i class="fa-solid fa-circle-info"></i> Editing <strong>${ids.length}</strong> selected node${ids.length===1?"":"s"}. Tick a field to change it; unticked fields are left untouched on every node. Owner / Lead / Directorate / Office / Platform also re-sync their auto-edges.</div>
+    ${rows}
+    <div class="be-row">
+      <input type="checkbox" id="be-chk-tags" aria-label="Add tags" />
+      <div class="be-field"><label class="be-name" for="be-val-tags">Add tags (comma-separated, appended)</label>
+      <input type="text" id="be-val-tags" disabled placeholder="e.g. reorg-2026, review" /></div>
+    </div>`;
+  openModal('<i class="fa-solid fa-layer-group"></i> Bulk edit ' + ids.length + ' nodes', html, ()=>{
+    const fields = FIELDS.map(x=>x[0]).concat(["tags"]);
+    const active = fields.filter(f => document.getElementById("be-chk-"+f).checked);
+    if (!active.length){ showToast("Tick at least one field to change", "err"); return; }
+    const SYNC_FIELDS = new Set(["owner","lead","directorate","office","platform"]);
+    let changed = 0;
+    ids.forEach(id=>{
+      const node = findNode(id); if (!node) return;
+      active.forEach(f=>{
+        if (f === "tags"){
+          const add = document.getElementById("be-val-tags").value.split(",").map(s=>s.trim()).filter(Boolean);
+          const cur = new Set(node.tags || []);
+          add.forEach(t=>cur.add(t));
+          node.tags = [...cur];
+        } else {
+          node[f] = document.getElementById("be-val-"+f).value;
+        }
+      });
+      node.updatedAt = new Date().toISOString();
+      if (active.some(f => SYNC_FIELDS.has(f))) syncStructuralEdges(node);
+      changed++;
+    });
+    afterMutate();
+    closeModal();
+    showToast("Updated " + changed + " node" + (changed===1?"":"s"), "ok");
+  });
+  // enable each control only when its checkbox is ticked
+  [...document.querySelectorAll('[id^="be-chk-"]')].forEach(chk=>{
+    const f = chk.id.replace("be-chk-","");
+    const val = document.getElementById("be-val-"+f);
+    chk.addEventListener("change", ()=>{ val.disabled = !chk.checked; if (chk.checked) val.focus(); });
+  });
+}
+
+/* ----- Staleness heatmap ----- */
+const HEAT_BUCKETS = [
+  { max:7,   color:"#22C55E", label:"< 1 week" },
+  { max:30,  color:"#84CC16", label:"< 1 month" },
+  { max:90,  color:"#EAB308", label:"< 3 months" },
+  { max:180, color:"#F97316", label:"< 6 months" },
+  { max:Infinity, color:"#EF4444", label:"6 months +" }
+];
+const HEAT_NODATA = "#3A4658";
+function heatColor(n){
+  if (!n.updatedAt) return HEAT_NODATA;
+  const days = (Date.now() - new Date(n.updatedAt).getTime()) / 86400000;
+  if (isNaN(days)) return HEAT_NODATA;
+  for (const b of HEAT_BUCKETS){ if (days < b.max) return b.color; }
+  return "#EF4444";
+}
+function buildHeatmapLegend(ln, le){
+  const add = (color,label)=>{
+    const item = document.createElement("div");
+    item.className = "legend-item";
+    item.innerHTML = `<span class="legend-icon" style="background:${color}"></span><span>${escapeHtml(label)}</span>`;
+    ln.appendChild(item);
+  };
+  HEAT_BUCKETS.forEach(b=>add(b.color, b.label));
+  add(HEAT_NODATA, "No edit date yet");
+  // keep edge legend populated so the Edge Styles tab still works
+  Object.keys(EDGE_STYLE).forEach(cat=>{
+    const es = edgeCategoryStyle(cat); // theme-aware swatch color
+    const dashCss = es.dash.length ? es.dash.join(" ") : "none";
+    const item = document.createElement("div");
+    item.className = "legend-item";
+    item.innerHTML = `<svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="${es.color.replace(/[\d.]+\)$/,'0.95)')}" stroke-width="${es.width+0.5}" stroke-dasharray="${dashCss}"/></svg><span>${escapeHtml(es.label)}</span>`;
+    le.appendChild(item);
+  });
+  if (state.flaggedEdges && state.flaggedEdges.size){
+    const ri = document.createElement("div");
+    ri.className = "legend-item";
+    ri.innerHTML = `<svg width="28" height="12"><line x1="2" y1="6" x2="26" y2="6" stroke="#F59E0B" stroke-width="2.4" stroke-dasharray="6 4"/></svg><span>Potential issue (${state.flaggedEdges.size})</span>`;
+    le.appendChild(ri);
+  }
+}
+function setBtnActive(id, on){
+  const el = document.getElementById(id);
+  if (el){
+    el.classList.toggle("active", !!on);
+    el.setAttribute("aria-pressed", on ? "true" : "false"); // expose toggle state to AT
+  }
+}
+// Lower an rgba edge color's alpha so relationships recede into the dark
+// background — keeps the category hue but stops bright lines dominating.
+function muteEdgeColor(c){
+  return /rgba?\(/.test(c) ? c.replace(/[\d.]+\)$/, "0.18)") : c;
+}
+function toggleDimEdges(){
+  state.dimEdges = !state.dimEdges;
+  localStorage.setItem("erg.dimEdges", state.dimEdges ? "1" : "0");
+  setBtnActive("tb-dim-edges", state.dimEdges);
+  requestRedraw();
+  showToast(state.dimEdges ? "Relationships dimmed — hover or select a node to light its connections" : "Relationships at full brightness", "ok");
+}
+function toggleHeatmap(){
+  state.heatmap = !state.heatmap;
+  setBtnActive("tb-heatmap", state.heatmap);
+  setBtnActive("btn-heatmap", state.heatmap);
+  buildLegend();
+  requestRedraw();
+  showToast(state.heatmap ? "Staleness heatmap on — nodes tinted by time since last edit" : "Staleness heatmap off", "ok");
+}
+
+/* ----- What-if scenario mode ----- */
+function startWhatif(){
+  if (state.spof.size) clearSpof();
+  state.whatif.active = true;
+  state.whatif.disabled.clear();
+  state.whatif.affected.clear();
+  state.whatif.orphaned.clear();
+  setBtnActive("btn-whatif", true);
+  document.getElementById("whatif-banner").style.display = "";
+  showToast("What-if mode: click nodes to disable them. Broken dependents turn red; orphaned children turn amber. Nothing is saved.", "ok");
+  requestRedraw();
+}
+function exitWhatif(){
+  state.whatif.active = false;
+  state.whatif.disabled.clear();
+  state.whatif.affected.clear();
+  state.whatif.orphaned.clear();
+  setBtnActive("btn-whatif", false);
+  const ban = document.getElementById("whatif-banner");
+  if (ban) ban.style.display = "none";
+  requestRedraw();
+}
+function toggleWhatifNode(id){
+  if (state.whatif.disabled.has(id)) state.whatif.disabled.delete(id);
+  else state.whatif.disabled.add(id);
+  recomputeWhatifAffected();
+  const ban = document.getElementById("whatif-banner-text");
+  if (ban){
+    const d = state.whatif.disabled.size, a = state.whatif.affected.size, o = state.whatif.orphaned.size;
+    ban.textContent = d === 0
+      ? "What-if mode: click nodes to disable them and see the impact cascade"
+      : `${d} disabled · ${a} broken (red) · ${o} orphaned (amber)`;
+  }
+  requestRedraw();
+}
+// Edges that mean "this node belongs to / sits under" another node. Disabling
+// a parent orphans everything reachable down these, recursively.
+const WHATIF_ORPHAN_DOWN = ["CONTAINS","OWNS","MANAGES","HAS_SITE","HAS_TEAM","HAS_O365_GROUP","HAS_MAILBOX","HAS_FORM"];
+function recomputeWhatifAffected(){
+  const disabled = state.whatif.disabled;
+
+  // 1) ORPHAN cascade (amber): everything structurally under the disabled
+  //    nodes, traced all the way down the tree. Two link shapes count:
+  //    - parent CONTAINS/OWNS/MANAGES/HAS_* child   (disabled is the source)
+  //    - child REPORTS_TO parent                     (disabled is the target)
+  const orphaned = new Set();
+  let frontier = new Set(disabled);
+  let seen = new Set(disabled);
+  while (frontier.size){
+    const next = new Set();
+    for (const cur of frontier){
+      for (const e of state.graph.edges){
+        if (e.source === cur && WHATIF_ORPHAN_DOWN.includes(e.type) && !seen.has(e.target)){
+          seen.add(e.target); next.add(e.target); orphaned.add(e.target);
+        }
+        if (e.target === cur && e.type === "REPORTS_TO" && !seen.has(e.source)){
+          seen.add(e.source); next.add(e.source); orphaned.add(e.source);
+        }
+      }
+    }
+    frontier = next;
+  }
+
+  // 2) DEPENDENCY breakage (red): anything that depends on something now gone
+  //    — seeded from the disabled nodes AND their orphaned descendants, so a
+  //    break propagates all the way up the chain. Transitive.
+  const gone = new Set([...disabled, ...orphaned]);
+  const affected = new Set();
+  frontier = new Set(gone);
+  seen = new Set(gone);
+  while (frontier.size){
+    const next = new Set();
+    for (const cur of frontier){
+      for (const e of state.graph.edges){
+        if (e.target === cur && IMPACT_DEPENDENCY_EDGES.includes(e.type) && !seen.has(e.source)){
+          seen.add(e.source); next.add(e.source); affected.add(e.source);
+        }
+      }
+    }
+    frontier = next;
+  }
+
+  disabled.forEach(d=>{ affected.delete(d); orphaned.delete(d); });
+  orphaned.forEach(id=>affected.delete(id)); // orphaned (structural) wins over broken for color
+  state.whatif.affected = affected;
+  state.whatif.orphaned = orphaned;
+}
+
+/* ----- Single point of failure detection (articulation points, undirected) ----- */
+function computeArticulationPoints(){
+  const adj = new Map();
+  state.graph.nodes.forEach(n=>adj.set(n.id, []));
+  state.graph.edges.forEach(e=>{
+    if (adj.has(e.source) && adj.has(e.target)){
+      adj.get(e.source).push(e.target);
+      adj.get(e.target).push(e.source);
+    }
+  });
+  const disc = new Map(), low = new Map(), visited = new Set(), ap = new Set();
+  let timer = 0;
+  function dfs(u, parent){
+    visited.add(u); disc.set(u, timer); low.set(u, timer); timer++;
+    let children = 0;
+    for (const v of adj.get(u)){
+      if (v === parent) continue;
+      if (!visited.has(v)){
+        children++;
+        dfs(v, u);
+        low.set(u, Math.min(low.get(u), low.get(v)));
+        if (parent !== null && low.get(v) >= disc.get(u)) ap.add(u);
+      } else {
+        low.set(u, Math.min(low.get(u), disc.get(v)));
+      }
+    }
+    if (parent === null && children > 1) ap.add(u);
+  }
+  state.graph.nodes.forEach(n=>{ if (!visited.has(n.id)) dfs(n.id, null); });
+  return [...ap];
+}
+function runSpof(){
+  if (state.whatif.active) exitWhatif();
+  const aps = computeArticulationPoints();
+  state.spof = new Set(aps);
+  const ban = document.getElementById("spof-banner");
+  setBtnActive("btn-spof", aps.length > 0);
+  if (!aps.length){
+    if (ban) ban.style.display = "none";
+    showToast("No single points of failure — the graph has no articulation points", "ok");
+    requestRedraw();
+    return;
+  }
+  document.getElementById("spof-banner-text").textContent =
+    aps.length + " single point" + (aps.length===1?"":"s") + " of failure highlighted (amber rings)";
+  if (ban) ban.style.display = "";
+  requestRedraw();
+  // List them, clickable
+  const rows = aps.map(id=>{
+    const n = findNode(id); if (!n) return "";
+    const deg = state.graph.edges.filter(e=>e.source===id||e.target===id).length;
+    return `<tr><td>${mEntityLink(n,{includeType:true})}</td><td style="color:var(--muted); font-size:11px;">${deg} connection${deg===1?"":"s"}</td></tr>`;
+  }).join("");
+  const html = `
+    <p class="m-lede">These nodes are <strong>articulation points</strong>: removing any one of them splits the graph into disconnected pieces. They're structural chokepoints — worth extra resilience, documentation, and succession planning. Click any to jump to it.</p>
+    <table class="m-table"><thead><tr><th>Entity</th><th>Degree</th></tr></thead><tbody>${rows}</tbody></table>`;
+  openModal('<i class="fa-solid fa-triangle-exclamation"></i> ' + aps.length + ' single point' + (aps.length===1?"":"s") + ' of failure', html, null, true);
+  const saveBtn = document.getElementById("modal-save");
+  if (saveBtn) saveBtn.style.display = "none";
+  wireEntityLinks(document.getElementById("modal-body"));
+}
+function clearSpof(){
+  state.spof.clear();
+  setBtnActive("btn-spof", false);
+  const ban = document.getElementById("spof-banner");
+  if (ban) ban.style.display = "none";
+  requestRedraw();
+}
+
+/* Wire clickable entity links inside a freshly rendered modal body */
+function wireEntityLinks(root){
+  if (!root) return;
+  root.querySelectorAll(".m-entity-link").forEach(el=>{
+    const go = ()=>{
+      const id = el.getAttribute("data-node-id");
+      const n = findNode(id);
+      closeModal();
+      if (!n){ showToast("That entity no longer exists", "err"); return; }
+      selectNode(id); centerOnNode(id);
+    };
+    el.addEventListener("click", go);
+    el.addEventListener("keydown", e=>{ if (e.key==="Enter" || e.key===" "){ e.preventDefault(); go(); } });
+  });
+}
+
+/* ----- Saved views (filters + layout + camera; stored in the graph file) ----- */
+function getViews(){
+  if (!Array.isArray(state.graph.views)) state.graph.views = [];
+  return state.graph.views;
+}
+function captureView(name){
+  return {
+    id: uid("view"),
+    name,
+    ts: Date.now(),
+    filtersNode: [...state.filtersNode],
+    filtersEdge: [...state.filtersEdge],
+    layout: state.layout,
+    clusterAttr: state.clusterAttr,
+    transform: { x:state.transform.x, y:state.transform.y, scale:state.transform.scale },
+    selectedNode: state.selectedNode,
+    showNeighborhoodOnly: state.showNeighborhoodOnly,
+    showAllEdgeLabels: state.showAllEdgeLabels
+  };
+}
+function saveView(){
+  const name = (prompt("Name this view (e.g. \"Data flows only\", \"Exec org chart\"):", "") || "").trim();
+  if (!name) return;
+  getViews().push(captureView(name));
+  persist(); markDirty();
+  renderViewList();
+  showToast('View "' + name + '" saved', "ok");
+}
+function applyView(id){
+  const v = getViews().find(x=>x.id===id);
+  if (!v){ showToast("View not found", "err"); return; }
+  state.filtersNode = new Set(v.filtersNode || allNodeTypes());
+  state.filtersEdge = new Set(v.filtersEdge || allEdgeTypes());
+  state.clusterAttr = v.clusterAttr || "type";
+  const clSel = document.getElementById("cluster-attr"); if (clSel) clSel.value = state.clusterAttr;
+  if (v.layout){
+    const sel = document.getElementById("layout-select"); if (sel) sel.value = v.layout;
+    // skipFit: the view restores its own camera below; don't let the layout's
+    // deferred auto-fit clobber the restored zoom/pan.
+    applyLayout(v.layout, true);
+  }
+  state.showAllEdgeLabels = !!v.showAllEdgeLabels;
+  setBtnActive("tb-edge-labels", state.showAllEdgeLabels);
+  state.showNeighborhoodOnly = !!v.showNeighborhoodOnly;
+  state.selectedNode = (v.selectedNode && findNode(v.selectedNode)) ? v.selectedNode : state.selectedNode;
+  if (v.transform){ state.transform = { x:v.transform.x, y:v.transform.y, scale:v.transform.scale }; }
+  buildFilterUI(); buildLegend(); updateStats(); renderDetails();
+  updateZoomLabel(); requestRedraw();
+  showToast('View "' + v.name + '" applied', "ok");
+}
+function deleteView(id){
+  const arr = getViews();
+  const idx = arr.findIndex(x=>x.id===id);
+  if (idx < 0) return;
+  const nm = arr[idx].name;
+  arr.splice(idx,1);
+  persist(); markDirty();
+  renderViewList();
+  showToast('View "' + nm + '" deleted', "ok");
+}
+function renderViewList(){
+  const container = document.getElementById("view-list-container");
+  if (!container) return;
+  const views = getViews();
+  if (!views.length){
+    container.innerHTML = `<div class="snap-empty">No saved views yet. Set your filters, layout and zoom, then save one.</div>`;
+    return;
+  }
+  container.innerHTML = `<div class="snap-list">${views.slice().sort((a,b)=>b.ts-a.ts).map(v=>`
+    <div class="snap-item" data-id="${v.id}">
+      <div style="flex:1; min-width:0; overflow:hidden">
+        <div class="snap-name">${escapeHtml(v.name)}</div>
+        <div class="snap-meta">${escapeHtml(v.layout||"force")} · ${(v.filtersNode||[]).length} node types</div>
+      </div>
+      <div class="snap-actions">
+        <button class="icon-btn" data-act="apply" title="Apply view"><i class="fa-solid fa-eye"></i></button>
+        <button class="icon-btn danger" data-act="del" title="Delete view"><i class="fa-solid fa-trash"></i></button>
+      </div>
+    </div>`).join("")}</div>`;
+  container.querySelectorAll(".snap-item").forEach(item=>{
+    const id = item.getAttribute("data-id");
+    item.querySelector('[data-act="apply"]').onclick = e=>{ e.stopPropagation(); applyView(id); };
+    item.querySelector('[data-act="del"]').onclick   = e=>{ e.stopPropagation(); if (confirm("Delete this view?")) deleteView(id); };
+    item.onclick = ()=>applyView(id);
+  });
+}
+
+/* ----- Presentation / walkthrough mode (stored in the graph file) ----- */
+function getWalkthroughs(){
+  if (!Array.isArray(state.graph.walkthroughs)) state.graph.walkthroughs = [];
+  return state.graph.walkthroughs;
+}
+/* Smooth camera keyframe tween for presentation / relationship walks. */
+let _camAnim = null;
+function animateCameraTo(px, py, dur){
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  const fromX = state.transform.x, fromY = state.transform.y, fromS = state.transform.scale;
+  const toS = Math.max(fromS, 1.05);
+  const toX = w/2 - px*toS, toY = h/2 - py*toS;
+  if (PREFERS_REDUCED_MOTION){
+    // Jump-cut instead of tweening for users who opt out of motion
+    state.transform.x = toX; state.transform.y = toY; state.transform.scale = toS;
+    updateZoomLabel(); requestRedraw();
+    return;
+  }
+  if (_camAnim) cancelAnimationFrame(_camAnim);
+  const t0 = performance.now(); dur = dur || 650;
+  const ease = t => 1 - Math.pow(1 - t, 4);
+  (function step(now){
+    const t = Math.min(1, (now - t0) / dur), e = ease(t);
+    state.transform.x = fromX + (toX - fromX) * e;
+    state.transform.y = fromY + (toY - fromY) * e;
+    state.transform.scale = fromS + (toS - fromS) * e;
+    updateZoomLabel(); requestRedraw();
+    _camAnim = (t < 1) ? requestAnimationFrame(step) : null;
+  })(performance.now());
+}
+function centerOnNodeAnimated(id){
+  const p = state.positions.get(id);
+  if (!p){ centerOnNode(id); return; }
+  animateCameraTo(p.x, p.y, 650);
+}
+/* Build an on-the-fly walkthrough of a node and each of its relationships. */
+function walkRelationships(nodeId){
+  const node = findNode(nodeId);
+  if (!node){ showToast("Pick a node first", "err"); return; }
+  const rels = state.graph.edges.filter(e => e.source === nodeId || e.target === nodeId);
+  if (!rels.length){ showToast(node.label + " has no relationships to walk", "err"); return; }
+  const steps = [{ nodeId, note: node.type + (node.description ? " — " + node.description : "")
+    + "\n\nWalking " + rels.length + " relationship" + (rels.length === 1 ? "" : "s") + ". Arrow keys to step, or press Auto." }];
+  rels.forEach(e => {
+    const out = e.source === nodeId;
+    const otherId = out ? e.target : e.source;
+    const other = findNode(otherId);
+    if (!other) return;
+    const line = out ? (node.label + " —" + e.type + "→ " + other.label)
+                     : (other.label + " —" + e.type + "→ " + node.label);
+    steps.push({ nodeId: otherId, note: line + (e.description ? "\n" + e.description : "")
+      + (other.description ? "\n\n" + other.label + ": " + other.description : "") });
+  });
+  startPresent(steps);
+}
+/* Auto-advance for presentation. */
+function presentScheduleNext(){
+  clearTimeout(state.present.timer);
+  if (!state.present.playing || !state.present.active) return;
+  state.present.timer = setTimeout(() => {
+    if (state.present.idx < state.present.steps.length - 1){ presentGoto(state.present.idx + 1); }
+    else { state.present.playing = false; updatePresentPlayBtn(); }
+  }, 3800);
+}
+function updatePresentPlayBtn(){
+  const b = document.getElementById("present-play");
+  if (!b) return;
+  b.innerHTML = state.present.playing ? '<i class="fa-solid fa-pause"></i> Pause' : '<i class="fa-solid fa-play"></i> Auto';
+}
+function presentTogglePlay(){
+  state.present.playing = !state.present.playing;
+  updatePresentPlayBtn();
+  presentScheduleNext();
+}
+function updatePresentIsolateBtn(){
+  const b = document.getElementById("present-isolate");
+  if (!b) return;
+  const on = state.present.isolate;
+  b.innerHTML = (on ? '<i class="fa-solid fa-eye"></i>' : '<i class="fa-solid fa-eye-slash"></i>') + " Isolate";
+  b.classList.toggle("active", on);
+}
+function presentToggleIsolate(){
+  state.present.isolate = !state.present.isolate;
+  updatePresentIsolateBtn();
+  updateStats(); requestRedraw();
+}
+
+function startPresent(steps){
+  const valid = (steps||[]).filter(s=>s && s.nodeId && findNode(s.nodeId));
+  if (!valid.length){ showToast("This walkthrough has no valid steps", "err"); return; }
+  state.present = { active:true, steps:valid, idx:0, playing:false, timer:null, isolate:true, focusIds:new Set(valid.map(s=>s.nodeId)) };
+  const ov = document.getElementById("present-overlay");
+  ov.classList.add("active"); ov.setAttribute("aria-hidden","false");
+  updatePresentPlayBtn();
+  updatePresentIsolateBtn();
+  presentGoto(0);
+  // Move focus into the overlay so keyboard/SR users land on the controls
+  const nextBtn = document.getElementById("present-next");
+  if (nextBtn) nextBtn.focus();
+}
+function presentGoto(i){
+  const steps = state.present.steps;
+  if (!steps || !steps.length) return;
+  i = Math.max(0, Math.min(steps.length-1, i));
+  state.present.idx = i;
+  const st = steps[i];
+  const node = findNode(st.nodeId);
+  if (node){ selectNode(st.nodeId); centerOnNodeAnimated(st.nodeId); }
+  const noteEl = document.getElementById("present-note");
+  noteEl.innerHTML =
+    (node ? `<div class="pn-title">${escapeHtml(node.label)} <span style="font-size:13px; color:var(--muted); font-weight:500;">${escapeHtml(node.type)}</span></div>` : "")
+    + (st.note ? `<div class="pn-body">${escapeHtml(st.note)}</div>` : `<div class="pn-empty">No narration for this step.</div>`);
+  document.getElementById("present-progress").textContent = (i+1) + " / " + steps.length;
+  document.getElementById("present-prev").disabled = (i===0);
+  document.getElementById("present-next").disabled = (i===steps.length-1);
+  presentScheduleNext();
+}
+function exitPresent(){
+  clearTimeout(state.present.timer);
+  state.present = { active:false, steps:[], idx:0, playing:false, timer:null, isolate:true, focusIds:null };
+  const ov = document.getElementById("present-overlay");
+  ov.classList.remove("active"); ov.setAttribute("aria-hidden","true");
+  canvas.focus(); // return focus from the dismissed overlay
+  updateStats(); requestRedraw();
+}
+function openPresentManager(){
+  const wts = getWalkthroughs();
+  const list = !wts.length
+    ? `<div class="snap-empty" style="margin-bottom:12px">No walkthroughs yet. Build one below.</div>`
+    : `<div class="snap-list" style="margin-bottom:12px">${wts.map(w=>`
+        <div class="snap-item wt-item" data-id="${w.id}">
+          <div style="flex:1; min-width:0; overflow:hidden">
+            <div class="snap-name">${escapeHtml(w.name)}</div>
+            <div class="snap-meta">${(w.steps||[]).length} step${(w.steps||[]).length===1?"":"s"}</div>
+          </div>
+          <div class="snap-actions">
+            <button class="icon-btn" data-act="play" title="Play"><i class="fa-solid fa-play"></i></button>
+            <button class="icon-btn" data-act="edit" title="Edit"><i class="fa-solid fa-pen"></i></button>
+            <button class="icon-btn danger" data-act="del" title="Delete"><i class="fa-solid fa-trash"></i></button>
+          </div>
+        </div>`).join("")}</div>`;
+  const html = `
+    <p class="m-lede">Walkthroughs are saved guided tours: an ordered list of nodes, each with a sentence of narration. Play one to step through it fullscreen with the arrow keys — ideal for briefings.</p>
+    ${list}
+    <button class="btn primary block" id="wt-new"><i class="fa-solid fa-plus"></i> New walkthrough</button>`;
+  openModal('<i class="fa-solid fa-chalkboard-user"></i> Walkthroughs', html, null, true);
+  const saveBtn = document.getElementById("modal-save");
+  if (saveBtn) saveBtn.style.display = "none";
+  document.getElementById("wt-new").onclick = ()=>openWalkthroughBuilder(null);
+  document.querySelectorAll("#modal-body .snap-item").forEach(item=>{
+    const id = item.getAttribute("data-id");
+    const w = wts.find(x=>x.id===id);
+    item.querySelector('[data-act="play"]').onclick = e=>{ e.stopPropagation(); closeModal(); startPresent(w.steps); };
+    item.querySelector('[data-act="edit"]').onclick = e=>{ e.stopPropagation(); openWalkthroughBuilder(id); };
+    item.querySelector('[data-act="del"]').onclick  = e=>{ e.stopPropagation(); if (confirm("Delete walkthrough \"" + w.name + "\"?")){ const arr=getWalkthroughs(); arr.splice(arr.findIndex(x=>x.id===id),1); persist(); markDirty(); renderWalkthroughList(); openPresentManager(); } };
+  });
+}
+function openWalkthroughBuilder(id){
+  const existing = id ? getWalkthroughs().find(w=>w.id===id) : null;
+  const draft = {
+    name: existing ? existing.name : "",
+    steps: existing ? existing.steps.map(s=>({ nodeId:s.nodeId, note:s.note||"" })) : []
+  };
+  const nodeOptions = sel => state.graph.nodes.slice()
+    .sort((a,b)=>a.label.localeCompare(b.label))
+    .map(n=>`<option value="${escapeHtml(n.id)}" ${n.id===sel?"selected":""}>${escapeHtml(n.label)} (${escapeHtml(n.type)})</option>`).join("");
+  function renderSteps(){
+    const wrap = document.getElementById("wt-steps");
+    if (!draft.steps.length){
+      wrap.innerHTML = `<div class="snap-empty">No steps yet. Add the first one below.</div>`;
+      return;
+    }
+    wrap.innerHTML = draft.steps.map((st,i)=>`
+      <div class="step-row" data-i="${i}">
+        <span class="step-num">${i+1}</span>
+        <select class="step-node" aria-label="Step ${i+1} node">${nodeOptions(st.nodeId)}</select>
+        <input type="text" class="step-note" aria-label="Step ${i+1} narration" placeholder="Narration…" value="${escapeHtml(st.note||"")}" />
+        <button class="icon-btn" data-act="up" title="Move up" aria-label="Move step ${i+1} up"><i class="fa-solid fa-arrow-up" aria-hidden="true"></i></button>
+        <button class="icon-btn" data-act="down" title="Move down" aria-label="Move step ${i+1} down"><i class="fa-solid fa-arrow-down" aria-hidden="true"></i></button>
+        <button class="icon-btn danger" data-act="rm" title="Remove" aria-label="Remove step ${i+1}"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button>
+      </div>`).join("");
+    wrap.querySelectorAll(".step-row").forEach(row=>{
+      const i = +row.getAttribute("data-i");
+      row.querySelector(".step-node").onchange = e=>{ draft.steps[i].nodeId = e.target.value; };
+      row.querySelector(".step-note").oninput  = e=>{ draft.steps[i].note = e.target.value; };
+      row.querySelector('[data-act="rm"]').onclick   = ()=>{ draft.steps.splice(i,1); renderSteps(); };
+      row.querySelector('[data-act="up"]').onclick   = ()=>{ if (i>0){ [draft.steps[i-1],draft.steps[i]]=[draft.steps[i],draft.steps[i-1]]; renderSteps(); } };
+      row.querySelector('[data-act="down"]').onclick = ()=>{ if (i<draft.steps.length-1){ [draft.steps[i+1],draft.steps[i]]=[draft.steps[i],draft.steps[i+1]]; renderSteps(); } };
+    });
+  }
+  const html = `
+    <div class="field"><label for="wt-name">Walkthrough name</label>
+      <input type="text" id="wt-name" placeholder="e.g. New-hire orientation tour" value="${escapeHtml(draft.name)}" /></div>
+    <div id="wt-steps" style="margin:10px 0"></div>
+    <button class="btn block" id="wt-add"><i class="fa-solid fa-plus"></i> Add step</button>`;
+  openModal((existing?'<i class="fa-solid fa-pen"></i> Edit walkthrough':'<i class="fa-solid fa-plus"></i> New walkthrough'), html, ()=>{
+    const name = document.getElementById("wt-name").value.trim();
+    if (!name){ showToast("Name is required", "err"); return; }
+    if (!draft.steps.length){ showToast("Add at least one step", "err"); return; }
+    const arr = getWalkthroughs();
+    if (existing){ existing.name = name; existing.steps = draft.steps; }
+    else arr.push({ id: uid("wt"), name, steps: draft.steps });
+    persist(); markDirty();
+    renderWalkthroughList();
+    closeModal();
+    showToast('Walkthrough "' + name + '" saved', "ok");
+  }, true);
+  document.getElementById("wt-add").onclick = ()=>{
+    const def = state.selectedNode || (state.graph.nodes[0] && state.graph.nodes[0].id);
+    draft.steps.push({ nodeId: def, note: "" });
+    renderSteps();
+  };
+  renderSteps();
+}
+function renderWalkthroughList(){
+  const container = document.getElementById("walkthrough-list-container");
+  if (!container) return;
+  const wts = getWalkthroughs();
+  if (!wts.length){
+    container.innerHTML = `<div class="snap-empty">No walkthroughs yet.</div>`;
+    return;
+  }
+  container.innerHTML = `<div class="snap-list">${wts.map(w=>`
+    <div class="snap-item wt-item" data-id="${w.id}">
+      <div style="flex:1; min-width:0; overflow:hidden">
+        <div class="snap-name">${escapeHtml(w.name)}</div>
+        <div class="snap-meta">${(w.steps||[]).length} step${(w.steps||[]).length===1?"":"s"}</div>
+      </div>
+      <div class="snap-actions">
+        <button class="icon-btn" data-act="play" title="Play"><i class="fa-solid fa-play"></i></button>
+        <button class="icon-btn" data-act="edit" title="Edit"><i class="fa-solid fa-pen"></i></button>
+        <button class="icon-btn danger" data-act="del" title="Delete"><i class="fa-solid fa-trash"></i></button>
+      </div>
+    </div>`).join("")}</div>`;
+  container.querySelectorAll(".snap-item").forEach(item=>{
+    const id = item.getAttribute("data-id");
+    const w = wts.find(x=>x.id===id);
+    item.querySelector('[data-act="play"]').onclick = e=>{ e.stopPropagation(); startPresent(w.steps); };
+    item.querySelector('[data-act="edit"]').onclick = e=>{ e.stopPropagation(); openWalkthroughBuilder(id); };
+    item.querySelector('[data-act="del"]').onclick  = e=>{ e.stopPropagation(); if (confirm('Delete walkthrough "' + w.name + '"?')){ const arr=getWalkthroughs(); arr.splice(arr.findIndex(x=>x.id===id),1); persist(); markDirty(); renderWalkthroughList(); } };
+  });
+}
+
+function currentTheme(){ return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark"; }
+function applyTheme(theme, persist){
+  if (theme === "light") document.documentElement.setAttribute("data-theme", "light");
+  else document.documentElement.removeAttribute("data-theme");
+  CANVAS_COLORS = (theme === "light") ? CANVAS_COLORS_LIGHT : CANVAS_COLORS_DARK;
+  // Legend swatches bake in theme-aware edge colors — rebuild on switch.
+  if (typeof buildLegend === "function" && state.graph) buildLegend();
+  if (persist !== false){ try { localStorage.setItem("erg.theme", theme); } catch(e){} }
+  const btn = document.getElementById("btn-theme");
+  if (btn){
+    const dark = theme !== "light";
+    btn.innerHTML = '<i class="fa-solid fa-' + (dark ? "sun" : "moon") + '"></i>';
+    btn.title = dark ? "Switch to light mode" : "Switch to dark mode";
+    btn.setAttribute("aria-label", btn.title);
+  }
+  if (typeof requestRedraw === "function") requestRedraw();
+}
+function toggleTheme(){ applyTheme(currentTheme() === "light" ? "dark" : "light", true); }
+function boot(){
+  loadInitial();
+  wireUp();
+  document.getElementById("btn-theme").addEventListener("click", toggleTheme);
+  applyTheme(currentTheme(), false);
+  resizeCanvas();
+  // Restore the saved arrangement from the localStorage cache (if present)
+  // BEFORE ensurePositions hands out random spots.
+  const restoredPos = restorePositionsFromGraph();
+  ensurePositions();
+  buildFilterUI(); buildLegend();
+  updateStats(); updateZoomLabel();
+  renderDetails(); renderSnapList();
+  if (!restoredPos) applyLayout(state.layout);
+  // initial history baseline
+  state.history = [snapshot()]; state.historyIndex = 0;
+  updateUndoRedo();
+  // pre-warm force layout (more iterations to let the looser constants settle);
+  // skip when positions were restored — the saved arrangement IS the warm state.
+  if (!restoredPos) for (let i=0;i<400;i++) simulateStep();
+  setTimeout(fitGraph, 60);
+  // load FA font then start render loop
+  if (document.fonts && document.fonts.load){
+    Promise.race([
+      Promise.all([
+        document.fonts.load('900 14px "Font Awesome 6 Free"'),
+        document.fonts.load('400 14px "Font Awesome 6 Brands"')
+      ]),
+      new Promise(res => setTimeout(res, 3000))
+    ]).then(()=>{
+      state.fontsReady = true;
+      requestRedraw();
+    });
+  } else {
+    state.fontsReady = false;
+  }
+  rafActive = true;
+  requestAnimationFrame(tick);
+  // Boot from localStorage means we have no file open; treat as clean
+  // recovery cache (don't show "unsaved" until the user actually edits).
+  state.fileHandle = null; state.fileName = null; state.dirty = false;
+  updateFileChip();
+  syncFindPathBtn();
+  // first-time hint
+  if ((!host || host.mode !== "sharepoint") && !localStorage.getItem("erg.tour-seen")){
+    setTimeout(()=>{
+      const fsa = FSA_SUPPORTED ? "" : " (your browser doesn't support save-to-file; downloads will be used instead)";
+      showToast("Press ? for help, or open a JSON file to start" + fsa, "ok");
+      localStorage.setItem("erg.tour-seen", "1");
+    }, 600);
+  }
+  // Apply persisted UI prefs (sidebar section + legend collapse states)
+  restoreUIState();
+  if (!host || host.mode !== "sharepoint") tryReopenLast();
+  if (host && typeof host.onReady === "function"){
+    try { host.onReady(buildEngineApi()); } catch(e){ console.error("ERG host.onReady failed", e); }
+  }
+}
+
+/* ==========================================================================
+   HOST BRIDGE — the control surface the SPFx shell drives the running engine
+   through. Everything here delegates to existing engine functions; no new
+   behaviour, so the graph keeps behaving exactly as the v1.x file did.
+   ========================================================================== */
+function buildEngineApi(){
+  return {
+    /** Replace the whole graph (project switch, remote change, snapshot restore). */
+    setBundle: function(bundle, label){
+      applyLoadedBundle(bundle, label || null);
+      state.fileHandle = null;
+      state.dirty = false;
+      updateFileChip();
+    },
+    /** The current graph + snapshots, in the on-disk bundle shape. */
+    getBundle: function(){ return currentBundle(); },
+    /** Graph only, with hand-arranged positions folded in. */
+    getGraph: function(){ syncPositionsToGraph(); return state.graph; },
+    setProjectLabel: function(label){ state.fileName = label || null; updateFileChip(); },
+    isDirty: function(){ return !!state.dirty; },
+    markClean: function(){ markClean(); },
+    markDirty: function(){ markDirty(); },
+    toast: function(msg, kind){ showToast(msg, kind); },
+    refresh: function(){ requestRedraw(); },
+    fit: function(){ fitGraph(); },
+    /** Stop the render loop and drop document-level listeners (web part dispose). */
+    destroy: function(){
+      __ergDestroyed = true;
+      rafActive = false;
+      for (var i = 0; i < __ergListeners.length; i++){
+        var L = __ergListeners[i];
+        try { L.t.removeEventListener(L.e, L.f, L.o); } catch(_){}
+      }
+      __ergListeners.length = 0;
+    }
+  };
+}
+
+boot();
+
+}

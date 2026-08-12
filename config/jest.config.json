@@ -1,0 +1,9 @@
+{
+  "clearMocks": true,
+  "roots": ["<rootDir>/lib-commonjs"],
+  "testRegex": [".*\\.test\\.js$"],
+  "testPathIgnorePatterns": ["/node_modules/"],
+  "collectCoverage": false,
+  "testEnvironment": "node",
+  "moduleFileExtensions": ["cjs", "js", "json", "node"]
+}

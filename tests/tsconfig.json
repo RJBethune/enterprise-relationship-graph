@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2019", "DOM"],
+    "strict": true,
+    "noImplicitAny": true,
+    "outDir": "../temp/safety-tests",
+    "rootDir": "..",
+    "sourceMap": false,
+    "declaration": false,
+    "noEmitOnError": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": []
+  },
+  "include": [
+    "./**/*.ts",
+    "../src/model/**/*.ts",
+    "../src/provisioning/**/*.ts",
+    "../src/services/IGraphStore.ts",
+    "../src/services/WriteQueue.ts",
+    "../src/services/sp/batch.ts",
+    "../src/services/sp/SpRest.ts",
+    "../src/services/sp/projectItems.ts",
+    "../src/services/sp/batch.ts",
+    "../src/services/sp/SpProvisioningService.ts",
+    "../src/services/sp/DocumentGraphStore.ts",
+    "../src/services/sp/ItemGraphStore.ts"
+  ]
+}

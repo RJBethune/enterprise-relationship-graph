@@ -1,0 +1,29 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx/client-side-web-part-manifest.schema.json",
+  "id": "9d1e4b77-2c85-4a36-91f0-6e8b5d3a2c14",
+  "alias": "GraphWebPart",
+  "componentType": "WebPart",
+  "version": "*",
+  "manifestVersion": 2,
+  "requiresCustomScript": false,
+  "supportedHosts": ["SharePointWebPart", "SharePointFullPage"],
+  "supportsThemeVariants": true,
+
+  "preconfiguredEntries": [
+    {
+      "groupId": "5c03119e-3074-46fd-976b-c60198311f70",
+      "group": { "default": "Advanced" },
+      "title": { "default": "Enterprise Relationship Graph" },
+      "description": {
+        "default": "Explore how offices, systems, platforms, sites, teams and dependencies connect. Data lives in SharePoint lists on this site."
+      },
+      "officeFabricIconFontName": "Relationship",
+      "properties": {
+        "projectId": 0,
+        "pollSeconds": 8,
+        "autosaveMs": 2000,
+        "assetBaseUrl": ""
+      }
+    }
+  ]
+}

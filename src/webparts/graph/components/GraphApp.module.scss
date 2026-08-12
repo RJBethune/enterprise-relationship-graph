@@ -1,0 +1,182 @@
+/* The shell chrome deliberately borrows the engine's own CSS custom properties
+   (--panel, --border, --text, --accent), which are injected with the engine
+   stylesheet. One visual language, one theme switch: when the user toggles the
+   engine's light/dark theme, this bar follows without any extra wiring. */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 640px;
+  background: var(--bg-0, #0d0e11);
+  color: var(--text, #f6f5f3);
+  font-family: Inter, 'Segoe UI', system-ui, sans-serif;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--panel, #181a1f);
+  border-bottom: 1px solid var(--border, rgba(170, 166, 160, 0.2));
+  flex: none;
+  flex-wrap: wrap;
+}
+
+.barLabel {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2, #cfccc6);
+  font-weight: 600;
+}
+
+.select {
+  background: var(--panel-2, #1c1e24);
+  color: var(--text, #f6f5f3);
+  border: 1px solid var(--border, rgba(170, 166, 160, 0.2));
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-size: 13px;
+  font-family: inherit;
+  min-width: 200px;
+  max-width: 340px;
+}
+
+.button {
+  background: var(--panel-2, #1c1e24);
+  color: var(--text, #f6f5f3);
+  border: 1px solid var(--border, rgba(170, 166, 160, 0.2));
+  border-radius: 7px;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+
+  &:hover:not(:disabled) { border-color: var(--border-strong, rgba(170, 166, 160, 0.4)); }
+  &:disabled { opacity: 0.5; cursor: default; }
+  &:focus-visible { outline: 2px solid var(--accent, #6366f1); outline-offset: 2px; }
+}
+
+.primary {
+  background: var(--accent, #6366f1);
+  border-color: var(--accent, #6366f1);
+  color: #fff;
+}
+
+.spacer { margin-left: auto; }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(170, 166, 160, 0.2));
+  background: var(--panel-2, #1c1e24);
+  color: var(--text-2, #cfccc6);
+  white-space: nowrap;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: currentColor;
+}
+
+.ok { color: #4ade80; }
+.busy { color: #fcd34d; }
+.bad { color: #f87171; }
+
+.canvas {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;
+}
+
+/* ---------- setup / status panels ---------- */
+
+.panel {
+  max-width: 780px;
+  margin: 40px auto;
+  padding: 28px 32px;
+  background: var(--panel, #181a1f);
+  border: 1px solid var(--border, rgba(170, 166, 160, 0.2));
+  border-radius: 12px;
+}
+
+.panelTitle {
+  margin: 0 0 8px;
+  font-size: 19px;
+  font-weight: 650;
+}
+
+.panelText {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-2, #cfccc6);
+}
+
+.actionList {
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border, rgba(170, 166, 160, 0.2));
+  border-radius: 8px;
+
+  li {
+    font-size: 13px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--border, rgba(170, 166, 160, 0.12));
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+
+    &:last-child { border-bottom: none; }
+  }
+}
+
+.stepOk { color: #4ade80; }
+.stepFail { color: #f87171; }
+
+.conflict {
+  border-left: 3px solid #fcd34d;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  background: rgba(252, 211, 77, 0.08);
+  font-size: 13px;
+  border-radius: 0 8px 8px 0;
+}
+
+.progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel-2, #1c1e24);
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.progressFill {
+  height: 100%;
+  background: var(--accent, #6366f1);
+  transition: width 0.2s ease;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
