@@ -3,7 +3,7 @@
   "solution": {
     "name": "Enterprise Relationship Graph",
     "id": "e7c41d92-3b6a-4f18-9a52-8d3c07b41e6f",
-    "version": "2.0.5.0",
+    "version": "2.0.6.0",
     "includeClientSideAssets": true,
     "skipFeatureDeployment": true,
     "isDomainIsolated": false,
@@ -30,7 +30,7 @@
         "title": "Enterprise Relationship Graph - web part",
         "description": "Deploys the Enterprise Relationship Graph client-side web part.",
         "id": "5a2f8c11-96d4-4e73-b8a1-c2f409d7e5b3",
-        "version": "2.0.5.0"
+        "version": "2.0.6.0"
       }
     ]
   },

@@ -3,7 +3,8 @@ import {
   IGraphStore, IOpenProject, IProjectSummary, ISaveOutcome, IRemoteUpdate, StorageMode
 } from '../IGraphStore';
 import {
-  IGraph, IBundle, BUNDLE_SCHEMA_VERSION, parseBundle, normalizeGraph, stableStringify
+  IGraph, IBundle, BUNDLE_SCHEMA_VERSION, parseBundle, normalizeGraph, stableStringify,
+  MAX_DOCUMENT_CHARS
 } from '../../model/bundle';
 import { threeWayMerge } from '../../model/merge';
 import {
@@ -65,9 +66,9 @@ class DocumentProject implements IOpenProject {
 
   public async save(graph: IGraph, snapshots: unknown[] | null): Promise<ISaveOutcome> {
     try {
-      await this.write(graph, snapshots, this.etag);
+      const chars = await this.write(graph, snapshots, this.etag);
       this.base = JSON.parse(JSON.stringify(graph)) as IGraph;
-      return { status: 'saved', writes: 1 };
+      return { status: 'saved', writes: 1, warning: this.ceilingWarning(chars) };
     } catch (e) {
       if (!(e instanceof ConflictError)) {
         return { status: 'error', message: e instanceof Error ? e.message : String(e) };
@@ -111,7 +112,19 @@ class DocumentProject implements IOpenProject {
     };
   }
 
-  private async write(graph: IGraph, snapshots: unknown[] | null, etag: string | null): Promise<void> {
+  /**
+   * Document storage has a hard ceiling, and hitting it means saves simply stop. That
+   * is a bad moment to learn about it, so say something while there is still room to
+   * act — the only remedy is moving the project to per-item storage.
+   */
+  private ceilingWarning(chars: number): string | undefined {
+    const used = chars / MAX_DOCUMENT_CHARS;
+    if (used < 0.75) { return undefined; }
+    return `This graph is using ${Math.round(used * 100)}% of what a single list item can hold. ` +
+      'Past 100% saves will start failing; move the project to per-item storage before then.';
+  }
+
+  private async write(graph: IGraph, snapshots: unknown[] | null, etag: string | null): Promise<number> {
     const now = new Date().toISOString();
     const bundle: IBundle = {
       version: BUNDLE_SCHEMA_VERSION,
@@ -121,7 +134,8 @@ class DocumentProject implements IOpenProject {
       graph,
       snapshots: snapshots || []
     };
-    const patch: { [k: string]: unknown } = payloadPatch(JSON.stringify(bundle));
+    const serialized = JSON.stringify(bundle);
+    const patch: { [k: string]: unknown } = payloadPatch(serialized);
     patch.ErgSchemaVersion = BUNDLE_SCHEMA_VERSION;
     patch.ErgNodeCount = (graph.nodes || []).length;
     patch.ErgEdgeCount = (graph.edges || []).length;
@@ -133,6 +147,7 @@ class DocumentProject implements IOpenProject {
     const stamp = await readProjectStamp(this.sp, this.summary.id);
     this.etag = stamp.etag;
     this.lastModified = stamp.modified;
+    return serialized.length;
   }
 
   /**

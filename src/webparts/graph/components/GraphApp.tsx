@@ -9,7 +9,8 @@ import { IProjectSummary, IOpenProject, StorageMode } from '../../../services/IG
 import { IProvisioningPlan, isHealthy, planSummary } from '../../../provisioning/planner';
 import { IProvisioningStepResult } from '../../../services/sp/SpProvisioningService';
 import { IPresentUser, PresenceMode, HEARTBEAT_MS } from '../../../services/sp/PresenceService';
-import { CORE_LISTS } from '../../../provisioning/schema';
+import { CORE_LISTS, PROJECTS_LIST } from '../../../provisioning/schema';
+import { readListRights } from '../../../services/sp/permissions';
 
 /** Never collapse smaller than this, however cramped the page section is. */
 const MIN_SHELL_HEIGHT = 520;
@@ -36,6 +37,8 @@ interface IGraphAppState {
   present: IPresentUser[];
   /** The declared schema and the live site disagree; the graph still works. */
   schemaGap: boolean;
+  /** Write rights on ERG Projects itself. null = not determined; fall back to the web. */
+  canEditList: boolean | null;
   /** Native Fullscreen API is active. */
   fullscreen: boolean;
   /** Fallback "cover the page" mode, for when the browser refuses fullscreen. */
@@ -84,6 +87,7 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
       switching: false,
       present: [],
       schemaGap: false,
+      canEditList: null,
       fullscreen: false,
       expanded: false
     };
@@ -227,6 +231,13 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
 
   private async initialize(): Promise<void> {
     try {
+      // A verified-healthy verdict for THIS build's schema on THIS site means the
+      // fifteen reads have nothing to discover. The verdict is keyed by a fingerprint
+      // of the schema in the bundle, so an upgraded .sppkg never matches an old one.
+      if (this.props.services.provisioning.wasVerifiedHealthy()) {
+        await this.loadProjects();
+        return;
+      }
       const plan = await this.props.services.provisioning.buildPlan();
       // Only a MISSING CORE LIST forces the setup screen. A site that is merely a
       // column behind should still open its graph — the setup panel stays one click
@@ -256,13 +267,20 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     }
   }
 
+  /** The web-level answer, narrowed by the list's own permissions once we know them. */
+  private get canEdit(): boolean {
+    return this.state.canEditList === null ? this.props.canEdit : this.state.canEditList;
+  }
+
   private async loadProjects(): Promise<void> {
     this.setState({ phase: 'loading' });
+    const rights = await readListRights(this.props.services.sp, PROJECTS_LIST);
+    if (rights) { this.setState({ canEditList: rights.canEdit }); }
     const store = this.props.services.storeFor('Document');
     const projects = await store.listProjects();
 
     if (projects.length === 0) {
-      if (!this.props.canEdit) {
+      if (!this.canEdit) {
         this.setState({
           phase: 'error',
           error: 'No graphs have been created on this site yet, and you do not have permission to create one.'
@@ -384,7 +402,7 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
   /* --------------------------------------------------------------- autosaving */
 
   private scheduleSave(graph: IGraph): void {
-    if (!this.props.canEdit) { return; }
+    if (!this.canEdit) { return; }
     // Any mutation marks us as editing rather than merely viewing, for presence.
     this.lastEditAt = Date.now();
     this.pendingGraph = graph;
@@ -533,8 +551,12 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     if (!title || !title.trim()) { return; }
     const mode: StorageMode = window.confirm(
       'Use per-item storage for this graph?\n\n' +
-      'OK  — Per-item: several people can edit at once and see each other\'s changes.\n' +
-      'Cancel — Document (recommended): every save is one atomic write, with full version history.'
+      'Cancel — Document (recommended). The whole graph lives in one list item, so every ' +
+      'save is a single atomic write with full version history.\n\n' +
+      'OK — Per-item (EXPERIMENTAL). One row per node and relationship: several people can ' +
+      'edit at once and see each other\'s changes, and there is no size ceiling. This path ' +
+      'has not yet been exercised against a production tenant, and there is no way to ' +
+      'convert a project between the two afterwards.'
     ) ? 'Items' : 'Document';
 
     void (async (): Promise<void> => {
@@ -808,7 +830,7 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
             ))}
           </select>
 
-          {this.props.canEdit && (
+          {this.canEdit && (
             <button type="button" className={styles.button} onClick={this.newProject} disabled={this.state.switching}>
               New graph
             </button>
@@ -827,7 +849,7 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
                   'item, saved in one atomic write. The ERG Nodes and ERG Edges lists stay empty for ' +
                   'this graph — that is by design, not a failed save.'}
             >
-              {current.storageMode === 'Items' ? 'Per-item · multi-editor' : 'Document · one list item'}
+              {current.storageMode === 'Items' ? 'Per-item · experimental' : 'Document · one list item'}
             </span>
           )}
           {this.renderBadge()}

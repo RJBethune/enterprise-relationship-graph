@@ -31,6 +31,8 @@ export interface ISaveOutcome {
   graph?: IGraph;
   conflicts?: IMergeConflict[];
   message?: string;
+  /** Non-fatal advice for the operator — approaching a storage limit, for example. */
+  warning?: string;
   /** Entities written on this save. Item mode reports real counts; document mode reports 1. */
   writes?: number;
 }

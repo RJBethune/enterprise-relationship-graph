@@ -11,5 +11,15 @@ declare const process: {
   exit(code?: number): void;
 };
 
+declare const globalThis: { window?: unknown };
+
+declare const window: {
+  localStorage: {
+    getItem(k: string): string | null;
+    setItem(k: string, v: string): void;
+    removeItem(k: string): void;
+  };
+};
+
 declare function setImmediate(fn: () => void): unknown;
 declare function clearImmediate(handle: unknown): void;

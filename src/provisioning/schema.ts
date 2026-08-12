@@ -214,3 +214,32 @@ export const ITEM_MODE_LISTS: string[] = [NODES_LIST, EDGES_LIST];
 
 export const getExpectedList = (title: string): IExpectedList | undefined =>
   EXPECTED_SCHEMA.filter((l) => l.title === title)[0];
+
+/**
+ * A short, stable signature of everything this build expects SharePoint to have.
+ *
+ * It is what makes it safe to remember "this site was healthy" and skip the check on
+ * later loads: the signature is computed from the schema shipped INSIDE the bundle, so
+ * deploying a new .sppkg whose schema differs produces a different signature and
+ * invalidates every cached verdict automatically. There is no version number for
+ * anyone to forget to bump.
+ */
+export const schemaFingerprint = (expected: IExpectedList[] = EXPECTED_SCHEMA): string => {
+  const shape = expected
+    .map((list) => {
+      const fields = list.fields.map((f) => `${f.internal}:${f.types[0]}${f.unique ? 'u' : ''}${f.indexed ? 'i' : ''}`)
+        .sort().join(',');
+      const views = (list.viewFields || []).slice().sort().join(',');
+      return `${list.title}|${list.versioning ? 'v' : ''}|${fields}|${views}`;
+    })
+    .sort()
+    .join(';');
+
+  // djb2 — not cryptographic, and does not need to be. It only has to change when the
+  // schema changes, and fit in a storage key.
+  let hash = 5381;
+  for (let i = 0; i < shape.length; i++) {
+    hash = (((hash << 5) + hash) ^ shape.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36);
+};

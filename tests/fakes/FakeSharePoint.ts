@@ -57,6 +57,8 @@ export class FakeSharePoint implements ISpTransport {
   /** Every request, for asserting on write volume — the whole point of the storage debate. */
   public readonly log: { method: string; url: string }[] = [];
   public currentUser: string = 'Test Editor';
+  /** Per-list effective permissions; absent means full control. */
+  public listRights: Map<string, { High: number; Low: number }> = new Map();
   /** Set to fail the next N writes, to exercise the retry ladder. */
   public failWrites: number = 0;
   private clock: number = 0;
@@ -124,6 +126,10 @@ export class FakeSharePoint implements ISpTransport {
     }
     const fieldMatch = /^\/fields\/getbyinternalnameortitle\('([^']+)'\)/.exec(rest);
     if (fieldMatch) { return this.updateField(list, decodeURIComponent(fieldMatch[1]), body, verb); }
+    if (rest.indexOf('/EffectiveBasePermissions') === 0 && verb === 'GET') {
+      const rights = this.listRights.get(list.title) || { High: 2147483647, Low: 4294967295 };
+      return this.ok({ High: String(rights.High), Low: String(rights.Low) });
+    }
     if (rest.indexOf('/defaultView/viewfields') === 0) {
       const add = /addviewfield\('([^']+)'\)/.exec(rest);
       if (add && verb === 'POST') {

@@ -1,8 +1,9 @@
 import { SpRest, SpRestError } from './SpRest';
 import { fieldSchemaXml, lookupToken } from '../../provisioning/fieldXml';
-import { EXPECTED_SCHEMA, IExpectedList } from '../../provisioning/schema';
+import { EXPECTED_SCHEMA, IExpectedList, schemaFingerprint } from '../../provisioning/schema';
 import {
-  IListSnapshot, IFieldSnapshot, ProvisioningAction, IProvisioningPlan, planProvisioning, describeAction
+  IListSnapshot, IFieldSnapshot, ProvisioningAction, IProvisioningPlan, planProvisioning,
+  describeAction, isHealthy
 } from '../../provisioning/planner';
 
 /** SP.AddFieldOptions.AddFieldInternalNameHint — makes the Name attribute the internal
@@ -27,6 +28,9 @@ export interface IProvisioningService {
     plan: IProvisioningPlan,
     onProgress?: (done: number, total: number, label: string) => void
   ): Promise<IProvisioningStepResult[]>;
+  /** This exact schema was confirmed healthy on this site recently — skip the check. */
+  wasVerifiedHealthy(): boolean;
+  forgetHealthy(): void;
 }
 
 interface ISpFieldDto {
@@ -52,13 +56,21 @@ export class SpProvisioningService implements IProvisioningService {
 
   public constructor(private readonly sp: SpRest) {}
 
+  /**
+   * Read every list's live shape.
+   *
+   * Fanned out across lists rather than looped: the reads are independent, and doing
+   * them one after another turned a schema check into fifteen sequential round trips
+   * of dead time before the graph could open. The call COUNT is unchanged — that was
+   * never the problem, SharePoint throttles on sustained volume, not on a handful of
+   * reads — but the depth drops from fifteen to two.
+   */
   public async readSnapshots(
     expected: IExpectedList[] = EXPECTED_SCHEMA
   ): Promise<{ [list: string]: IListSnapshot }> {
+    const snapshots = await Promise.all(expected.map((list) => this.readOne(list.title)));
     const out: { [list: string]: IListSnapshot } = {};
-    for (const list of expected) {
-      out[list.title] = await this.readOne(list.title);
-    }
+    for (const snap of snapshots) { out[snap.title] = snap; }
     return out;
   }
 
@@ -86,6 +98,10 @@ export class SpProvisioningService implements IProvisioningService {
 
     if (listInfo.Id) { this.listIds[title] = listInfo.Id; }
 
+    // The columns and the view are independent reads; the list read above had to come
+    // first only because it decides whether these are worth making at all.
+    const viewFieldsPromise = this.readViewFields(title);
+
     try {
       // NO $select here, deliberately.
       //
@@ -112,9 +128,10 @@ export class SpProvisioningService implements IProvisioningService {
       }
       return {
         title, exists: true, verified: true, versioning: !!listInfo.EnableVersioning, fields: map,
-        viewFields: await this.readViewFields(title)
+        viewFields: await viewFieldsPromise
       };
     } catch (e) {
+      await viewFieldsPromise.catch(() => []);   // never leave it unhandled
       return {
         title, exists: true, verified: false, versioning: !!listInfo.EnableVersioning, fields: {},
         readError: e instanceof Error ? e.message : String(e)
@@ -146,7 +163,47 @@ export class SpProvisioningService implements IProvisioningService {
 
   public async buildPlan(expected: IExpectedList[] = EXPECTED_SCHEMA): Promise<IProvisioningPlan> {
     const snapshots = await this.readSnapshots(expected);
-    return planProvisioning(expected, snapshots);
+    const plan = planProvisioning(expected, snapshots);
+    // Only a CLEAN result is remembered. Caching a gap would keep the warning on
+    // screen after somebody fixed it, and the whole point of the warning is that it
+    // goes away when the problem does.
+    if (isHealthy(plan)) { this.rememberHealthy(); } else { this.forgetHealthy(); }
+    return plan;
+  }
+
+  /* ----------------------------------------------------------- healthy cache */
+
+  /**
+   * Remembering a healthy verdict is what stops a fifteen-call schema check running
+   * on every single page load, forever, to answer a question whose answer changes
+   * about twice a year.
+   *
+   * It is keyed by the fingerprint of the schema shipped in THIS bundle, so a new
+   * .sppkg with different expectations cannot match an old verdict — the check runs
+   * again automatically on the first load after an upgrade, which is exactly when it
+   * matters. Nobody has to remember to bump anything.
+   */
+  private static readonly HEALTHY_TTL_MS: number = 12 * 60 * 60 * 1000;
+
+  private cacheKey(): string {
+    return `erg.schemaOk.${this.sp.webUrl}.${schemaFingerprint()}`;
+  }
+
+  public wasVerifiedHealthy(): boolean {
+    try {
+      const at = Number(window.localStorage.getItem(this.cacheKey()));
+      return !!at && (Date.now() - at) < SpProvisioningService.HEALTHY_TTL_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  private rememberHealthy(): void {
+    try { window.localStorage.setItem(this.cacheKey(), String(Date.now())); } catch { /* private mode */ }
+  }
+
+  public forgetHealthy(): void {
+    try { window.localStorage.removeItem(this.cacheKey()); } catch { /* private mode */ }
   }
 
   public async execute(

@@ -1,4 +1,5 @@
 import { SpRest } from './SpRest';
+import { ThrottledError } from '../WriteQueue';
 import { PRESENCE_LIST } from '../../provisioning/schema';
 
 /**
@@ -57,6 +58,9 @@ export class PresenceService {
 
   /** Set when the site's presence list predates the ErgEmail column. */
   private omitEmail: boolean = false;
+  /** Beats to sit out after a throttle. Presence is the most skippable traffic the
+   *  app generates, so it should be the first thing to yield when the site is busy. */
+  private skipBeats: number = 0;
 
   public get isDisabled(): boolean { return this.disabled; }
 
@@ -70,6 +74,7 @@ export class PresenceService {
   public reset(): void {
     this.disabled = false;
     this.omitEmail = false;
+    this.skipBeats = 0;
     this.ownRow.clear();
   }
 
@@ -110,9 +115,16 @@ export class PresenceService {
    */
   public async heartbeat(projectId: number, mode: PresenceMode): Promise<void> {
     if (this.disabled) { return; }
+    if (this.skipBeats > 0) { this.skipBeats--; return; }
     try {
       await this.writeRow(projectId, mode);
     } catch (e) {
+      if (e instanceof ThrottledError) {
+        // Roughly two minutes of silence. Nobody is harmed by a stale avatar, and
+        // adding retries to a throttled site is how a soft throttle becomes a hard one.
+        this.skipBeats = 4;
+        return;
+      }
       const message = e instanceof Error ? e.message : String(e);
 
       if (this.isMissingList(message)) { this.disabled = true; return; }
