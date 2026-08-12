@@ -43,12 +43,23 @@ export interface IExpectedList {
   description: string;
   versioning: boolean;
   fields: IExpectedField[];
+  /**
+   * Columns the list's DEFAULT VIEW should show.
+   *
+   * Columns created through the API are not added to any view, so a freshly
+   * provisioned list shows nothing but Title — which makes a working save look like a
+   * broken one when somebody opens the list to check. For a tool whose whole claim is
+   * "this is the source of truth", the data has to be visible where people go to
+   * verify it.
+   */
+  viewFields?: string[];
 }
 
 export const PROJECTS_LIST = 'ERG Projects';
 export const NODES_LIST = 'ERG Nodes';
 export const EDGES_LIST = 'ERG Edges';
 export const SNAPSHOTS_LIST = 'ERG Snapshots';
+export const PRESENCE_LIST = 'ERG Presence';
 
 /** ErgPayload1..N — the document-mode payload columns. */
 const payloadFields = (): IExpectedField[] => {
@@ -81,6 +92,7 @@ export const EXPECTED_SCHEMA: IExpectedList[] = [
     title: PROJECTS_LIST,
     description: 'One item per relationship graph. The switcher lists these.',
     versioning: true,
+    viewFields: ['Title', 'ErgStorageMode', 'ErgNodeCount', 'ErgEdgeCount', 'ErgStatus', 'Modified', 'Editor'],
     fields: [
       {
         internal: 'Title', display: 'Project name', types: ['Text'],
@@ -119,8 +131,10 @@ export const EXPECTED_SCHEMA: IExpectedList[] = [
   },
   {
     title: NODES_LIST,
-    description: 'One item per node, for projects using per-item storage.',
+    description: 'One item per node, for projects using per-item storage. Projects stored as a ' +
+      'Document keep their nodes in the project item instead, so this list stays empty for them.',
     versioning: false,
+    viewFields: ['Title', 'ErgNodeId', 'ErgType', 'ErgProject', 'Modified'],
     fields: [
       { internal: 'Title', display: 'Label', types: ['Text'], builtIn: true },
       projectLookup(),
@@ -137,8 +151,10 @@ export const EXPECTED_SCHEMA: IExpectedList[] = [
   },
   {
     title: EDGES_LIST,
-    description: 'One item per relationship, for projects using per-item storage.',
+    description: 'One item per relationship, for projects using per-item storage. Empty for ' +
+      'projects stored as a Document.',
     versioning: false,
+    viewFields: ['Title', 'ErgEdgeId', 'ErgSource', 'ErgTarget', 'ErgType', 'ErgProject'],
     fields: [
       { internal: 'Title', display: 'Label', types: ['Text'], builtIn: true },
       projectLookup(),
@@ -153,11 +169,34 @@ export const EXPECTED_SCHEMA: IExpectedList[] = [
     title: SNAPSHOTS_LIST,
     description: 'Named restore points. Independent of list version history, which captures every save.',
     versioning: false,
+    viewFields: ['Title', 'ErgProject', 'ErgNote', 'Modified'],
     fields: [
       { internal: 'Title', display: 'Snapshot name', types: ['Text'], builtIn: true },
       projectLookup(),
       ...payloadFields(),
       { internal: 'ErgNote', display: 'Note', types: ['Note'], description: 'Why this restore point matters.' }
+    ]
+  },
+  {
+    title: PRESENCE_LIST,
+    description: 'Who currently has each graph open. Rows are refreshed by a heartbeat while a ' +
+      'graph is open and ignored once they go stale; they are not an audit trail.',
+    versioning: false,
+    viewFields: ['Title', 'ErgUser', 'ErgMode', 'ErgHeartbeat', 'ErgProject'],
+    fields: [
+      {
+        internal: 'Title', display: 'Key', types: ['Text'], builtIn: true, indexed: true, unique: true,
+        description: '<project id>|<user login>. Unique, so one row per person per graph however ' +
+          'many tabs they open.'
+      },
+      projectLookup(),
+      { internal: 'ErgUser', display: 'User', types: ['Text'] },
+      { internal: 'ErgLogin', display: 'Login', types: ['Text'], indexed: true },
+      {
+        internal: 'ErgMode', display: 'Mode', types: ['Choice'],
+        choices: ['Viewing', 'Editing'], defaultValue: 'Viewing'
+      },
+      { internal: 'ErgHeartbeat', display: 'Last seen', types: ['DateTime'], indexed: true }
     ]
   }
 ];

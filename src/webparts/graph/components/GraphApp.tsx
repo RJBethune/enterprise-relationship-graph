@@ -8,7 +8,15 @@ import { IGraph, IBundle, normalizeGraph } from '../../../model/bundle';
 import { IProjectSummary, IOpenProject, StorageMode } from '../../../services/IGraphStore';
 import { IProvisioningPlan } from '../../../provisioning/planner';
 import { IProvisioningStepResult } from '../../../services/sp/SpProvisioningService';
+import { IPresentUser, PresenceMode, HEARTBEAT_MS } from '../../../services/sp/PresenceService';
 import { CORE_LISTS } from '../../../provisioning/schema';
+
+/** Never collapse smaller than this, however cramped the page section is. */
+const MIN_SHELL_HEIGHT = 520;
+/** Breathing room below the web part so the page does not gain a scrollbar. */
+const SHELL_BOTTOM_GAP = 12;
+/** How long after an edit somebody still counts as "editing" rather than "viewing". */
+const EDITING_WINDOW_MS = 120000;
 
 type Phase = 'checking' | 'setup' | 'loading' | 'ready' | 'error';
 type SyncState = 'idle' | 'saving' | 'saved' | 'merged' | 'conflict' | 'error' | 'readonly';
@@ -25,6 +33,7 @@ interface IGraphAppState {
   sync: SyncState;
   syncDetail: string | null;
   switching: boolean;
+  present: IPresentUser[];
 }
 
 /**
@@ -38,10 +47,14 @@ interface IGraphAppState {
  */
 export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppState> {
   private engineHost: HTMLDivElement | null = null;
+  private shellEl: HTMLDivElement | null = null;
   private engine: IEngineApi | null = null;
   private session: IOpenProject | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private presenceTimer: ReturnType<typeof setInterval> | null = null;
+  private resizeObserver: { disconnect(): void } | null = null;
+  private lastEditAt: number = 0;
   private pendingGraph: IGraph | null = null;
   private snapshots: unknown[] = [];
   private savingNow: boolean = false;
@@ -62,7 +75,8 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
       currentProjectId: null,
       sync: props.canEdit ? 'idle' : 'readonly',
       syncDetail: null,
-      switching: false
+      switching: false,
+      present: []
     };
     this.onBeforeUnload = (): void => { void this.flushPendingSave(); };
     this.onVisibility = (): void => {
@@ -73,6 +87,9 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
   public componentDidMount(): void {
     window.addEventListener('beforeunload', this.onBeforeUnload);
     document.addEventListener('visibilitychange', this.onVisibility);
+    window.addEventListener('resize', this.fitToViewport);
+    this.watchContainerSize();
+    this.fitToViewport();
     void this.initialize();
   }
 
@@ -80,12 +97,63 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     this.disposed = true;
     window.removeEventListener('beforeunload', this.onBeforeUnload);
     document.removeEventListener('visibilitychange', this.onVisibility);
+    window.removeEventListener('resize', this.fitToViewport);
+    if (this.resizeObserver) { this.resizeObserver.disconnect(); }
     if (this.saveTimer) { clearTimeout(this.saveTimer); }
     if (this.pollTimer) { clearInterval(this.pollTimer); }
+    if (this.presenceTimer) { clearInterval(this.presenceTimer); }
+    if (this.state.currentProjectId) { void this.props.services.presence.leave(this.state.currentProjectId); }
     if (this.engine) { this.engine.destroy(); }
     if (this.session) { this.session.dispose(); }
     if (this.engineHost) { unmountEngine(this.engineHost); }
   }
+
+  /* ------------------------------------------------------------------- sizing */
+
+  /**
+   * Give the graph the height that is actually left on the page.
+   *
+   * The engine was a whole-page application and sizes itself in viewport units; the
+   * host stylesheet re-points it at its container, and this decides how tall that
+   * container is. Measuring from the element's own top means it works on any page
+   * layout — app page, section, or a page with a tall header — without hard-coding
+   * what SharePoint puts above it.
+   */
+  private fitToViewport = (): void => {
+    const el = this.shellEl;
+    if (!el) { return; }
+    const top = el.getBoundingClientRect().top;
+    const height = Math.max(
+      MIN_SHELL_HEIGHT,
+      Math.round(window.innerHeight - top - SHELL_BOTTOM_GAP)
+    );
+    if (el.style.height === `${height}px`) { return; }
+    el.style.height = `${height}px`;
+    // The engine only re-measures its canvas on WINDOW resize, which does not fire
+    // when a web part resizes itself. Without this the canvas keeps stale dimensions
+    // and the drawing is stretched.
+    if (this.engine) { this.engine.resize(); }
+  };
+
+  /** SharePoint lays sections out after mount, so watch the container, not just the window. */
+  private watchContainerSize(): void {
+    if (this.resizeObserver) { this.resizeObserver.disconnect(); this.resizeObserver = null; }
+    const Observer = (window as unknown as {
+      ResizeObserver?: new (cb: () => void) => { observe(t: Element): void; disconnect(): void };
+    }).ResizeObserver;
+    if (!Observer || !this.shellEl || !this.shellEl.parentElement) { return; }
+    const observer = new Observer(() => { this.fitToViewport(); });
+    observer.observe(this.shellEl.parentElement);
+    this.resizeObserver = observer;
+  }
+
+  private setShellRef = (el: HTMLDivElement | null): void => {
+    if (el === this.shellEl) { return; }
+    this.shellEl = el;
+    if (!el) { return; }
+    this.fitToViewport();
+    this.watchContainerSize();
+  };
 
   /* ------------------------------------------------------------------ startup */
 
@@ -153,7 +221,33 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     } else {
       this.mountEngineNow(session.bundle, session.summary.title);
     }
+    this.fitToViewport();
     this.startPolling();
+    this.startPresence();
+  }
+
+  /* ----------------------------------------------------------------- presence */
+
+  private currentPresenceMode(): PresenceMode {
+    return Date.now() - this.lastEditAt < EDITING_WINDOW_MS ? 'Editing' : 'Viewing';
+  }
+
+  private startPresence(): void {
+    if (this.presenceTimer) { clearInterval(this.presenceTimer); this.presenceTimer = null; }
+    void this.beatAndRefresh();
+    this.presenceTimer = setInterval(() => { void this.beatAndRefresh(); }, HEARTBEAT_MS);
+  }
+
+  private async beatAndRefresh(): Promise<void> {
+    const projectId = this.state.currentProjectId;
+    if (!projectId || this.disposed) { return; }
+    // A backgrounded tab keeps its row alive but stops polling for others — it is
+    // still "present", just not worth spending reads on.
+    const { presence } = this.props.services;
+    await presence.heartbeat(projectId, this.currentPresenceMode());
+    if (document.visibilityState === 'hidden') { return; }
+    const present = await presence.list(projectId);
+    if (!this.disposed) { this.setState({ present }); }
   }
 
   private mountEngineNow(bundle: IBundle, label: string): void {
@@ -191,6 +285,8 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
 
   private scheduleSave(graph: IGraph): void {
     if (!this.props.canEdit) { return; }
+    // Any mutation marks us as editing rather than merely viewing, for presence.
+    this.lastEditAt = Date.now();
     this.pendingGraph = graph;
     if (this.saveTimer) { clearTimeout(this.saveTimer); }
     this.setSync('saving', null);
@@ -217,6 +313,7 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
       switch (outcome.status) {
         case 'saved':
           this.setSync('saved', null);
+          this.refreshCounts(graph);
           if (this.engine) { this.engine.markClean(); }
           break;
         case 'merged':
@@ -254,6 +351,25 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
       this.savingNow = false;
       if (this.engine) { this.engine.refresh(); }
     }
+  }
+
+  /**
+   * Keep the switcher's counts honest.
+   *
+   * They are loaded from the project item, so without this the label still reads
+   * "0 nodes" while the graph plainly shows several — which reads as "my work is not
+   * being saved" precisely when it is.
+   */
+  private refreshCounts(graph: IGraph): void {
+    const id = this.state.currentProjectId;
+    if (!id) { return; }
+    const nodeCount = (graph.nodes || []).length;
+    const edgeCount = (graph.edges || []).length;
+    this.setState((prev) => ({
+      projects: prev.projects.map(
+        (p) => (p.id === id ? { ...p, nodeCount, edgeCount } : p)
+      )
+    }));
   }
 
   /* ------------------------------------------------------------------ polling */
@@ -300,6 +416,9 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     try {
       // Never carry unsaved work across a switch.
       await this.flushPendingSave();
+      const leaving = this.state.currentProjectId;
+      if (leaving) { void this.props.services.presence.leave(leaving); }
+      this.setState({ present: [] });
       if (this.session) { this.session.dispose(); this.session = null; }
       await this.openProject(id, this.state.projects);
     } catch (e) {
@@ -399,6 +518,50 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     chip.title = this.state.syncDetail || text;
   }
 
+  /**
+   * Who else is on this graph.
+   *
+   * Deliberately shows YOU as well: seeing your own initials is how you know the
+   * indicator is live, so an empty strip reads as "nobody else here" rather than
+   * "presence is broken".
+   */
+  private renderPresence(): JSX.Element | null {
+    const people = this.state.present;
+    if (people.length === 0) { return null; }
+
+    const initials = (name: string): string => name
+      .split(/[\s,]+/).filter(Boolean).slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase()).join('') || '?';
+
+    const summary = people
+      .map((p) => `${p.name}${p.isSelf ? ' (you)' : ''} — ${p.mode.toLowerCase()}`)
+      .join('\n');
+    const others = people.filter((p) => !p.isSelf).length;
+    const shown = people.slice(0, 5);
+
+    return (
+      <span className={styles.presence} title={summary}>
+        {shown.map((p) => (
+          <span
+            key={p.login || p.name}
+            className={`${styles.avatar} ${p.mode === 'Editing' ? styles.editing : ''} ${p.isSelf ? styles.self : ''}`}
+            aria-hidden="true"
+          >
+            {initials(p.name)}
+          </span>
+        ))}
+        {people.length > shown.length && (
+          <span className={styles.avatar} aria-hidden="true">+{people.length - shown.length}</span>
+        )}
+        <span className={styles.srOnly}>
+          {others === 0
+            ? 'No one else is viewing this graph.'
+            : `${others} other ${others === 1 ? 'person' : 'people'} on this graph: ${summary}`}
+        </span>
+      </span>
+    );
+  }
+
   private renderBadge(): JSX.Element {
     const tone =
       this.state.sync === 'error' || this.state.sync === 'conflict' ? styles.bad
@@ -421,7 +584,7 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
 
     if (phase === 'checking' || phase === 'loading') {
       return (
-        <div className={styles.shell}>
+        <div className={styles.shell} ref={this.setShellRef}>
           <div className={styles.panel} role="status" aria-live="polite">
             <h2 className={styles.panelTitle}>Loading the graph…</h2>
             <p className={styles.panelText}>
@@ -434,7 +597,7 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
 
     if (phase === 'error') {
       return (
-        <div className={styles.shell}>
+        <div className={styles.shell} ref={this.setShellRef}>
           <div className={styles.panel} role="alert">
             <h2 className={styles.panelTitle}>The graph could not be opened</h2>
             <p className={styles.panelText}>{this.state.error}</p>
@@ -448,7 +611,7 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
 
     if (phase === 'setup' && plan) {
       return (
-        <div className={styles.shell}>
+        <div className={styles.shell} ref={this.setShellRef}>
           <SetupPanel
             plan={plan}
             canEdit={this.props.canEdit}
@@ -466,7 +629,7 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     const current = projects.filter((p) => p.id === currentProjectId)[0];
 
     return (
-      <div className={styles.shell}>
+      <div className={styles.shell} ref={this.setShellRef}>
         <div className={styles.bar}>
           <label className={styles.barLabel} htmlFor="erg-project-select">Graph</label>
           <select
@@ -491,9 +654,18 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
 
           <span className={styles.spacer} />
 
+          {this.renderPresence()}
+
           {current && (
-            <span className={styles.badge} title="How this graph is stored in SharePoint">
-              {current.storageMode === 'Items' ? 'Per-item · multi-editor' : 'Document · atomic saves'}
+            <span
+              className={styles.badge}
+              title={current.storageMode === 'Items'
+                ? 'Every node and relationship is its own row in the ERG Nodes and ERG Edges lists.'
+                : 'The whole graph is stored in the payload columns of this project\'s ERG Projects ' +
+                  'item, saved in one atomic write. The ERG Nodes and ERG Edges lists stay empty for ' +
+                  'this graph — that is by design, not a failed save.'}
+            >
+              {current.storageMode === 'Items' ? 'Per-item · multi-editor' : 'Document · one list item'}
             </span>
           )}
           {this.renderBadge()}

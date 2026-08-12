@@ -6,7 +6,8 @@ import { DocumentGraphStore } from '../src/services/sp/DocumentGraphStore';
 import { ItemGraphStore } from '../src/services/sp/ItemGraphStore';
 import { isHealthy } from '../src/provisioning/planner';
 import { IGraph, IGraphNode, normalizeGraph, CHUNK_SIZE } from '../src/model/bundle';
-import { NODES_LIST, EDGES_LIST, PROJECTS_LIST } from '../src/provisioning/schema';
+import { PresenceService } from '../src/services/sp/PresenceService';
+import { NODES_LIST, EDGES_LIST, PROJECTS_LIST, PRESENCE_LIST } from '../src/provisioning/schema';
 
 const node = (id: string, label: string): IGraphNode => ({ id, label, type: 'Office' });
 
@@ -446,6 +447,95 @@ suite('integration: per-item storage', () => {
 
     assert.equal(outcome.status, 'saved', 'throttling must be survivable, not fatal');
     assert.equal(fake.lists.get(NODES_LIST)!.items.size, 1);
+  });
+});
+
+suite('integration: presence', () => {
+  test('a heartbeat creates one row, and repeating it updates rather than duplicates', async () => {
+    const { sp, fake } = await deployedSite();
+    const presence = new PresenceService(sp, 'i:0#.f|m|ross@example.gov', 'Ross Bethune');
+    const project = await new DocumentGraphStore(sp, 'Ross').createProject('Exec', 'Document');
+
+    await presence.heartbeat(project.id, 'Viewing');
+    await presence.heartbeat(project.id, 'Editing');
+    await presence.heartbeat(project.id, 'Editing');
+
+    assert.equal(fake.lists.get(PRESENCE_LIST)!.items.size, 1, 'one row per person per graph');
+  });
+
+  test('another session shows up, and you can see yourself', async () => {
+    const { sp } = await deployedSite();
+    const project = await new DocumentGraphStore(sp, 'Ross').createProject('Exec', 'Document');
+    const alice = new PresenceService(sp, 'alice@example.gov', 'Alice Adams');
+    const bob = new PresenceService(sp, 'bob@example.gov', 'Bob Brown');
+
+    await alice.heartbeat(project.id, 'Editing');
+    await bob.heartbeat(project.id, 'Viewing');
+
+    const seenByAlice = await alice.list(project.id);
+    assert.equal(seenByAlice.length, 2);
+    const self = seenByAlice.filter((p) => p.isSelf)[0];
+    assert.ok(self, 'you should see yourself, so an empty strip means nobody else is here');
+    assert.equal(self.mode, 'Editing');
+    assert.equal(seenByAlice.filter((p) => p.name === 'Bob Brown')[0].mode, 'Viewing');
+  });
+
+  test('a stale row is ignored — a closed laptop stops showing as present', async () => {
+    const { sp } = await deployedSite();
+    const project = await new DocumentGraphStore(sp, 'Ross').createProject('Exec', 'Document');
+    const me = new PresenceService(sp, 'me@example.gov', 'Me');
+    await me.heartbeat(project.id, 'Viewing');
+
+    // A row from a session that vanished without saying goodbye.
+    await sp.post(`web/lists/getbytitle('${encodeURIComponent(PRESENCE_LIST)}')/items`, {
+      Title: `${project.id}|ghost@example.gov`,
+      ErgProjectId: project.id,
+      ErgUser: 'Ghost',
+      ErgLogin: 'ghost@example.gov',
+      ErgMode: 'Editing',
+      ErgHeartbeat: new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    });
+
+    const present = await me.list(project.id);
+    assert.equal(present.length, 1);
+    assert.equal(present[0].name, 'Me');
+  });
+
+  test('leaving removes the row immediately', async () => {
+    const { sp, fake } = await deployedSite();
+    const project = await new DocumentGraphStore(sp, 'Ross').createProject('Exec', 'Document');
+    const me = new PresenceService(sp, 'me@example.gov', 'Me');
+    await me.heartbeat(project.id, 'Viewing');
+    await me.leave(project.id);
+    assert.equal(fake.lists.get(PRESENCE_LIST)!.items.size, 0);
+  });
+
+  test('presence never breaks the graph when its list is missing', async () => {
+    // A site provisioned before presence existed must keep working, silently.
+    const fake = new FakeSharePoint();
+    const sp = new SpRest(fake);
+    const presence = new PresenceService(sp, 'me@example.gov', 'Me');
+    await presence.heartbeat(1, 'Viewing');
+    assert.deepEqual(await presence.list(1), []);
+    assert.ok(presence.isDisabled, 'it should stop asking rather than retry every beat');
+  });
+});
+
+suite('integration: the lists are actually readable by a human', () => {
+  test('provisioned lists show their columns in the default view', async () => {
+    // Columns created through the API land on NO view, so a correct save looks like a
+    // broken one to anyone who opens the list to check.
+    const { fake } = await deployedSite();
+    const projects = fake.lists.get(PROJECTS_LIST)!;
+    for (const column of ['ErgStorageMode', 'ErgNodeCount', 'ErgEdgeCount', 'ErgStatus']) {
+      assert.ok(projects.viewFields.indexOf(column) >= 0, `${column} should be on the default view`);
+    }
+  });
+
+  test('payload columns stay OFF the view — they are 60k of JSON each', async () => {
+    const { fake } = await deployedSite();
+    const projects = fake.lists.get(PROJECTS_LIST)!;
+    assert.ok(projects.viewFields.indexOf('ErgPayload1') < 0);
   });
 });
 

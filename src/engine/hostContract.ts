@@ -54,6 +54,8 @@ export interface IEngineApi {
   toast(message: string, kind?: 'ok' | 'err'): void;
   refresh(): void;
   fit(): void;
+  /** Re-measure the canvas after the host resizes its container. */
+  resize(): void;
   /** Stops the render loop and removes document/window listeners (web part dispose). */
   destroy(): void;
 }

@@ -1325,7 +1325,9 @@ function restorePositionsFromGraph(){
       // pinned implies fixed: the force sim only checks `fixed`, and the
       // mouseup handler keeps fixed=true for pinned nodes — mirror that here
       // or restored pins would drift as the sim settles.
-      state.positions.set(n.id, { x:+p.x, y:+p.y, vx:0, vy:0, fixed:!!p.pinned, pinned:!!p.pinned });
+      // A saved arrangement is an instruction, not a suggestion: hold every restored
+      // node so reopening a graph shows the layout that was actually saved.
+      state.positions.set(n.id, { x:+p.x, y:+p.y, vx:0, vy:0, fixed:true, pinned:!!p.pinned });
       restored++;
     }
   });
@@ -1430,6 +1432,9 @@ function subtreeLeaves(id, childrenOf, memo){
 }
 
 function applyLayout(name, skipFit){
+  // Choosing a layout hands the nodes back to it: release the hold that dragging
+  // and layout-restore put on them, except where the user explicitly pinned.
+  state.positions.forEach(p => { if (!p.pinned) p.fixed = false; });
   // Mode entry/exit for Org Chart — snapshot the filter set on entry,
   // restore it when the user picks any other layout.
   if (name === "org-chart" && !state.orgChartMode){
@@ -2573,7 +2578,11 @@ canvas.addEventListener("mouseup", ()=>{
   }
   if (state.draggedNode){
     const p = state.positions.get(state.draggedNode);
-    if (p && !p.pinned) p.fixed = false;  // pinned nodes stay anchored after release
+    // A node you drag STAYS where you dropped it. Releasing it back into the force
+    // simulation meant a hand-placed node drifted off under the centering force —
+    // barely visible on a large graph, unmissable on a small one, where nothing
+    // balances it. Choosing a layout (or Reset) hands every node back to the sim.
+    if (p) p.fixed = true;
     schedulePositionPersist(); // re-arrangements survive reload without a data edit
   }
   state.draggedNode = null; state.dragMode = null;
@@ -2582,7 +2591,7 @@ canvas.addEventListener("mouseup", ()=>{
 canvas.addEventListener("mouseleave", ()=>{
   if (state.draggedNode){
     const p = state.positions.get(state.draggedNode);
-    if (p && !p.pinned) p.fixed = false;
+    if (p) p.fixed = true;
   }
   state.draggedNode = null; state.dragMode = null;
   canvas.classList.remove("dragging");
@@ -9472,6 +9481,10 @@ function buildEngineApi(){
     toast: function(msg, kind){ showToast(msg, kind); },
     refresh: function(){ requestRedraw(); },
     fit: function(){ fitGraph(); },
+    /** Re-measure the canvas after the HOST changes the container's size. The engine
+        only watches window resize, which does not fire when a web part re-sizes
+        itself, so without this the canvas keeps its stale dimensions. */
+    resize: function(){ resizeCanvas(); },
     /** Stop the render loop and drop document-level listeners (web part dispose). */
     destroy: function(){
       __ergDestroyed = true;

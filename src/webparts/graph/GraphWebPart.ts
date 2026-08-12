@@ -37,7 +37,9 @@ export default class GraphWebPart extends BaseClientSideWebPart<IGraphWebPartPro
     this.services = createSharePointServices(
       this.context.spHttpClient,
       page.web.absoluteUrl,
-      this.editorName
+      this.editorName,
+      // loginName is the stable identity; display names collide and change.
+      page.user.loginName || page.user.email || this.editorName
     );
     return super.onInit();
   }

@@ -6,8 +6,12 @@
 .shell {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-height: 640px;
+  /* Height is set at runtime from the space actually left on the page — see
+     fitToViewport. These are the floor, for the moment before that runs. */
+  height: 520px;
+  min-height: 520px;
+  max-width: 100%;
+  overflow: hidden;
   background: var(--bg-0, #0d0e11);
   color: var(--text, #f6f5f3);
   font-family: Inter, 'Segoe UI', system-ui, sans-serif;
@@ -96,6 +100,63 @@
   flex: 1 1 auto;
   position: relative;
   min-height: 0;
+  /* The engine's grid is sized to this box; without the clip a wide details panel
+     would push the whole page sideways. */
+  overflow: hidden;
+}
+
+/* ---------- presence ---------- */
+
+.presence {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding-right: 4px;
+}
+
+.avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  background: var(--panel-2, #1c1e24);
+  color: var(--text-2, #cfccc6);
+  border: 1px solid var(--border, rgba(170, 166, 160, 0.2));
+  /* Overlap slightly so a group reads as one cluster, not a list of chips. */
+  margin-right: -6px;
+  position: relative;
+
+  &:last-of-type { margin-right: 0; }
+}
+
+.self {
+  border-color: var(--accent, #6366f1);
+  color: var(--text, #f6f5f3);
+}
+
+/* Editing is encoded in the ring as well as the tooltip — colour alone would fail
+   WCAG 1.4.1, and the difference matters most to whoever cannot see it. */
+.editing {
+  border-color: #4ade80;
+  box-shadow: 0 0 0 1px #4ade80;
+  color: var(--text, #f6f5f3);
+
+  &::after {
+    content: '';
+    position: absolute;
+    right: -1px;
+    bottom: -1px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #4ade80;
+    border: 1.5px solid var(--panel, #181a1f);
+  }
 }
 
 /* ---------- setup / status panels ---------- */

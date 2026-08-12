@@ -35,6 +35,8 @@ export interface IListSnapshot {
   verified: boolean;
   versioning: boolean;
   fields: { [internal: string]: IFieldSnapshot };
+  /** Columns currently on the list's default view. */
+  viewFields?: string[];
   /** What actually went wrong when `verified` is false. Surfaced to the operator: a
    *  generic "could not be read" reads like a permissions problem even when it is a
    *  malformed query, which makes the real cause almost impossible to find from the UI. */
@@ -48,7 +50,8 @@ export type ProvisioningAction =
   | { kind: 'setIndexed'; list: string; internal: string }
   | { kind: 'setUnique'; list: string; internal: string }
   | { kind: 'setLookupBehavior'; list: string; internal: string; behavior: 'Cascade' | 'None' }
-  | { kind: 'enableVersioning'; list: string };
+  | { kind: 'enableVersioning'; list: string }
+  | { kind: 'addViewFields'; list: string; add: string[] };
 
 export interface IProvisioningConflict {
   list: string;
@@ -71,6 +74,7 @@ export const planProvisioning = (
 ): IProvisioningPlan => {
   const creates: ProvisioningAction[] = [];
   const rest: ProvisioningAction[] = [];
+  const viewFixes: ProvisioningAction[] = [];
   const conflicts: IProvisioningConflict[] = [];
 
   for (const list of expected) {
@@ -155,9 +159,18 @@ export const planProvisioning = (
         });
       }
     }
+
+    // Default-view columns come last: every column they reference has to exist first.
+    if (list.viewFields && list.viewFields.length > 0) {
+      const shown = (listExists && snap ? snap.viewFields : undefined) || [];
+      const missing = list.viewFields.filter((f) => shown.indexOf(f) < 0);
+      if (missing.length > 0) {
+        viewFixes.push({ kind: 'addViewFields', list: list.title, add: missing });
+      }
+    }
   }
 
-  return { actions: creates.concat(rest), conflicts };
+  return { actions: creates.concat(rest).concat(viewFixes), conflicts };
 };
 
 export const isHealthy = (plan: IProvisioningPlan): boolean =>
@@ -172,6 +185,7 @@ export const describeAction = (a: ProvisioningAction): string => {
     case 'setUnique': return `Enforce unique values on ${a.list}.${a.internal}`;
     case 'setLookupBehavior': return `Set ${a.list}.${a.internal} delete behavior to ${a.behavior}`;
     case 'enableVersioning': return `Turn on version history for ${a.list}`;
+    case 'addViewFields': return `Show ${a.add.join(', ')} in the default view of ${a.list}`;
     default: return 'Unknown action';
   }
 };

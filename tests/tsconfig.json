@@ -27,6 +27,7 @@
     "../src/services/sp/batch.ts",
     "../src/services/sp/SpProvisioningService.ts",
     "../src/services/sp/DocumentGraphStore.ts",
-    "../src/services/sp/ItemGraphStore.ts"
+    "../src/services/sp/ItemGraphStore.ts",
+    "../src/services/sp/PresenceService.ts"
   ]
 }

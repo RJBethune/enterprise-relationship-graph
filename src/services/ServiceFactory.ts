@@ -4,6 +4,7 @@ import { SpHttpTransport } from './sp/SpHttpTransport';
 import { SpProvisioningService, IProvisioningService } from './sp/SpProvisioningService';
 import { DocumentGraphStore } from './sp/DocumentGraphStore';
 import { ItemGraphStore } from './sp/ItemGraphStore';
+import { PresenceService } from './sp/PresenceService';
 import { IGraphStore, StorageMode } from './IGraphStore';
 
 /**
@@ -17,12 +18,14 @@ import { IGraphStore, StorageMode } from './IGraphStore';
 export interface IErgServices {
   sp: SpRest;
   provisioning: IProvisioningService;
+  presence: PresenceService;
   storeFor(mode: StorageMode): IGraphStore;
 }
 
 export const createServices = (
   transport: ISpTransport,
-  editorName: string
+  editorName: string,
+  editorLogin: string = editorName
 ): IErgServices => {
   const sp = new SpRest(transport);
   const documentStore = new DocumentGraphStore(sp, editorName);
@@ -30,6 +33,7 @@ export const createServices = (
   return {
     sp,
     provisioning: new SpProvisioningService(sp),
+    presence: new PresenceService(sp, editorLogin, editorName),
     storeFor: (mode: StorageMode): IGraphStore => (mode === 'Items' ? itemStore : documentStore)
   };
 };
@@ -37,5 +41,6 @@ export const createServices = (
 export const createSharePointServices = (
   client: SPHttpClient,
   webUrl: string,
-  editorName: string
-): IErgServices => createServices(new SpHttpTransport(client, webUrl), editorName);
+  editorName: string,
+  editorLogin: string
+): IErgServices => createServices(new SpHttpTransport(client, webUrl), editorName, editorLogin);

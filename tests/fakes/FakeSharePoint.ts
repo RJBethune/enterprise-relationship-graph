@@ -42,6 +42,9 @@ interface IFakeList {
   items: Map<number, IFakeItem>;
   nextId: number;
   changes: IFakeChange[];
+  /** Columns on the default view. A new list shows only Title, exactly as SharePoint
+   *  does — which is why API-created columns are invisible until explicitly added. */
+  viewFields: string[];
 }
 
 const CHANGE_ADD = 1;
@@ -121,6 +124,18 @@ export class FakeSharePoint implements ISpTransport {
     }
     const fieldMatch = /^\/fields\/getbyinternalnameortitle\('([^']+)'\)/.exec(rest);
     if (fieldMatch) { return this.updateField(list, decodeURIComponent(fieldMatch[1]), body, verb); }
+    if (rest.indexOf('/defaultView/viewfields') === 0) {
+      const add = /addviewfield\('([^']+)'\)/.exec(rest);
+      if (add && verb === 'POST') {
+        const internal = decodeURIComponent(add[1]);
+        if (!list.fields.has(internal) && ['Modified', 'Created', 'Editor', 'Author'].indexOf(internal) < 0) {
+          return this.err(400, `Column '${internal}' does not exist on list '${list.title}'.`);
+        }
+        if (list.viewFields.indexOf(internal) < 0) { list.viewFields.push(internal); }
+        return this.ok(undefined, undefined, 200);
+      }
+      if (verb === 'GET') { return this.ok({ Items: list.viewFields.slice() }); }
+    }
     if (rest.indexOf('/fields') === 0 && verb === 'GET') { return this.readFields(list, rest); }
     if (rest.indexOf('/getchanges') === 0 && verb === 'POST') { return this.getChanges(list, body); }
 
@@ -148,7 +163,8 @@ export class FakeSharePoint implements ISpTransport {
       fields: new Map([['Title', { internal: 'Title', typeAsString: 'Text', indexed: false, unique: false }]]),
       items: new Map(),
       nextId: 1,
-      changes: []
+      changes: [],
+      viewFields: ['Title']
     };
     this.lists.set(title, list);
     return this.ok({ Id: list.id, Title: title }, undefined, 201);

@@ -63,11 +63,40 @@ export const loadEngineFonts = (assetBaseUrl?: string): void => {
   }
 };
 
+/**
+ * Host overrides, appended AFTER the engine stylesheet so they win on order.
+ *
+ * The engine stylesheet is generated from the single-file app and stays verbatim, so
+ * everything the web part needs to change about its presentation lives here.
+ */
+const HOST_OVERRIDES = `
+/* The engine was a whole-page application: .app is sized in VIEWPORT units
+   (width:100vw; height:100vh). Inside a SharePoint page that is wider and taller than
+   the space the web part actually occupies, so the details panel is pushed off the
+   right edge and the page scrolls sideways. Size it to its CONTAINER instead; the
+   shell decides how tall that container is. */
+.erg-root { position: relative; width: 100%; height: 100%; overflow: hidden; }
+.erg-root .app { width: 100%; height: 100%; }
+
+/* The status bar advertised "Offline-ready · localStorage", a GitHub link and a
+   byline — none of which are true once SharePoint is the source of truth. It is
+   HIDDEN rather than removed from the template because the engine still writes to
+   #footer-layout and #footer-hover; deleting the elements would throw.
+
+   Reclaiming its 32px row is scoped above the engine's own stacked breakpoint
+   (max-width:1000px), where the rows are auto-sized and a hidden footer already
+   collapses to nothing. */
+.erg-root footer.status-bar { display: none; }
+@media (min-width: 1001px) {
+  .erg-root .app { grid-template-rows: 64px 1fr 0; }
+}
+`;
+
 export const injectEngineStyles = (): void => {
   if (document.getElementById(STYLE_ID)) { return; }
   const style = document.createElement('style');
   style.id = STYLE_ID;
-  style.appendChild(document.createTextNode(ENGINE_CSS));
+  style.appendChild(document.createTextNode(ENGINE_CSS + HOST_OVERRIDES));
   document.head.appendChild(style);
 };
 

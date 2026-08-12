@@ -110,12 +110,37 @@ export class SpProvisioningService implements IProvisioningService {
           relationshipDeleteBehavior: f.RelationshipDeleteBehavior
         };
       }
-      return { title, exists: true, verified: true, versioning: !!listInfo.EnableVersioning, fields: map };
+      return {
+        title, exists: true, verified: true, versioning: !!listInfo.EnableVersioning, fields: map,
+        viewFields: await this.readViewFields(title)
+      };
     } catch (e) {
       return {
         title, exists: true, verified: false, versioning: !!listInfo.EnableVersioning, fields: {},
         readError: e instanceof Error ? e.message : String(e)
       };
+    }
+  }
+
+  /**
+   * Columns currently on the list's default view.
+   *
+   * A failure here returns an empty list rather than throwing: a view we cannot read
+   * is a cosmetic problem, and it must not turn a healthy, fully provisioned site into
+   * an "unreadable" conflict.
+   */
+  private async readViewFields(title: string): Promise<string[]> {
+    try {
+      const res = await this.sp.get<{ Items?: string[] | { results?: string[] }; value?: string[] }>(
+        `${this.listPath(title)}/defaultView/viewfields`
+      );
+      const items = res.Items;
+      if (Array.isArray(items)) { return items; }
+      if (items && Array.isArray(items.results)) { return items.results; }
+      if (Array.isArray(res.value)) { return res.value; }
+      return [];
+    } catch {
+      return [];
     }
   }
 
@@ -213,6 +238,18 @@ export class SpProvisioningService implements IProvisioningService {
 
       case 'enableVersioning':
         await this.sp.merge(this.listPath(action.list), { EnableVersioning: true });
+        return;
+
+      case 'addViewFields':
+        // Sequential, and each one tolerated individually: a built-in that this list
+        // happens not to expose must not stop the rest of the columns appearing.
+        for (const internal of action.add) {
+          try {
+            await this.sp.post(
+              `${this.listPath(action.list)}/defaultView/viewfields/addviewfield('${encodeURIComponent(internal)}')`
+            );
+          } catch { /* cosmetic — the data is stored regardless of what the view shows */ }
+        }
         return;
 
       default:

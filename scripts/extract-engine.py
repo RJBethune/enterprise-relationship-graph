@@ -177,6 +177,10 @@ function buildEngineApi(){
     toast: function(msg, kind){ showToast(msg, kind); },
     refresh: function(){ requestRedraw(); },
     fit: function(){ fitGraph(); },
+    /** Re-measure the canvas after the HOST changes the container's size. The engine
+        only watches window resize, which does not fire when a web part re-sizes
+        itself, so without this the canvas keeps its stale dimensions. */
+    resize: function(){ resizeCanvas(); },
     /** Stop the render loop and drop document-level listeners (web part dispose). */
     destroy: function(){
       __ergDestroyed = true;
