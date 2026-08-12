@@ -60,6 +60,19 @@ export class PresenceService {
 
   public get isDisabled(): boolean { return this.disabled; }
 
+  /**
+   * Give presence another chance after the schema has been repaired.
+   *
+   * Disabling is deliberately sticky so a missing list is not retried every 30s for
+   * the rest of the session — which means provisioning the list mid-session would
+   * otherwise leave presence dead until a page reload.
+   */
+  public reset(): void {
+    this.disabled = false;
+    this.omitEmail = false;
+    this.ownRow.clear();
+  }
+
   private key(projectId: number): string { return `${projectId}|${this.login}`; }
 
   /**

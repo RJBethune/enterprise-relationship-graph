@@ -7,7 +7,9 @@ import { ItemGraphStore } from '../src/services/sp/ItemGraphStore';
 import { isHealthy } from '../src/provisioning/planner';
 import { IGraph, IGraphNode, normalizeGraph, CHUNK_SIZE } from '../src/model/bundle';
 import { PresenceService } from '../src/services/sp/PresenceService';
-import { NODES_LIST, EDGES_LIST, PROJECTS_LIST, PRESENCE_LIST } from '../src/provisioning/schema';
+import {
+  NODES_LIST, EDGES_LIST, PROJECTS_LIST, PRESENCE_LIST, CORE_LISTS
+} from '../src/provisioning/schema';
 
 const node = (id: string, label: string): IGraphNode => ({ id, label, type: 'Office' });
 
@@ -554,6 +556,67 @@ suite('integration: presence', () => {
     await presence.heartbeat(1, 'Viewing');
     assert.deepEqual(await presence.list(1), []);
     assert.ok(presence.isDisabled, 'it should stop asking rather than retry every beat');
+  });
+});
+
+suite('integration: a site that is a schema version behind', () => {
+  /** A site provisioned before the presence list existed. */
+  const olderSite = async (): Promise<{ fake: FakeSharePoint; sp: SpRest }> => {
+    const { fake, sp } = await deployedSite();
+    fake.lists.delete(PRESENCE_LIST);
+    return { fake, sp };
+  };
+
+  test('the gap is DETECTED rather than silently tolerated', async () => {
+    // The reported failure: presence just showed nobody, with nothing anywhere saying
+    // the site was missing a list. Silence is the bug; the missing list is fixable.
+    const { sp } = await olderSite();
+    const plan = await new SpProvisioningService(sp).buildPlan();
+
+    assert.ok(!isHealthy(plan), 'an incomplete site must not report itself healthy');
+    assert.ok(
+      plan.actions.some((a) => a.kind === 'createList' && a.list === PRESENCE_LIST),
+      'the plan must offer to create the missing list'
+    );
+    assert.equal(plan.conflicts.length, 0, 'a missing list needs no human — it just needs the button');
+  });
+
+  test('but the graph still opens — a missing extra must not block the core', async () => {
+    const { sp } = await olderSite();
+    const plan = await new SpProvisioningService(sp).buildPlan();
+    const missingCore = plan.actions.some(
+      (a) => a.kind === 'createList' && CORE_LISTS.indexOf(a.list) >= 0
+    );
+    assert.ok(!missingCore, 'nothing core is missing, so the app should warn rather than block');
+
+    const store = new DocumentGraphStore(sp, 'Ross');
+    const project = await store.createProject('Still works', 'Document');
+    const session = await store.openProject(project.id);
+    const outcome = await session.save(graph([node('a', 'A')]), []);
+    assert.equal(outcome.status, 'saved');
+  });
+
+  test('pressing Deploy closes the gap and presence starts working', async () => {
+    const { sp, fake } = await olderSite();
+    const provisioning = new SpProvisioningService(sp);
+    const presence = new PresenceService(sp, 'me@example.gov', 'Me', 'me@example.gov');
+    const project = await new DocumentGraphStore(sp, 'Ross').createProject('Exec', 'Document');
+
+    await presence.heartbeat(project.id, 'Viewing');
+    assert.ok(presence.isDisabled, 'presence should switch off against a missing list');
+    assert.deepEqual(await presence.list(project.id), []);
+
+    const results = await provisioning.execute(await provisioning.buildPlan());
+    assert.equal(results.filter((r) => !r.ok).length, 0);
+    assert.ok(isHealthy(await provisioning.buildPlan()), 'the site should now be healthy');
+
+    // Without reset(), presence would stay dead until a page reload.
+    presence.reset();
+    await presence.heartbeat(project.id, 'Editing');
+    const present = await presence.list(project.id);
+    assert.equal(present.length, 1, 'presence should come back without reloading the page');
+    assert.equal(present[0].mode, 'Editing');
+    assert.equal(fake.lists.get(PRESENCE_LIST)!.items.size, 1);
   });
 });
 

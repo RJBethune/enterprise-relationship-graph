@@ -6,7 +6,7 @@ import { mountEngine, unmountEngine, isMounted } from '../../../engine/mount';
 import { IErgHost, IEngineApi } from '../../../engine/hostContract';
 import { IGraph, IBundle, normalizeGraph } from '../../../model/bundle';
 import { IProjectSummary, IOpenProject, StorageMode } from '../../../services/IGraphStore';
-import { IProvisioningPlan } from '../../../provisioning/planner';
+import { IProvisioningPlan, isHealthy, planSummary } from '../../../provisioning/planner';
 import { IProvisioningStepResult } from '../../../services/sp/SpProvisioningService';
 import { IPresentUser, PresenceMode, HEARTBEAT_MS } from '../../../services/sp/PresenceService';
 import { CORE_LISTS } from '../../../provisioning/schema';
@@ -34,6 +34,8 @@ interface IGraphAppState {
   syncDetail: string | null;
   switching: boolean;
   present: IPresentUser[];
+  /** The declared schema and the live site disagree; the graph still works. */
+  schemaGap: boolean;
   /** Native Fullscreen API is active. */
   fullscreen: boolean;
   /** Fallback "cover the page" mode, for when the browser refuses fullscreen. */
@@ -81,6 +83,7 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
       syncDetail: null,
       switching: false,
       present: [],
+      schemaGap: false,
       fullscreen: false,
       expanded: false
     };
@@ -234,6 +237,20 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
       this.setState({ plan });
       if (missingCore) { this.setState({ phase: 'setup' }); return; }
       await this.loadProjects();
+
+      // A gap that is not in a core list must not block the graph — but staying silent
+      // about it is how a site ends up with features quietly missing and nobody
+      // knowing why. Presence disappearing because ERG Presence was never created is
+      // exactly that failure. Say it once, plainly, and keep the button marked.
+      if (!isHealthy(plan)) {
+        this.setState({ schemaGap: true });
+        if (this.engine) {
+          this.engine.toast(
+            `SharePoint setup is incomplete — ${planSummary(plan)} Open Backend to finish it.`,
+            'err'
+          );
+        }
+      }
     } catch (e) {
       this.fail(e);
     }
@@ -310,6 +327,24 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     // still "present", just not worth spending reads on.
     const { presence } = this.props.services;
     await presence.heartbeat(projectId, this.currentPresenceMode());
+
+    // Presence switching itself off means its list is not there. That is a schema gap
+    // the operator can fix in one click, so surface it instead of just showing nobody.
+    if (presence.isDisabled) {
+      if (this.presenceTimer) { clearInterval(this.presenceTimer); this.presenceTimer = null; }
+      if (!this.disposed && !this.state.schemaGap) {
+        this.setState({ schemaGap: true });
+        if (this.engine) {
+          this.engine.toast(
+            'Who-is-here needs the ERG Presence list, which this site does not have yet. ' +
+            'Open Backend and press Deploy to add it.',
+            'err'
+          );
+        }
+      }
+      return;
+    }
+
     if (document.visibilityState === 'hidden') { return; }
     const present = await presence.list(projectId);
     if (!this.disposed) { this.setState({ present }); }
@@ -527,7 +562,11 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
           if (!this.disposed) { this.setState({ provisionProgress: { done, total, label } }); }
         });
         const fresh = await this.props.services.provisioning.buildPlan();
-        this.setState({ provisioning: false, provisionResults: results, plan: fresh });
+        this.setState({ provisioning: false, provisionResults: results, plan: fresh, schemaGap: !isHealthy(fresh) });
+        // Anything that switched itself off because its list was missing gets another
+        // go now, rather than staying dead until someone reloads the page.
+        this.props.services.presence.reset();
+        if (this.state.currentProjectId) { this.startPresence(); }
       } catch (e) {
         this.setState({ provisioning: false });
         this.fail(e);
@@ -539,7 +578,7 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     void (async (): Promise<void> => {
       try {
         const plan = await this.props.services.provisioning.buildPlan();
-        this.setState({ plan, provisionResults: null });
+        this.setState({ plan, provisionResults: null, schemaGap: !isHealthy(plan) });
       } catch (e) { this.fail(e); }
     })();
   };
@@ -792,8 +831,15 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
             </span>
           )}
           {this.renderBadge()}
-          <button type="button" className={styles.button} onClick={this.openSetup}>
-            Backend
+          <button
+            type="button"
+            className={`${styles.button} ${this.state.schemaGap ? styles.warn : ''}`}
+            onClick={this.openSetup}
+            title={this.state.schemaGap && this.state.plan
+              ? `SharePoint setup is incomplete. ${planSummary(this.state.plan)}`
+              : 'Check or update the SharePoint lists behind this graph'}
+          >
+            {this.state.schemaGap ? '⚠ Backend' : 'Backend'}
           </button>
           <button
             type="button"

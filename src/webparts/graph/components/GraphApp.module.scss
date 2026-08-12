@@ -69,6 +69,17 @@
   color: #fff;
 }
 
+/* Schema drift is not fatal — the graph keeps working — so this warns rather than
+   blocks. It stays marked until the plan comes back clean, because a one-off toast is
+   missable and a feature quietly absent for weeks is worse than a nagging button. */
+.warn {
+  border-color: #fcd34d;
+  color: #fcd34d;
+  background: rgba(252, 211, 77, 0.12);
+
+  &:hover:not(:disabled) { border-color: #fde68a; }
+}
+
 .spacer { margin-left: auto; }
 
 .badge {
