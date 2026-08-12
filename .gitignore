@@ -26,7 +26,9 @@ dist/
 temp/
 solution/
 sharepoint/solution/
-release/assets/
+# Heft emits analysis logs, dependency audits and manifests here on every build.
+# The CDN handoff bundle is assembled here too — all of it is build output.
+release/
 cdn-handoff/
 *.sppkg
 .heft/
