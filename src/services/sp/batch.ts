@@ -142,10 +142,20 @@ export const parseBatchResponse = (text: string): IBatchPartResult[] => {
   return results;
 };
 
-/** Extract a human-usable message from a failed SharePoint REST response body. */
+/**
+ * Extract a human-usable message from a failed SharePoint REST response body.
+ *
+ * Both envelope shapes must be handled: `odata=verbose` nests under `error`, while
+ * `odata=nometadata` — which this app uses everywhere — nests under `odata.error`.
+ * Reading only the verbose shape silently discards every real message and leaves the
+ * caller reporting a truncated raw body, which is how a plain malformed-query 400 ends
+ * up looking like a mysterious permissions failure.
+ */
 export const errorMessageFrom = (body: string, json: unknown): string => {
-  const obj = json as { error?: { message?: { value?: string } | string } } | null;
-  const msg = obj && obj.error ? obj.error.message : undefined;
+  type ErrorEnvelope = { message?: { value?: string } | string };
+  const obj = json as { error?: ErrorEnvelope; 'odata.error'?: ErrorEnvelope } | null;
+  const envelope = obj ? (obj['odata.error'] || obj.error) : undefined;
+  const msg = envelope ? envelope.message : undefined;
   if (typeof msg === 'string') { return msg; }
   if (msg && typeof msg === 'object' && typeof msg.value === 'string') { return msg.value; }
   return (body || 'Unknown SharePoint error').slice(0, 300);

@@ -35,6 +35,10 @@ export interface IListSnapshot {
   verified: boolean;
   versioning: boolean;
   fields: { [internal: string]: IFieldSnapshot };
+  /** What actually went wrong when `verified` is false. Surfaced to the operator: a
+   *  generic "could not be read" reads like a permissions problem even when it is a
+   *  malformed query, which makes the real cause almost impossible to find from the UI. */
+  readError?: string;
 }
 
 export type ProvisioningAction =
@@ -75,8 +79,9 @@ export const planProvisioning = (
     if (snap && snap.exists && !snap.verified) {
       conflicts.push({
         list: list.title,
-        reason: 'The list exists but could not be read, so its columns are unknown. ' +
-          'Provisioning is skipped to avoid creating duplicate columns. Check permissions and re-run.'
+        reason: 'The list exists but its columns could not be read, so provisioning is skipped ' +
+          'rather than run blind against it. SharePoint said: ' +
+          (snap.readError || 'no error detail was captured') + '.'
       });
       continue;
     }

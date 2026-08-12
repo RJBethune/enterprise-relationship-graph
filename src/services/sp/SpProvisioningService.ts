@@ -73,16 +73,31 @@ export class SpProvisioningService implements IProvisioningService {
       // 404 is the ordinary "not deployed yet" answer. Anything else means we could
       // not see the list, and provisioning blind against it would double-create columns.
       if (e instanceof SpRestError && e.status === 404) { return empty; }
-      return { title, exists: true, verified: false, versioning: false, fields: {} };
+      // Some tenants answer a missing list with 400 + "List 'X' does not exist" rather
+      // than 404. Treating that as unreadable would block provisioning on a site that
+      // simply has nothing deployed yet.
+      const message = e instanceof Error ? e.message : String(e);
+      if (/does not exist/i.test(message)) { return empty; }
+      return {
+        title, exists: true, verified: false, versioning: false, fields: {},
+        readError: message
+      };
     }
 
     if (listInfo.Id) { this.listIds[title] = listInfo.Id; }
 
     try {
+      // NO $select here, deliberately.
+      //
+      // /fields is a POLYMORPHIC collection whose declared type is SP.Field. Naming a
+      // subtype-only property in $select — Choices (SP.FieldChoice),
+      // RelationshipDeleteBehavior (SP.FieldLookup) — makes SharePoint reject the WHOLE
+      // query with HTTP 400, not just drop that column. The failure then presents as
+      // "the list exists but could not be read", which reads like a permissions problem
+      // and is not one. Requesting the full entity returns each field serialized as its
+      // ACTUAL type, so the subtype properties arrive for the fields that have them.
       const fields = await this.sp.getAll<ISpFieldDto>(
-        `web/lists/getbytitle('${encodeURIComponent(title)}')/fields` +
-        '?$select=InternalName,TypeAsString,Indexed,EnforceUniqueValues,Choices,RelationshipDeleteBehavior' +
-        '&$top=500'
+        `web/lists/getbytitle('${encodeURIComponent(title)}')/fields?$top=500`
       );
       const map: { [internal: string]: IFieldSnapshot } = {};
       for (const f of fields) {
@@ -96,8 +111,11 @@ export class SpProvisioningService implements IProvisioningService {
         };
       }
       return { title, exists: true, verified: true, versioning: !!listInfo.EnableVersioning, fields: map };
-    } catch {
-      return { title, exists: true, verified: false, versioning: !!listInfo.EnableVersioning, fields: {} };
+    } catch (e) {
+      return {
+        title, exists: true, verified: false, versioning: !!listInfo.EnableVersioning, fields: {},
+        readError: e instanceof Error ? e.message : String(e)
+      };
     }
   }
 

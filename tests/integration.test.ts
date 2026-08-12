@@ -23,6 +23,78 @@ const deployedSite = async (): Promise<{ fake: FakeSharePoint; sp: SpRest }> => 
   return { fake, sp };
 };
 
+suite('integration: reading a live schema', () => {
+  test('an existing list can be READ — the health check must not 400 on its own query', async () => {
+    // Regression: the fields query named Choices and RelationshipDeleteBehavior in
+    // $select. /fields is polymorphic and declared as SP.Field, which has neither, so
+    // SharePoint rejected the WHOLE query with 400. Every list then reported "exists but
+    // could not be read", the planner refused to act, and setup was dead in the water
+    // with four conflicts and zero actions — looking exactly like a permissions problem.
+    const { sp } = await deployedSite();
+    const provisioning = new SpProvisioningService(sp);
+
+    const snapshots = await provisioning.readSnapshots();
+    for (const title of [PROJECTS_LIST, NODES_LIST, EDGES_LIST]) {
+      const snap = snapshots[title];
+      assert.ok(snap.exists, `${title} should exist after provisioning`);
+      assert.ok(snap.verified, `${title} must be READABLE — SharePoint said: ${snap.readError || 'n/a'}`);
+      assert.ok(Object.keys(snap.fields).length > 1, `${title} should report its columns`);
+    }
+  });
+
+  test('the exact query shape that shipped broken is rejected, so this cannot regress', async () => {
+    // Proves the guard above is live rather than decorative: if the fake accepted this,
+    // the regression test would pass no matter what the production query did.
+    const { sp } = await deployedSite();
+    let status = 0;
+    try {
+      await sp.get(
+        `web/lists/getbytitle('${encodeURIComponent(PROJECTS_LIST)}')/fields` +
+        '?$select=InternalName,TypeAsString,Indexed,EnforceUniqueValues,Choices,RelationshipDeleteBehavior' +
+        '&$top=500'
+      );
+    } catch (e) {
+      status = (e as { status?: number }).status || 0;
+    }
+    assert.equal(status, 400, 'a subtype-only property in $select must 400, exactly as SharePoint does');
+  });
+
+  test('subtype-only properties still arrive, so choices and cascade are checkable', async () => {
+    const { sp } = await deployedSite();
+    const snapshots = await new SpProvisioningService(sp).readSnapshots();
+
+    const status = snapshots[PROJECTS_LIST].fields.ErgStatus;
+    assert.ok(status, 'ErgStatus should be present');
+    assert.deepEqual(status.choices, ['Active', 'Archived'], 'Choice values must be readable');
+
+    const lookup = snapshots[NODES_LIST].fields.ErgProject;
+    assert.ok(lookup, 'ErgProject lookup should be present');
+    assert.equal(lookup.relationshipDeleteBehavior, 1, 'cascade behaviour must be readable');
+  });
+
+  test('an unreadable list reports what SharePoint actually said', async () => {
+    // A generic "could not be read" is what made the original bug so hard to place.
+    const fake = new FakeSharePoint();
+    const sp = new SpRest(fake);
+    const provisioning = new SpProvisioningService(sp);
+    await provisioning.execute(await provisioning.buildPlan());
+
+    const original = fake.request.bind(fake);
+    fake.request = async (method, url, opts) => {
+      if (url.indexOf('/fields') >= 0 && method === 'GET') {
+        return { status: 403, ok: false, etag: null, retryAfterMs: 0,
+          text: '{"odata.error":{"message":{"value":"Access denied."}}}',
+          json: { 'odata.error': { message: { value: 'Access denied.' } } } };
+      }
+      return original(method, url, opts);
+    };
+
+    const plan = await provisioning.buildPlan();
+    assert.ok(plan.conflicts.length > 0);
+    assert.includes(plan.conflicts[0].reason, 'Access denied.');
+  });
+});
+
 suite('integration: provisioning a real site', () => {
   test('an empty site is fully deployed by one press of the button', async () => {
     const fake = new FakeSharePoint();

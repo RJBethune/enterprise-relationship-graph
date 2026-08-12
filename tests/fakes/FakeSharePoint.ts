@@ -76,7 +76,9 @@ export class FakeSharePoint implements ISpTransport {
   }
 
   private err(status: number, message: string): ISpRawResponse {
-    const json = { error: { message: { value: message } } };
+    // The `odata.error` envelope, which is what odata=nometadata actually returns.
+    // The app requests nometadata everywhere, so this is the shape it must parse.
+    const json = { 'odata.error': { code: `-1, ${status}`, message: { lang: 'en-US', value: message } } };
     return { status, ok: false, text: JSON.stringify(json), json, etag: null, retryAfterMs: status === 429 ? 3000 : 0 };
   }
 
@@ -119,7 +121,7 @@ export class FakeSharePoint implements ISpTransport {
     }
     const fieldMatch = /^\/fields\/getbyinternalnameortitle\('([^']+)'\)/.exec(rest);
     if (fieldMatch) { return this.updateField(list, decodeURIComponent(fieldMatch[1]), body, verb); }
-    if (rest.indexOf('/fields') === 0 && verb === 'GET') { return this.readFields(list); }
+    if (rest.indexOf('/fields') === 0 && verb === 'GET') { return this.readFields(list, rest); }
     if (rest.indexOf('/getchanges') === 0 && verb === 'POST') { return this.getChanges(list, body); }
 
     const itemMatch = /^\/items\((\d+)\)/.exec(rest);
@@ -164,7 +166,31 @@ export class FakeSharePoint implements ISpTransport {
     return this.ok(payload);
   }
 
-  private readFields(list: IFakeList): ISpRawResponse {
+  /**
+   * Properties that exist only on a Field SUBTYPE, not on SP.Field.
+   *
+   * /fields is polymorphic and declared as SP.Field, so naming one of these in $select
+   * makes SharePoint reject the entire query with 400 — it does not merely omit the
+   * column. Reproducing that here is what keeps the "list exists but could not be read"
+   * bug from coming back: it shipped once precisely because nothing modelled this rule.
+   */
+  private static readonly SUBTYPE_ONLY_FIELD_PROPS: string[] = [
+    'Choices', 'RelationshipDeleteBehavior', 'LookupList', 'LookupField',
+    'MaxLength', 'NumberOfLines', 'RichText', 'SelectionMode'
+  ];
+
+  private readFields(list: IFakeList, rest: string): ISpRawResponse {
+    const select = /[?&]\$select=([^&]*)/.exec(rest);
+    if (select) {
+      const asked = decodeURIComponent(select[1]).split(',').map((s) => s.trim());
+      const bad = asked.filter((a) => FakeSharePoint.SUBTYPE_ONLY_FIELD_PROPS.indexOf(a) >= 0);
+      if (bad.length > 0) {
+        return this.err(
+          400,
+          `The expression "${bad[0]}" is not valid. Field or property "${bad[0]}" does not exist.`
+        );
+      }
+    }
     return this.ok({
       value: Array.from(list.fields.values()).map((f) => ({
         InternalName: f.internal,
