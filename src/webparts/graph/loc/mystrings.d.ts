@@ -1,6 +1,8 @@
 declare interface IGraphWebPartStrings {
   PropertyPaneDescription: string;
   DataGroupName: string;
+  AppearanceGroupName: string;
+  ViewHeightFieldLabel: string;
   SyncGroupName: string;
   AdvancedGroupName: string;
   ProjectIdFieldLabel: string;

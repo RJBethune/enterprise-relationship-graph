@@ -14,6 +14,7 @@ import { createSharePointServices, IErgServices } from '../../services/ServiceFa
 
 export interface IGraphWebPartProps {
   projectId: number;
+  viewHeight: number;
   pollSeconds: number;
   autosaveMs: number;
   assetBaseUrl: string;
@@ -72,6 +73,7 @@ export default class GraphWebPart extends BaseClientSideWebPart<IGraphWebPartPro
       initialProjectId: this.resolveInitialProject(),
       pollSeconds: this.properties.pollSeconds === undefined ? 8 : this.properties.pollSeconds,
       autosaveMs: this.properties.autosaveMs === undefined ? 2000 : this.properties.autosaveMs,
+      viewHeight: this.properties.viewHeight === undefined ? 0 : this.properties.viewHeight,
       // Blank is the DEV default (public font CDNs). Production sites set this to the
       // project's CDN folder — see loadEngineFonts.
       assetBaseUrl: this.properties.assetBaseUrl || '',
@@ -83,7 +85,7 @@ export default class GraphWebPart extends BaseClientSideWebPart<IGraphWebPartPro
     // The graph is a full-canvas application, not a card: give it the height it needs
     // even when the page section does not offer one.
     this.domElement.style.height = '100%';
-    this.domElement.style.minHeight = '640px';
+    this.domElement.style.minHeight = `${this.properties.viewHeight > 0 ? this.properties.viewHeight : 640}px`;
 
     ReactDom.render(element, this.domElement);
   }
@@ -111,6 +113,19 @@ export default class GraphWebPart extends BaseClientSideWebPart<IGraphWebPartPro
                 }),
                 PropertyPaneLabel('projectIdHelp', {
                   text: 'Leave at 0 to reopen whichever graph this browser used last. A ?project=<id> link always wins.'
+                })
+              ]
+            },
+            {
+              groupName: strings.AppearanceGroupName,
+              groupFields: [
+                PropertyPaneSlider('viewHeight', {
+                  label: strings.ViewHeightFieldLabel, min: 0, max: 2000, step: 20
+                }),
+                PropertyPaneLabel('viewHeightHelp', {
+                  text: '0 fits the graph to the space left in the window. Set a height to force ' +
+                    'a taller canvas — useful on small screens, where filling the window leaves ' +
+                    'very little room. The page scrolls to reach it.'
                 })
               ]
             },

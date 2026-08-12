@@ -51,6 +51,8 @@ export class DocumentGraphStore implements IGraphStore {
 class DocumentProject implements IOpenProject {
   /** The graph as it was last known to be stored — the merge base. */
   private base: IGraph;
+  /** Serialized snapshots as stored, so a snapshot-only change still counts. */
+  private baseSnapshots: string;
   private lastModified: string | null;
 
   public constructor(
@@ -61,13 +63,25 @@ class DocumentProject implements IOpenProject {
     private etag: string | null
   ) {
     this.base = JSON.parse(JSON.stringify(normalizeGraph(bundle.graph))) as IGraph;
+    this.baseSnapshots = stableStringify(bundle.snapshots || []);
     this.lastModified = summary.modified;
   }
 
   public async save(graph: IGraph, snapshots: unknown[] | null): Promise<ISaveOutcome> {
+    // Writing an UNCHANGED graph is not merely wasteful — it bumps Modified, which
+    // every other client's poll reads as "somebody edited this", so they reload and
+    // write in turn. That is a feedback loop between browsers with no user behind it,
+    // and it appears as colleagues who seem to be saving constantly while idle.
+    const next = normalizeGraph(graph);
+    const snapsNow = stableStringify(snapshots || []);
+    if (stableStringify(this.base) === stableStringify(next) && snapsNow === this.baseSnapshots) {
+      return { status: 'saved', writes: 0 };
+    }
+
     try {
       const chars = await this.write(graph, snapshots, this.etag);
-      this.base = JSON.parse(JSON.stringify(graph)) as IGraph;
+      this.base = JSON.parse(JSON.stringify(next)) as IGraph;
+      this.baseSnapshots = snapsNow;
       return { status: 'saved', writes: 1, warning: this.ceilingWarning(chars) };
     } catch (e) {
       if (!(e instanceof ConflictError)) {
@@ -101,6 +115,7 @@ class DocumentProject implements IOpenProject {
     }
 
     this.base = JSON.parse(JSON.stringify(merge.merged)) as IGraph;
+    this.baseSnapshots = stableStringify(snapshots || []);
     return {
       status: 'merged',
       graph: merge.merged,

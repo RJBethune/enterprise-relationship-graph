@@ -124,6 +124,65 @@ suite('hardening: list-level permissions, not just site-level', () => {
   });
 });
 
+suite('hardening: an idle graph writes nothing', () => {
+  test('saving an unchanged graph performs no write at all', async () => {
+    // The engine persists for SYNTHETIC mutations too — a project open, an undo, a
+    // boot cleanup. Each of those used to become a real write, which bumped Modified,
+    // which every other client read as "somebody edited this" and answered with a
+    // write of its own: a loop between browsers with nobody editing. It showed up as
+    // colleagues who appeared to be saving constantly while sitting still.
+    const { fake, sp } = await deployed();
+    const store = new DocumentGraphStore(sp, 'Ross');
+    const project = await store.createProject('Quiet', 'Document');
+    const session = await store.openProject(project.id);
+    await session.save(graph([node('a', 'A')]), []);
+
+    fake.reset();
+    const outcome = await session.save(graph([node('a', 'A')]), []);
+    assert.equal(outcome.writes, 0);
+    assert.equal(fake.log.length, 0, 'an unchanged save must not touch the network');
+  });
+
+  test('re-saving what was just opened is a no-op', async () => {
+    const { fake, sp } = await deployed();
+    const store = new DocumentGraphStore(sp, 'Ross');
+    const project = await store.createProject('Reopen', 'Document');
+    const first = await store.openProject(project.id);
+    await first.save(graph([node('a', 'A'), node('b', 'B')]), []);
+
+    const reopened = await store.openProject(project.id);
+    fake.reset();
+    const outcome = await reopened.save(reopened.bundle.graph, reopened.bundle.snapshots || []);
+    assert.equal(outcome.writes, 0, 'opening a project must not rewrite it');
+    assert.equal(fake.log.length, 0);
+  });
+
+  test('a real change still writes, and key order alone is not a change', async () => {
+    const { sp } = await deployed();
+    const store = new DocumentGraphStore(sp, 'Ross');
+    const project = await store.createProject('Real', 'Document');
+    const session = await store.openProject(project.id);
+    await session.save(graph([node('a', 'A')]), []);
+
+    // Same node, different key insertion order.
+    const reordered = normalizeGraph({
+      nodes: [{ type: 'Office', label: 'A', id: 'a' }], edges: []
+    } as unknown as IGraph);
+    assert.equal((await session.save(reordered, [])).writes, 0, 'key order is not a change');
+    assert.equal((await session.save(graph([node('a', 'Renamed')]), [])).writes, 1);
+  });
+
+  test('a snapshot-only change still counts as a change', async () => {
+    const { sp } = await deployed();
+    const store = new DocumentGraphStore(sp, 'Ross');
+    const project = await store.createProject('Snaps', 'Document');
+    const session = await store.openProject(project.id);
+    await session.save(graph([node('a', 'A')]), []);
+    const outcome = await session.save(graph([node('a', 'A')]), [{ id: 's1', name: 'Baseline' }]);
+    assert.equal(outcome.writes, 1, 'the graph is unchanged but the snapshots are not');
+  });
+});
+
 suite('hardening: the document ceiling is announced before it is hit', () => {
   test('a small graph says nothing', async () => {
     const { sp } = await deployed();

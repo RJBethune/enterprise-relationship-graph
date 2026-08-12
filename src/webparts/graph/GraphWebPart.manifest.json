@@ -20,6 +20,7 @@
       "officeFabricIconFontName": "Relationship",
       "properties": {
         "projectId": 0,
+        "viewHeight": 0,
         "pollSeconds": 8,
         "autosaveMs": 2000,
         "assetBaseUrl": ""

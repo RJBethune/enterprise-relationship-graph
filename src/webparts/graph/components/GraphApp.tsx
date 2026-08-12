@@ -151,10 +151,9 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
     }
 
     const top = el.getBoundingClientRect().top;
-    const height = Math.max(
-      MIN_SHELL_HEIGHT,
-      Math.round(window.innerHeight - top - SHELL_BOTTOM_GAP)
-    );
+    const height = this.props.viewHeight > 0
+      ? Math.max(MIN_SHELL_HEIGHT, Math.round(this.props.viewHeight))
+      : Math.max(MIN_SHELL_HEIGHT, Math.round(window.innerHeight - top - SHELL_BOTTOM_GAP));
     if (el.style.height === `${height}px`) { return; }
     el.style.height = `${height}px`;
     // The engine only re-measures its canvas on WINDOW resize, which does not fire
@@ -464,8 +463,6 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
 
   private scheduleSave(graph: IGraph): void {
     if (!this.canEdit) { return; }
-    // Any mutation marks us as editing rather than merely viewing, for presence.
-    this.lastEditAt = Date.now();
     this.pendingGraph = graph;
     if (this.saveTimer) { clearTimeout(this.saveTimer); }
     this.setSync('saving', null);
@@ -491,6 +488,10 @@ export default class GraphApp extends React.Component<IGraphAppProps, IGraphAppS
 
       switch (outcome.status) {
         case 'saved':
+          // Presence says "editing" only when a write actually HAPPENED. Marking on
+          // every scheduled save made idle viewers look like they were typing, because
+          // the engine schedules one for synthetic mutations too.
+          if (outcome.writes && outcome.writes > 0) { this.lastEditAt = Date.now(); }
           this.setSync('saved', null);
           this.refreshCounts(graph);
           if (this.engine) { this.engine.markClean(); }

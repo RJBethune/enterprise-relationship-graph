@@ -878,6 +878,11 @@ function applyStoredFilters(){
 }
 function persist(){
   try { syncPositionsToGraph(); } catch(_){}
+  // afterMutate() persists even for SYNTHETIC mutations — a project open, an undo,
+  // a boot-time cleanup. In file mode that was a free localStorage write; against a
+  // host it is a real one, so a host-driven load must not report itself back as a
+  // user edit and trigger a save.
+  if (__ergHostLoading) return;
   if (host && typeof host.onGraphChanged === "function"){
     try { host.onGraphChanged(state.graph); } catch(_){}
     return;

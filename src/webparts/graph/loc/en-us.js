@@ -3,6 +3,8 @@ define([], function () {
     PropertyPaneDescription:
       'Graph data is stored in SharePoint lists on this site. Use the Backend button in the web part to create or update those lists.',
     DataGroupName: 'Data',
+    AppearanceGroupName: 'Appearance',
+    ViewHeightFieldLabel: 'Graph height in pixels (0 = fit the window)',
     SyncGroupName: 'Saving and sync',
     AdvancedGroupName: 'Advanced',
     ProjectIdFieldLabel: 'Graph to open by default (0 = last opened)',

@@ -64,6 +64,11 @@ seam(
     'function persist(){ try { syncPositionsToGraph(); localStorage.setItem(STORAGE_KEY, JSON.stringify(state.graph)); } catch(_){} }',
     'function persist(){\n'
     '  try { syncPositionsToGraph(); } catch(_){}\n'
+    '  // afterMutate() persists even for SYNTHETIC mutations — a project open, an undo,\n'
+    '  // a boot-time cleanup. In file mode that was a free localStorage write; against a\n'
+    '  // host it is a real one, so a host-driven load must not report itself back as a\n'
+    '  // user edit and trigger a save.\n'
+    '  if (__ergHostLoading) return;\n'
     '  if (host && typeof host.onGraphChanged === "function"){\n'
     '    try { host.onGraphChanged(state.graph); } catch(_){}\n'
     '    return;\n'
