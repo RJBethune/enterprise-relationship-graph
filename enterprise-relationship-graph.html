@@ -3170,6 +3170,10 @@ function subtreeLeaves(id, childrenOf, memo){
 
 let __ergLayoutWrites = 0;
 let __ergLayoutTrace = { requested: "", codes: "", matched: "none", tiers: 0, nodesSeen: 0 };
+// Which layout request is the current one. The delayed check below outlives the choice
+// that started it, and picking a second layout inside its window made it report the
+// user's own next choice as the graph resetting itself.
+let __ergLayoutSeq = 0;
 function applyLayout(name, skipFit){
   __ergLayoutWrites = 0;
   // The dispatch below turns on string identity, and a near miss is invisible from
@@ -4969,7 +4973,7 @@ function renderNodeProfile(el, node){
     renderDetails();
   };
   document.getElementById("profile-delete").onclick = ()=>{
-    if (confirm("Delete '"+node.label+"' and its relationships?")) deleteNode(node.id);
+    if (askToConfirm("Delete '"+node.label+"' and its relationships?")) deleteNode(node.id);
   };
 }
 
@@ -5102,7 +5106,7 @@ function renderEdgeProfile(el, edge){
     showToast("Reversed direction", "ok");
   };
   document.getElementById("edge-delete").onclick = ()=>{
-    if (confirm("Delete this relationship?")) deleteEdge(edge.id);
+    if (askToConfirm("Delete this relationship?")) deleteEdge(edge.id);
   };
 }
 
@@ -5880,7 +5884,7 @@ function showNodeContextMenu(x, y, node){
     items.push({ label:"Collapse branch (hides " + totalDesc + ")", icon:"fa-square-minus", action:()=>collapseNodeBranch(node.id) });
   }
   items.push("sep");
-  items.push({ label:"Delete node", icon:"fa-trash", danger:true, action:()=>{ if(confirm("Delete '"+node.label+"'?")) deleteNode(node.id); } });
+  items.push({ label:"Delete node", icon:"fa-trash", danger:true, action:()=>{ if(askToConfirm("Delete '"+node.label+"'?")) deleteNode(node.id); } });
   const menu = buildCtxMenu(items);
   positionCtxMenu(menu, x, y);
 }
@@ -5901,7 +5905,7 @@ function showEdgeContextMenu(x, y, edge){
         }
       } },
     "sep",
-    { label:"Delete relationship",icon:"fa-trash", danger:true, action:()=>{ if(confirm("Delete this relationship?")) deleteEdge(edge.id); } }
+    { label:"Delete relationship",icon:"fa-trash", danger:true, action:()=>{ if(askToConfirm("Delete this relationship?")) deleteEdge(edge.id); } }
   ]);
   positionCtxMenu(menu, x, y);
 }
@@ -6362,7 +6366,7 @@ function updateFileChip(){
   }
 }
 function loadSample(){
-  if (!confirm("Replace current graph with sample data? Unsaved changes will be lost.")) return;
+  if (!askToConfirm("Replace current graph with sample data? Unsaved changes will be lost.")) return;
   state.graph = JSON.parse(JSON.stringify(SAMPLE_DATA));
   if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
   if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
@@ -6645,7 +6649,7 @@ function openManageTypesModal(){
         const affected = state.graph.nodes.filter(n =>
           n.type === type && n.icon && String(n.icon).trim());
         if (affected.length === 0) return;
-        if (!confirm(`Clear icon overrides on ${affected.length} ${type} node${affected.length===1?"":"s"}? They'll fall back to the ${type} type default icon.`)) return;
+        if (!askToConfirm(`Clear icon overrides on ${affected.length} ${type} node${affected.length===1?"":"s"}? They'll fall back to the ${type} type default icon.`)) return;
         affected.forEach(n => { n.icon = ""; });
         afterMutate();
         showToast(`Reset icons on ${affected.length} ${type} node${affected.length===1?"":"s"}`, "ok");
@@ -6679,7 +6683,7 @@ function openManageTypesModal(){
       const delBtn = row.querySelector('[data-act="del"]');
       if (delBtn && !delBtn.disabled){
         delBtn.onclick = ()=>{
-          if (!confirm("Delete custom type '"+name+"'?")) return;
+          if (!askToConfirm("Delete custom type '"+name+"'?")) return;
           state.graph.customNodeTypes = (state.graph.customNodeTypes || []).filter(t => t.name !== name);
           afterMutate();
           buildCustomList(); buildBuiltinGrid();
@@ -6815,6 +6819,28 @@ function loadSnapshots(){
 function saveSnapshots(snaps){
   try { localStorage.setItem(SNAP_KEY, JSON.stringify(snaps)); } catch(_){}
 }
+/* Native confirm(), made honest.
+
+   An iframe without allow-modals throws on confirm() outright -- which is exactly what a
+   SharePoint page becomes when it is surfaced as a Teams tab. The throw escapes whatever
+   handler asked the question, so the button does not merely fail, it takes the click
+   handler down with it.
+
+   Catching it is not the whole fix. A user who ticks "prevent additional dialogs" still
+   gets a silent false, and this cannot tell that apart from an honest Cancel, so those
+   actions will quietly do nothing. The real answer is the app's own modal, the way
+   askForText below already does it; these call sites are guarded rather than converted
+   because converting them restructures the control flow of fifteen handlers, and a
+   crash is worth removing on its own. */
+function askToConfirm(message){
+  try {
+    return window.confirm(message);
+  } catch (e){
+    showToast("This page cannot open confirmation dialogs, so the action was cancelled. "
+      + "Open the graph in a browser tab rather than an embedded frame.", "err");
+    return false;
+  }
+}
 /* Ask for one line of text using the app's OWN modal.
 
    window.prompt() is not available everywhere this app now runs. An iframe without
@@ -6858,7 +6884,7 @@ function saveCurrentSnapshot(){
 function loadSnapshot(id){
   const snaps = loadSnapshots();
   const s = snaps.find(x=>x.id===id); if (!s) return;
-  if (!confirm("Load snapshot '"+s.name+"'? Current graph will be replaced.")) return;
+  if (!askToConfirm("Load snapshot '"+s.name+"'? Current graph will be replaced.")) return;
   // snapshot() doesn't capture views/walkthroughs — preserve the current ones
   // so loading a snapshot doesn't silently destroy them.
   const keepViews = state.graph.views;
@@ -6912,7 +6938,7 @@ function renderSnapList(){
     const id = item.getAttribute("data-id");
     item.querySelector('[data-act="load"]').onclick = e=>{ e.stopPropagation(); loadSnapshot(id); };
     item.querySelector('[data-act="rename"]').onclick = e=>{ e.stopPropagation(); renameSnapshot(id); };
-    item.querySelector('[data-act="del"]').onclick = e=>{ e.stopPropagation(); if(confirm("Delete snapshot?")) deleteSnapshot(id); };
+    item.querySelector('[data-act="del"]').onclick = e=>{ e.stopPropagation(); if(askToConfirm("Delete snapshot?")) deleteSnapshot(id); };
   });
 }
 
@@ -9331,7 +9357,7 @@ function runMermaidImport(){
     showToast("No nodes found — is this a Mermaid flowchart?", "err");
     return;
   }
-  if (!confirm("Replace the entire graph with " + report.nodes + " node" + (report.nodes===1?"":"s") +
+  if (!askToConfirm("Replace the entire graph with " + report.nodes + " node" + (report.nodes===1?"":"s") +
                " and " + report.edges + " relationship" + (report.edges===1?"":"s") +
                " parsed from this Mermaid diagram?\n\nThe current graph will be cleared (Ctrl+Z to undo).")) return;
 
@@ -10174,6 +10200,7 @@ function wireUp(){
 
   document.getElementById("layout-select").onchange = e=>{
     const wanted = e.target.value;
+    const seq = ++__ergLayoutSeq;
     // A layout can appear to do nothing in three ways, and every one of them is
     // invisible: it throws part-way, it runs but moves nothing, or it runs and is
     // undone a moment later by something else. The dropdown says one thing, the canvas
@@ -10225,6 +10252,8 @@ function wireUp(){
     // Force self-animates, so a later difference there would mean nothing.
     if (wanted === "force") return;
     setTimeout(() => {
+      // Superseded by a later choice: whatever this one did is no longer the question.
+      if (seq !== __ergLayoutSeq) return;
       if (state.layout !== wanted){
         showToast('Layout switched itself back to "' + state.layout + '" - something reset it.', "err");
       } else if (signature() !== settled){
@@ -10266,9 +10295,9 @@ function wireUp(){
   document.getElementById("btn-delete-sel").onclick = ()=>{
     if (state.selectedNode){
       const n = findNode(state.selectedNode);
-      if (n && confirm("Delete '"+n.label+"'?")) deleteNode(n.id);
+      if (n && askToConfirm("Delete '"+n.label+"'?")) deleteNode(n.id);
     } else if (state.selectedEdge){
-      if (confirm("Delete selected relationship?")) deleteEdge(state.selectedEdge);
+      if (askToConfirm("Delete selected relationship?")) deleteEdge(state.selectedEdge);
     } else showToast("Nothing selected","err");
   };
   document.getElementById("btn-undo").onclick = undo;
@@ -11025,7 +11054,7 @@ function renderViewList(){
   container.querySelectorAll(".snap-item").forEach(item=>{
     const id = item.getAttribute("data-id");
     item.querySelector('[data-act="apply"]').onclick = e=>{ e.stopPropagation(); applyView(id); };
-    item.querySelector('[data-act="del"]').onclick   = e=>{ e.stopPropagation(); if (confirm("Delete this view?")) deleteView(id); };
+    item.querySelector('[data-act="del"]').onclick   = e=>{ e.stopPropagation(); if (askToConfirm("Delete this view?")) deleteView(id); };
     item.onclick = ()=>applyView(id);
   });
 }
@@ -11184,7 +11213,7 @@ function openPresentManager(){
     const w = wts.find(x=>x.id===id);
     item.querySelector('[data-act="play"]').onclick = e=>{ e.stopPropagation(); closeModal(); startPresent(w.steps); };
     item.querySelector('[data-act="edit"]').onclick = e=>{ e.stopPropagation(); openWalkthroughBuilder(id); };
-    item.querySelector('[data-act="del"]').onclick  = e=>{ e.stopPropagation(); if (confirm("Delete walkthrough \"" + w.name + "\"?")){ const arr=getWalkthroughs(); arr.splice(arr.findIndex(x=>x.id===id),1); persist(); markDirty(); renderWalkthroughList(); openPresentManager(); } };
+    item.querySelector('[data-act="del"]').onclick  = e=>{ e.stopPropagation(); if (askToConfirm("Delete walkthrough \"" + w.name + "\"?")){ const arr=getWalkthroughs(); arr.splice(arr.findIndex(x=>x.id===id),1); persist(); markDirty(); renderWalkthroughList(); openPresentManager(); } };
   });
 }
 function openWalkthroughBuilder(id){
@@ -11269,7 +11298,7 @@ function renderWalkthroughList(){
     const w = wts.find(x=>x.id===id);
     item.querySelector('[data-act="play"]').onclick = e=>{ e.stopPropagation(); startPresent(w.steps); };
     item.querySelector('[data-act="edit"]').onclick = e=>{ e.stopPropagation(); openWalkthroughBuilder(id); };
-    item.querySelector('[data-act="del"]').onclick  = e=>{ e.stopPropagation(); if (confirm('Delete walkthrough "' + w.name + '"?')){ const arr=getWalkthroughs(); arr.splice(arr.findIndex(x=>x.id===id),1); persist(); markDirty(); renderWalkthroughList(); } };
+    item.querySelector('[data-act="del"]').onclick  = e=>{ e.stopPropagation(); if (askToConfirm('Delete walkthrough "' + w.name + '"?')){ const arr=getWalkthroughs(); arr.splice(arr.findIndex(x=>x.id===id),1); persist(); markDirty(); renderWalkthroughList(); } };
   });
 }
 
