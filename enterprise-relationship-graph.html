@@ -3062,7 +3062,9 @@ function restorePositionsFromGraph(){
       // pinned implies fixed: the force sim only checks `fixed`, and the
       // mouseup handler keeps fixed=true for pinned nodes — mirror that here
       // or restored pins would drift as the sim settles.
-      state.positions.set(n.id, { x:+p.x, y:+p.y, vx:0, vy:0, fixed:!!p.pinned, pinned:!!p.pinned });
+      // A saved arrangement is an instruction, not a suggestion: hold every restored
+      // node so reopening a graph shows the layout that was actually saved.
+      state.positions.set(n.id, { x:+p.x, y:+p.y, vx:0, vy:0, fixed:true, pinned:!!p.pinned });
       restored++;
     }
   });
@@ -3166,7 +3168,27 @@ function subtreeLeaves(id, childrenOf, memo){
   return w;
 }
 
+let __ergLayoutWrites = 0;
+let __ergLayoutTrace = { requested: "", codes: "", matched: "none", tiers: 0, nodesSeen: 0 };
 function applyLayout(name, skipFit){
+  __ergLayoutWrites = 0;
+  // The dispatch below turns on string identity, and a near miss is invisible from
+  // outside: the dropdown reads right, the toast reads right, and every === in the
+  // chain is false. Strip the characters that are invisible but not equal -- zero
+  // width spaces, BOM, non-breaking space -- then record what actually matched, so a
+  // layout that does nothing can name its own cause instead of costing a round trip.
+  name = String(name == null ? "" : name).replace(/[​-‍﻿ ]/g, "").trim();
+  __ergLayoutTrace = {
+    requested: name,
+    codes: Array.prototype.map.call(name, function(c){ return c.charCodeAt(0); }).join("."),
+    matched: "FELL-THROUGH",
+    tiers: 0,
+    nodesSeen: 0
+  };
+  try { window.__ergLayoutTrace = __ergLayoutTrace; } catch(_){}
+  // Choosing a layout hands the nodes back to it: release the hold that dragging
+  // and layout-restore put on them, except where the user explicitly pinned.
+  state.positions.forEach(p => { if (!p.pinned) p.fixed = false; });
   // Mode entry/exit for Org Chart — snapshot the filter set on entry,
   // restore it when the user picks any other layout.
   if (name === "org-chart" && !state.orgChartMode){
@@ -3199,10 +3221,13 @@ function applyLayout(name, skipFit){
   ensurePositions();
 
   if (name === "hierarchical" || name === "hierarchical-lr"){
+    __ergLayoutTrace.matched = "hierarchical";
     layoutTree(name === "hierarchical-lr" ? "LR" : "TB", w, h);
   } else if (name === "radial"){
+    __ergLayoutTrace.matched = "radial";
     layoutRadial(w, h);
   } else if (name === "cluster"){
+    __ergLayoutTrace.matched = "cluster";
     layoutCluster(w, h, state.clusterAttr || "type");
   } else if (name === "concentric"){
     const ringOrder = [
@@ -3211,6 +3236,8 @@ function applyLayout(name, skipFit){
       ["SharePoint Site","SharePoint List","Microsoft Team","O365 Group","Mailbox","Workflow","Power Automate Flow","Power BI Dashboard"],
       ["Person","Role","API","Dataset","Dataverse Table","Document","Requirement","Decision","Vendor","Service","Environment","Other"]
     ];
+    __ergLayoutTrace.matched = "concentric";
+    __ergLayoutTrace.nodesSeen = state.graph.nodes.length;
     const ring = new Map();
     state.graph.nodes.forEach(n=>{
       let r = ringOrder.length - 1;
@@ -3222,21 +3249,45 @@ function applyLayout(name, skipFit){
     // what is actually present: the highest tier in the graph centers at rank 0
     // and absent tiers (e.g. no Under Secretary / Bureau) leave no empty rings.
     const populated = [...ring.keys()].sort((a,b)=>a-b);
+    __ergLayoutTrace.tiers = populated.length;
     const rankOf = new Map(populated.map((tier,idx)=>[tier,idx]));
     const ringCount = populated.length;
-    const maxR = Math.min(w,h)/2 - 40;
-    ring.forEach((arr, r)=>{
-      const rank = rankOf.get(r);
-      const radius = ringCount<=1 ? maxR*0.5 : (maxR * rank / (ringCount-1));
+    // Ring size is driven by CONTENT, not by the canvas.
+    //
+    // Deriving it from Math.min(w,h) collapsed the whole layout whenever the canvas was
+    // wide and short — a web part in a SharePoint column — because the short side set
+    // the scale: 110 nodes inside a 40px circle on a 700x120 canvas, which reads as the
+    // graph having vanished. The view auto-fits afterwards, so the layout never needed
+    // to fit the canvas in the first place; it needs to be legible, and then be framed.
+    const NODE_ARC = 78;    // arc length reserved for one node on a ring
+    // Ring separation is the term that multiplies: every populated tier pushes the
+    // outermost ring further out, so a graph spanning all ten tiers was drawing a
+    // 3,550px picture that a web part canvas could only frame at about a tenth scale --
+    // every node a 4px dot, which reads as the layout having done nothing at all.
+    // Tighten the gap as tiers accumulate, with a floor that still clears two rings of
+    // icons. Small graphs keep the roomy spacing they already had.
+    const RING_GAP = Math.max(96, 200 - Math.max(0, ringCount - 4) * 16);
+    let radius = 0;
+    // Walk the tiers in RANK ORDER so each ring can be placed outside the previous one.
+    populated.forEach((tier, idx)=>{
+      const arr = ring.get(tier);
+      const rank = idx;
+      // A ring has to be big enough for its own circumference, or its nodes overlap.
+      // Rank 0 especially: it used to be placed at radius 0, which stacked every node
+      // in the innermost tier on the exact same point.
+      const needed = arr.length > 1 ? (arr.length * NODE_ARC) / (2*Math.PI) : 0;
+      radius = rank === 0 ? needed : Math.max(radius + RING_GAP, needed);
       arr.forEach((n,i)=>{
         const p = state.positions.get(n.id);
         const angle = (i/arr.length)*Math.PI*2 + rank*0.2;
         p.x = cx + Math.cos(angle)*radius;
         p.y = cy + Math.sin(angle)*radius;
         p.vx = p.vy = 0;
+        __ergLayoutWrites++;
       });
     });
   } else if (name === "grid"){
+    __ergLayoutTrace.matched = "grid";
     const arr = state.graph.nodes.slice();
     const cols = Math.ceil(Math.sqrt(arr.length));
     const rows = Math.ceil(arr.length/cols);
@@ -4310,7 +4361,11 @@ canvas.addEventListener("mouseup", ()=>{
   }
   if (state.draggedNode){
     const p = state.positions.get(state.draggedNode);
-    if (p && !p.pinned) p.fixed = false;  // pinned nodes stay anchored after release
+    // A node you drag STAYS where you dropped it. Releasing it back into the force
+    // simulation meant a hand-placed node drifted off under the centering force —
+    // barely visible on a large graph, unmissable on a small one, where nothing
+    // balances it. Choosing a layout (or Reset) hands every node back to the sim.
+    if (p) p.fixed = true;
     schedulePositionPersist(); // re-arrangements survive reload without a data edit
   }
   state.draggedNode = null; state.dragMode = null;
@@ -4319,7 +4374,7 @@ canvas.addEventListener("mouseup", ()=>{
 canvas.addEventListener("mouseleave", ()=>{
   if (state.draggedNode){
     const p = state.positions.get(state.draggedNode);
-    if (p && !p.pinned) p.fixed = false;
+    if (p) p.fixed = true;
   }
   state.draggedNode = null; state.dragMode = null;
   canvas.classList.remove("dragging");
@@ -4444,13 +4499,24 @@ function fitGraph(){
     if (p.x<minX) minX=p.x; if (p.y<minY) minY=p.y;
     if (p.x>maxX) maxX=p.x; if (p.y>maxY) maxY=p.y;
   });
+  // A canvas that has not been measured yet has nothing to fit into; fitting against
+  // it would write a garbage transform the user then has to escape from.
+  if (!(w > 0) || !(h > 0)) return;
   const pad = 90;
   const gw = (maxX-minX)||1, gh = (maxY-minY)||1;
+  // The padded space can be ZERO or NEGATIVE on a canvas smaller than 2*pad — a short
+  // section, a collapsed panel, a mid-transition measurement. Feeding that into the
+  // scale mirrored and collapsed the entire graph, which is why switching layout could
+  // make everything vanish in a way no amount of zooming or panning could recover:
+  // the transform itself was inverted. Fall back to half the canvas when padding does
+  // not fit, and never let the scale reach zero.
+  const availW = Math.max(w - pad*2, w*0.5, 1);
+  const availH = Math.max(h - pad*2, h*0.5, 1);
   // cap zoom-in so dense graphs aren't shown at impossible scale
-  const s = Math.min((w-pad*2)/gw, (h-pad*2)/gh, 1.1);
+  const s = Math.max(0.05, Math.min(availW/gw, availH/gh, 1.1));
   state.transform.scale = s;
-  state.transform.x = pad - minX*s + (w - pad*2 - gw*s)/2;
-  state.transform.y = pad - minY*s + (h - pad*2 - gh*s)/2;
+  state.transform.x = (w - gw*s)/2 - minX*s;
+  state.transform.y = (h - gh*s)/2 - minY*s;
   updateZoomLabel(); requestRedraw();
 }
 function resetView(){ state.transform = { x:0, y:0, scale:1 }; updateZoomLabel(); requestRedraw(); }
@@ -5348,7 +5414,11 @@ function openNodeModal(existing){
       const w = canvas.clientWidth, h = canvas.clientHeight;
       const pos = pendingNodePos || { x:w/2+(Math.random()-0.5)*120, y:h/2+(Math.random()-0.5)*120 };
       pendingNodePos = null;
-      state.positions.set(data.id, { x:pos.x, y:pos.y, vx:0, vy:0, fixed:false });
+      // A node you CREATE stays where it was placed. It has no relationships yet, so
+      // nothing balances the centering force and it simply wanders off — the reason a
+      // new node only appeared to settle once it had an edge. Bulk paths
+      // (ensurePositions, import) deliberately stay unfixed so a layout can arrange them.
+      state.positions.set(data.id, { x:pos.x, y:pos.y, vx:0, vy:0, fixed:true });
       syncResult = syncStructuralEdges(data);
       selectNode(data.id);
       showToast("Node added" + (syncResult.added?(" · "+syncResult.added+" edge"+(syncResult.added>1?"s":"")+" auto-created"):""), "ok");
@@ -6056,6 +6126,14 @@ function applyLoadedBundle(bundle, fileName){
   updateModifiedChip();
   markClean();
   afterMutate(true); // skip dirty mark; we just synced from file
+  // A host (SharePoint) needs to know the graph was REPLACED wholesale, because
+  // "clean" here means "matches the file we just opened", which is precisely when it
+  // does NOT match what is stored. Suppressed while the host itself is driving the
+  // load — a project switch or a merged remote change must not echo straight back as
+  // a save.
+  if (host && typeof host.onGraphReplaced === "function" && !__ergHostLoading){
+    try { host.onGraphReplaced(state.graph, fileName || null); } catch(e){ console.error("ERG onGraphReplaced failed", e); }
+  }
   renderViewList(); renderWalkthroughList();
   fitGraph();
   const bits = [];
@@ -6351,6 +6429,16 @@ let _xlsxLoading = null;
 function loadSheetJs(){
   if (window.XLSX) return Promise.resolve(window.XLSX);
   if (_xlsxLoading) return _xlsxLoading;
+  // A host bundles SheetJS and serves it from wherever it serves its own code. The
+  // public CDN below is precisely the sort of origin a locked-down network blocks, and
+  // that failure would surface only when somebody finally tried to export.
+  if (host && typeof host.loadXlsx === "function"){
+    _xlsxLoading = Promise.resolve(host.loadXlsx()).then(function(mod){
+      window.XLSX = window.XLSX || mod;
+      return window.XLSX;
+    });
+    return _xlsxLoading;
+  }
   _xlsxLoading = new Promise((resolve, reject) => {
     const script = document.createElement("script");
     script.src = "https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js";
@@ -6727,14 +6815,45 @@ function loadSnapshots(){
 function saveSnapshots(snaps){
   try { localStorage.setItem(SNAP_KEY, JSON.stringify(snaps)); } catch(_){}
 }
+/* Ask for one line of text using the app's OWN modal.
+
+   window.prompt() is not available everywhere this app now runs. An iframe without
+   allow-modals throws outright -- which is exactly what a SharePoint page becomes when
+   it is surfaced as a Teams tab -- and in any browser a user can tick "prevent
+   additional dialogs", after which prompt() returns null silently and the feature
+   simply appears to do nothing. Both failures are invisible, which is the worst kind. */
+function askForText(title, label, initial, onOk){
+  askForText._n = (askForText._n || 0) + 1;
+  const inputId = "ask-text-" + askForText._n;
+  openModal(title,
+    '<div class="field"><label for="' + inputId + '">' + escapeHtml(label) + '</label>'
+    + '<input id="' + inputId + '" type="text" value="' + escapeHtml(initial || "") + '" /></div>',
+    function(){
+      const el = document.getElementById(inputId);
+      const value = el ? el.value.trim() : "";
+      closeModal();
+      // Empty means the same as cancelling; closing quietly says so better than an error.
+      if (value) onOk(value);
+    });
+  // Focus, select, and let Enter submit -- the things a native prompt gave for free.
+  setTimeout(function(){
+    const el = document.getElementById(inputId);
+    if (!el) return;
+    el.focus(); el.select();
+    el.addEventListener("keydown", function(ev){
+      if (ev.key === "Enter"){ ev.preventDefault(); document.getElementById("modal-save").click(); }
+    });
+  }, 40);
+}
 function saveCurrentSnapshot(){
-  const name = prompt("Snapshot name:", "Snapshot " + new Date().toLocaleString());
-  if (!name) return;
-  const snaps = loadSnapshots();
-  snaps.push({ id: uid("s"), name, ts: Date.now(), graph: snapshot() });
-  saveSnapshots(snaps);
-  renderSnapList();
-  showToast("Snapshot saved", "ok");
+  askForText("Save a snapshot", "Snapshot name",
+    "Snapshot " + new Date().toLocaleString(), function(name){
+    const snaps = loadSnapshots();
+    snaps.push({ id: uid("s"), name: name, ts: Date.now(), graph: snapshot() });
+    saveSnapshots(snaps);
+    renderSnapList();
+    showToast("Snapshot saved", "ok");
+  });
 }
 function loadSnapshot(id){
   const snaps = loadSnapshots();
@@ -6766,8 +6885,9 @@ function deleteSnapshot(id){
 function renameSnapshot(id){
   const snaps = loadSnapshots();
   const s = snaps.find(x=>x.id===id); if (!s) return;
-  const nn = prompt("New name:", s.name); if (!nn) return;
-  s.name = nn; saveSnapshots(snaps); renderSnapList();
+  askForText("Rename snapshot", "New name", s.name, function(nn){
+    s.name = nn; saveSnapshots(snaps); renderSnapList();
+  });
 }
 function renderSnapList(){
   const container = document.getElementById("snap-list-container");
@@ -10053,8 +10173,64 @@ function wireUp(){
   };
 
   document.getElementById("layout-select").onchange = e=>{
-    applyLayout(e.target.value);
-    setTimeout(fitGraph, 60);
+    const wanted = e.target.value;
+    // A layout can appear to do nothing in three ways, and every one of them is
+    // invisible: it throws part-way, it runs but moves nothing, or it runs and is
+    // undone a moment later by something else. The dropdown says one thing, the canvas
+    // shows another, and the only trace is in a console nobody has open. Name each.
+    const signature = () => state.graph.nodes
+      .map(n => { const p = state.positions.get(n.id); return p ? Math.round(p.x)+","+Math.round(p.y) : "-"; })
+      .join(";");
+    const before = signature();
+
+    try {
+      applyLayout(wanted);
+      setTimeout(fitGraph, 60);
+    } catch (err) {
+      console.error("ERG layout failed", err);
+      showToast("That layout could not be applied: " + (err && err.message ? err.message : err), "err");
+      return;
+    }
+
+    // Force places nothing synchronously -- the simulation does it over the following
+    // frames -- so an unchanged signature immediately afterwards is expected there and
+    // means nothing is wrong.
+    const settled = signature();
+    if (wanted !== "force" && state.graph.nodes.length && settled === before && __ergLayoutWrites === 0){
+      // Report the internals rather than the symptom. "Moved nothing" on its own has
+      // several possible causes and no way to tell them apart from outside.
+      // 0 written with a populated graph is arithmetically impossible for this code:
+      // the ring map always receives at least one tier. So the question is no longer
+      // "what did the layout do" but "which copy of the app am I talking to" -- a
+      // second mount would give the page two of everything, with the dropdown wired to
+      // one engine and the canvas drawn by another.
+      const placed = state.graph.nodes.filter(n => state.positions.has(n.id)).length;
+      const first = state.graph.nodes[0];
+      const fp = first && state.positions.get(first.id);
+      const dropdowns = document.querySelectorAll("#layout-select").length;
+      const mounts = document.querySelectorAll("[data-erg-mounted]").length;
+      const canvases = document.querySelectorAll("canvas").length;
+      const attached = document.contains(canvas);
+      showToast('Layout "' + wanted + '" moved nothing. '
+        + state.graph.nodes.length + " nodes, " + placed + " with positions, "
+        + __ergLayoutWrites + " written, branch=" + __ergLayoutTrace.matched
+        + " tiers=" + __ergLayoutTrace.tiers + " seen=" + __ergLayoutTrace.nodesSeen
+        + " codes=" + __ergLayoutTrace.codes + ". "
+        + "mounts=" + mounts + " dropdowns=" + dropdowns + " canvases=" + canvases
+        + " myCanvasAttached=" + attached
+        + ", canvas " + Math.round(canvas.clientWidth) + "x" + Math.round(canvas.clientHeight)
+        + ", first at " + (fp ? Math.round(fp.x) + "," + Math.round(fp.y) : "none") + ".", "err");
+      return;
+    }
+    // Force self-animates, so a later difference there would mean nothing.
+    if (wanted === "force") return;
+    setTimeout(() => {
+      if (state.layout !== wanted){
+        showToast('Layout switched itself back to "' + state.layout + '" - something reset it.', "err");
+      } else if (signature() !== settled){
+        showToast('Layout "' + wanted + '" was applied and then undone - something moved the nodes afterwards.', "err");
+      }
+    }, 1600);
   };
   const clusterAttrSel = document.getElementById("cluster-attr");
   if (clusterAttrSel){
@@ -10788,12 +10964,12 @@ function captureView(name){
   };
 }
 function saveView(){
-  const name = (prompt("Name this view (e.g. \"Data flows only\", \"Exec org chart\"):", "") || "").trim();
-  if (!name) return;
-  getViews().push(captureView(name));
-  persist(); markDirty();
-  renderViewList();
-  showToast('View "' + name + '" saved', "ok");
+  askForText("Save this view", 'Name (e.g. ' + '"' + 'Data flows only' + '"' + ', ' + '"' + 'Exec org chart' + '"' + ')', "", function(name){
+    getViews().push(captureView(name));
+    persist(); markDirty();
+    renderViewList();
+    showToast('View "' + name + '" saved', "ok");
+  });
 }
 function applyView(id){
   const v = getViews().find(x=>x.id===id);
