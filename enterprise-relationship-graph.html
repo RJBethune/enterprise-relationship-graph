@@ -4973,7 +4973,8 @@ function renderNodeProfile(el, node){
     renderDetails();
   };
   document.getElementById("profile-delete").onclick = ()=>{
-    if (askToConfirm("Delete '"+node.label+"' and its relationships?")) deleteNode(node.id);
+    askToConfirm("Delete node", "Delete '"+node.label+"' and its relationships?",
+      ()=>deleteNode(node.id), "Delete");
   };
 }
 
@@ -5106,7 +5107,8 @@ function renderEdgeProfile(el, edge){
     showToast("Reversed direction", "ok");
   };
   document.getElementById("edge-delete").onclick = ()=>{
-    if (askToConfirm("Delete this relationship?")) deleteEdge(edge.id);
+    askToConfirm("Delete relationship", "Delete this relationship?",
+      ()=>deleteEdge(edge.id), "Delete");
   };
 }
 
@@ -5267,7 +5269,11 @@ function closeModal(){
   // hide the Save button and rename Cancel; reset so the next form modal works)
   const saveBtn = document.getElementById("modal-save");
   const cancelBtn = document.getElementById("modal-cancel");
-  if (saveBtn) saveBtn.style.display = "";
+  if (saveBtn){
+    saveBtn.style.display = "";
+    saveBtn.classList.remove("danger");
+    saveBtn.innerHTML = '<i class="fa-solid fa-check" aria-hidden="true"></i> Save';
+  }
   if (cancelBtn) cancelBtn.innerHTML = "Cancel";
   if (modalReturnFocus && typeof modalReturnFocus.focus === "function"){
     try { modalReturnFocus.focus(); } catch(_){}
@@ -5884,7 +5890,7 @@ function showNodeContextMenu(x, y, node){
     items.push({ label:"Collapse branch (hides " + totalDesc + ")", icon:"fa-square-minus", action:()=>collapseNodeBranch(node.id) });
   }
   items.push("sep");
-  items.push({ label:"Delete node", icon:"fa-trash", danger:true, action:()=>{ if(askToConfirm("Delete '"+node.label+"'?")) deleteNode(node.id); } });
+  items.push({ label:"Delete node", icon:"fa-trash", danger:true, action:()=>{ askToConfirm("Delete node", "Delete '"+node.label+"'?", ()=>deleteNode(node.id), "Delete"); } });
   const menu = buildCtxMenu(items);
   positionCtxMenu(menu, x, y);
 }
@@ -5905,7 +5911,7 @@ function showEdgeContextMenu(x, y, edge){
         }
       } },
     "sep",
-    { label:"Delete relationship",icon:"fa-trash", danger:true, action:()=>{ if(askToConfirm("Delete this relationship?")) deleteEdge(edge.id); } }
+    { label:"Delete relationship",icon:"fa-trash", danger:true, action:()=>{ askToConfirm("Delete relationship", "Delete this relationship?", ()=>deleteEdge(edge.id), "Delete"); } }
   ]);
   positionCtxMenu(menu, x, y);
 }
@@ -6366,18 +6372,20 @@ function updateFileChip(){
   }
 }
 function loadSample(){
-  if (!askToConfirm("Replace current graph with sample data? Unsaved changes will be lost.")) return;
-  state.graph = JSON.parse(JSON.stringify(SAMPLE_DATA));
-  if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
-  if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
-  state.positions.clear();
-  state.selectedNode = state.selectedEdge = null;
-  clearLoadedViewState();
-  resetFiltersFromGraph();
-  ensurePositions();
-  applyLayout(state.layout);
-  afterMutate(); renderViewList(); renderWalkthroughList(); fitGraph();
-  showToast("Sample data loaded","ok");
+  askToConfirm("Load sample data",
+    "Replace current graph with sample data? Unsaved changes will be lost.", function(){
+    state.graph = JSON.parse(JSON.stringify(SAMPLE_DATA));
+    if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
+    if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
+    state.positions.clear();
+    state.selectedNode = state.selectedEdge = null;
+    clearLoadedViewState();
+    resetFiltersFromGraph();
+    ensurePositions();
+    applyLayout(state.layout);
+    afterMutate(); renderViewList(); renderWalkthroughList(); fitGraph();
+    showToast("Sample data loaded","ok");
+  }, "Replace");
 }
 
 /* ----- Tabular export (CSV + XLSX) ----- */
@@ -6649,11 +6657,13 @@ function openManageTypesModal(){
         const affected = state.graph.nodes.filter(n =>
           n.type === type && n.icon && String(n.icon).trim());
         if (affected.length === 0) return;
-        if (!askToConfirm(`Clear icon overrides on ${affected.length} ${type} node${affected.length===1?"":"s"}? They'll fall back to the ${type} type default icon.`)) return;
-        affected.forEach(n => { n.icon = ""; });
-        afterMutate();
-        showToast(`Reset icons on ${affected.length} ${type} node${affected.length===1?"":"s"}`, "ok");
-        buildBuiltinGrid();  // re-render so the button updates
+        askToConfirm("Clear icon overrides",
+          `Clear icon overrides on ${affected.length} ${type} node${affected.length===1?"":"s"}? They'll fall back to the ${type} type default icon.`, function(){
+          affected.forEach(n => { n.icon = ""; });
+          afterMutate();
+          showToast(`Reset icons on ${affected.length} ${type} node${affected.length===1?"":"s"}`, "ok");
+          buildBuiltinGrid();  // re-render so the button updates
+        }, "Clear");
       };
     });
   }
@@ -6683,10 +6693,11 @@ function openManageTypesModal(){
       const delBtn = row.querySelector('[data-act="del"]');
       if (delBtn && !delBtn.disabled){
         delBtn.onclick = ()=>{
-          if (!askToConfirm("Delete custom type '"+name+"'?")) return;
-          state.graph.customNodeTypes = (state.graph.customNodeTypes || []).filter(t => t.name !== name);
-          afterMutate();
-          buildCustomList(); buildBuiltinGrid();
+          askToConfirm("Delete custom type", "Delete custom type '"+name+"'?", function(){
+            state.graph.customNodeTypes = (state.graph.customNodeTypes || []).filter(t => t.name !== name);
+            afterMutate();
+            buildCustomList(); buildBuiltinGrid();
+          }, "Delete");
         };
       }
     });
@@ -6840,26 +6851,29 @@ function saveMetricsBaseline(value){
   }
   try { localStorage.setItem("erg.metricsBaseline", value); } catch(_){}
 }
-/* Native confirm(), made honest.
+/* Ask a yes/no question using the app's OWN modal.
 
-   An iframe without allow-modals throws on confirm() outright -- which is exactly what a
-   SharePoint page becomes when it is surfaced as a Teams tab. The throw escapes whatever
-   handler asked the question, so the button does not merely fail, it takes the click
-   handler down with it.
+   The same reason askForText exists. window.confirm() is not available everywhere this
+   app runs: an iframe without allow-modals throws outright -- which is what a SharePoint
+   page becomes when it is surfaced as a Teams tab -- and a user who ticks "prevent
+   additional dialogs" gets a silent false from then on, so every guarded action quietly
+   does nothing. Both failures are invisible, which is the worst kind.
 
-   Catching it is not the whole fix. A user who ticks "prevent additional dialogs" still
-   gets a silent false, and this cannot tell that apart from an honest Cancel, so those
-   actions will quietly do nothing. The real answer is the app's own modal, the way
-   askForText below already does it; these call sites are guarded rather than converted
-   because converting them restructures the control flow of fifteen handlers, and a
-   crash is worth removing on its own. */
-function askToConfirm(message){
-  try {
-    return window.confirm(message);
-  } catch (e){
-    showToast("This page cannot open confirmation dialogs, so the action was cancelled. "
-      + "Open the graph in a browser tab rather than an embedded frame.", "err");
-    return false;
+   The answer arrives through a callback rather than a return value, and that is the whole
+   cost of the change: everything that used to follow a confirm() now lives inside onYes.
+   Every question asked here is destructive -- a delete or a replace -- so the confirming
+   button is styled as such and named for the act rather than saying "OK". */
+function askToConfirm(title, message, onYes, confirmLabel){
+  const body = String(message).split("\n")
+    .filter(line => line.trim())
+    .map(line => '<p style="margin:0 0 10px; line-height:1.5">' + escapeHtml(line) + '</p>')
+    .join("");
+  openModal(title, body, function(){ closeModal(); onYes(); });
+  const save = document.getElementById("modal-save");
+  if (save){
+    save.classList.add("danger");
+    save.innerHTML = '<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> '
+      + escapeHtml(confirmLabel || "Confirm");
   }
 }
 /* Ask for one line of text using the app's OWN modal.
@@ -6905,24 +6919,25 @@ function saveCurrentSnapshot(){
 function loadSnapshot(id){
   const snaps = loadSnapshots();
   const s = snaps.find(x=>x.id===id); if (!s) return;
-  if (!askToConfirm("Load snapshot '"+s.name+"'? Current graph will be replaced.")) return;
-  // snapshot() doesn't capture views/walkthroughs — preserve the current ones
-  // so loading a snapshot doesn't silently destroy them.
-  const keepViews = state.graph.views;
-  const keepWalkthroughs = state.graph.walkthroughs;
-  state.graph = JSON.parse(JSON.stringify(s.graph));
-  if (keepViews) state.graph.views = keepViews;
-  if (keepWalkthroughs) state.graph.walkthroughs = keepWalkthroughs;
-  if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
-  if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
-  state.positions.clear();
-  state.selectedNode = state.selectedEdge = null;
-  clearLoadedViewState();
-  resetFiltersFromGraph();
-  ensurePositions();
-  applyLayout(state.layout);
-  afterMutate(); fitGraph();
-  showToast("Snapshot loaded", "ok");
+  askToConfirm("Load snapshot", "Load snapshot '"+s.name+"'? Current graph will be replaced.", function(){
+    // snapshot() doesn't capture views/walkthroughs — preserve the current ones
+    // so loading a snapshot doesn't silently destroy them.
+    const keepViews = state.graph.views;
+    const keepWalkthroughs = state.graph.walkthroughs;
+    state.graph = JSON.parse(JSON.stringify(s.graph));
+    if (keepViews) state.graph.views = keepViews;
+    if (keepWalkthroughs) state.graph.walkthroughs = keepWalkthroughs;
+    if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
+    if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
+    state.positions.clear();
+    state.selectedNode = state.selectedEdge = null;
+    clearLoadedViewState();
+    resetFiltersFromGraph();
+    ensurePositions();
+    applyLayout(state.layout);
+    afterMutate(); fitGraph();
+    showToast("Snapshot loaded", "ok");
+  }, "Load");
 }
 function deleteSnapshot(id){
   const snaps = loadSnapshots().filter(s=>s.id!==id);
@@ -6959,7 +6974,7 @@ function renderSnapList(){
     const id = item.getAttribute("data-id");
     item.querySelector('[data-act="load"]').onclick = e=>{ e.stopPropagation(); loadSnapshot(id); };
     item.querySelector('[data-act="rename"]').onclick = e=>{ e.stopPropagation(); renameSnapshot(id); };
-    item.querySelector('[data-act="del"]').onclick = e=>{ e.stopPropagation(); if(askToConfirm("Delete snapshot?")) deleteSnapshot(id); };
+    item.querySelector('[data-act="del"]').onclick = e=>{ e.stopPropagation(); askToConfirm("Delete snapshot", "Delete snapshot?", ()=>deleteSnapshot(id), "Delete"); };
   });
 }
 
@@ -9325,6 +9340,7 @@ function parseMermaid(text){
   };
 }
 
+let __ergLastMermaidText = "";
 function openMermaidImport(){
   const html = `
     <p style="margin:0 0 8px; color:var(--muted); font-size:12.5px; line-height:1.5">
@@ -9337,7 +9353,7 @@ function openMermaidImport(){
     </p>
     <textarea id="mm-input" spellcheck="false" aria-label="Mermaid diagram source"
       placeholder="flowchart TD&#10;  A[Start] --> B{Decide}&#10;  B -->|yes| C([Done])"
-      style="width:100%; min-height:220px; box-sizing:border-box; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px; line-height:1.45"></textarea>
+      style="width:100%; min-height:220px; box-sizing:border-box; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px; line-height:1.45">${escapeHtml(__ergLastMermaidText)}</textarea>
     <div style="display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap">
       <button class="btn primary" id="mm-do-import"><i class="fa-solid fa-file-import" aria-hidden="true"></i> Import (replace graph)</button>
       <label class="btn" style="margin:0; cursor:pointer">
@@ -9367,6 +9383,10 @@ function openMermaidImport(){
 function runMermaidImport(){
   const ta = document.getElementById("mm-input");
   const text = ta ? ta.value : "";
+  // The confirmation takes over the modal, so declining it closes the import form. Keep
+  // what was pasted and put it back on reopen; a native confirm() left the form standing
+  // and losing somebody's diagram to a changed mind would be a poor trade.
+  __ergLastMermaidText = text;
   if (!text.trim()){ showToast("Paste a Mermaid diagram first", "err"); return; }
 
   let parsed;
@@ -9378,30 +9398,30 @@ function runMermaidImport(){
     showToast("No nodes found — is this a Mermaid flowchart?", "err");
     return;
   }
-  if (!askToConfirm("Replace the entire graph with " + report.nodes + " node" + (report.nodes===1?"":"s") +
-               " and " + report.edges + " relationship" + (report.edges===1?"":"s") +
-               " parsed from this Mermaid diagram?\n\nThe current graph will be cleared (Ctrl+Z to undo).")) return;
-
-  // ---- clean-slate replace (mirrors loadSample) ----
-  state.graph = graph;
-  coerceLoadedGraph(state.graph);
-  if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
-  if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
-  state.positions.clear();
-  state.selectedNode = state.selectedEdge = null;
-  // Imported data has no backing JSON file: clear the handle so a later Save
-  // prompts for a new location instead of overwriting a previously-open file.
-  state.fileHandle = null; state.fileName = null;
-  state.lastModifiedBy = null; state.lastModifiedAt = null; updateModifiedChip();
-  clearLoadedViewState();
-  resetFiltersFromGraph();
-  ensurePositions();
-  applyLayout(state.layout);
-  afterMutate();                 // pushes undo history, persists, marks dirty
-  renderViewList(); renderWalkthroughList(); fitGraph();
-
-  closeModal();
-  showMermaidImportSummary(report);
+  askToConfirm("Replace graph from Mermaid",
+    "Replace the entire graph with " + report.nodes + " node" + (report.nodes===1?"":"s") +
+    " and " + report.edges + " relationship" + (report.edges===1?"":"s") +
+    " parsed from this Mermaid diagram?\nThe current graph will be cleared (Ctrl+Z to undo).",
+    function(){
+    // ---- clean-slate replace (mirrors loadSample) ----
+    state.graph = graph;
+    coerceLoadedGraph(state.graph);
+    if (!Array.isArray(state.graph.customNodeTypes)) state.graph.customNodeTypes = [];
+    if (!Array.isArray(state.graph.collapsedNodes))  state.graph.collapsedNodes  = [];
+    state.positions.clear();
+    state.selectedNode = state.selectedEdge = null;
+    // Imported data has no backing JSON file: clear the handle so a later Save
+    // prompts for a new location instead of overwriting a previously-open file.
+    state.fileHandle = null; state.fileName = null;
+    state.lastModifiedBy = null; state.lastModifiedAt = null; updateModifiedChip();
+    clearLoadedViewState();
+    resetFiltersFromGraph();
+    ensurePositions();
+    applyLayout(state.layout);
+    afterMutate();                 // pushes undo history, persists, marks dirty
+    renderViewList(); renderWalkthroughList(); fitGraph();
+    showMermaidImportSummary(report);
+  }, "Replace");
 }
 
 function showMermaidImportSummary(r){
@@ -10316,9 +10336,12 @@ function wireUp(){
   document.getElementById("btn-delete-sel").onclick = ()=>{
     if (state.selectedNode){
       const n = findNode(state.selectedNode);
-      if (n && askToConfirm("Delete '"+n.label+"'?")) deleteNode(n.id);
+      if (n) askToConfirm("Delete node", "Delete '"+n.label+"'?", ()=>deleteNode(n.id), "Delete");
     } else if (state.selectedEdge){
-      if (askToConfirm("Delete selected relationship?")) deleteEdge(state.selectedEdge);
+      // Captured now: the selection can change while the dialog is open.
+      const edgeId = state.selectedEdge;
+      askToConfirm("Delete relationship", "Delete selected relationship?",
+        ()=>deleteEdge(edgeId), "Delete");
     } else showToast("Nothing selected","err");
   };
   document.getElementById("btn-undo").onclick = undo;
@@ -11075,7 +11098,7 @@ function renderViewList(){
   container.querySelectorAll(".snap-item").forEach(item=>{
     const id = item.getAttribute("data-id");
     item.querySelector('[data-act="apply"]').onclick = e=>{ e.stopPropagation(); applyView(id); };
-    item.querySelector('[data-act="del"]').onclick   = e=>{ e.stopPropagation(); if (askToConfirm("Delete this view?")) deleteView(id); };
+    item.querySelector('[data-act="del"]').onclick   = e=>{ e.stopPropagation(); askToConfirm("Delete view", "Delete this view?", ()=>deleteView(id), "Delete"); };
     item.onclick = ()=>applyView(id);
   });
 }
@@ -11234,7 +11257,7 @@ function openPresentManager(){
     const w = wts.find(x=>x.id===id);
     item.querySelector('[data-act="play"]').onclick = e=>{ e.stopPropagation(); closeModal(); startPresent(w.steps); };
     item.querySelector('[data-act="edit"]').onclick = e=>{ e.stopPropagation(); openWalkthroughBuilder(id); };
-    item.querySelector('[data-act="del"]').onclick  = e=>{ e.stopPropagation(); if (askToConfirm("Delete walkthrough \"" + w.name + "\"?")){ const arr=getWalkthroughs(); arr.splice(arr.findIndex(x=>x.id===id),1); persist(); markDirty(); renderWalkthroughList(); openPresentManager(); } };
+    item.querySelector('[data-act="del"]').onclick  = e=>{ e.stopPropagation(); askToConfirm("Delete walkthrough", "Delete walkthrough \"" + w.name + "\"?", ()=>{ const arr=getWalkthroughs(); arr.splice(arr.findIndex(x=>x.id===id),1); persist(); markDirty(); renderWalkthroughList(); openPresentManager(); }, "Delete"); };
   });
 }
 function openWalkthroughBuilder(id){
@@ -11319,7 +11342,7 @@ function renderWalkthroughList(){
     const w = wts.find(x=>x.id===id);
     item.querySelector('[data-act="play"]').onclick = e=>{ e.stopPropagation(); startPresent(w.steps); };
     item.querySelector('[data-act="edit"]').onclick = e=>{ e.stopPropagation(); openWalkthroughBuilder(id); };
-    item.querySelector('[data-act="del"]').onclick  = e=>{ e.stopPropagation(); if (askToConfirm('Delete walkthrough "' + w.name + '"?')){ const arr=getWalkthroughs(); arr.splice(arr.findIndex(x=>x.id===id),1); persist(); markDirty(); renderWalkthroughList(); } };
+    item.querySelector('[data-act="del"]').onclick  = e=>{ e.stopPropagation(); askToConfirm("Delete walkthrough", 'Delete walkthrough "' + w.name + '"?', ()=>{ const arr=getWalkthroughs(); arr.splice(arr.findIndex(x=>x.id===id),1); persist(); markDirty(); renderWalkthroughList(); }, "Delete"); };
   });
 }
 
