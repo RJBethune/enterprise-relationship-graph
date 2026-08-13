@@ -6819,6 +6819,27 @@ function loadSnapshots(){
 function saveSnapshots(snaps){
   try { localStorage.setItem(SNAP_KEY, JSON.stringify(snaps)); } catch(_){}
 }
+/* Which snapshot the metrics dashboard compares against.
+
+   A host that carries the setting owns it: under SPFx that is a column on the project
+   item, so every person reading the dashboard is comparing against the same point. A
+   leadership number is not worth much if two people looking at the same screen are
+   measuring from different places. With no host it stays a local preference, which is
+   right for a single file open on one machine. */
+function loadMetricsBaseline(){
+  if (host && host.metricsBaseline !== undefined) return host.metricsBaseline;
+  try { return localStorage.getItem("erg.metricsBaseline"); } catch(_){ return null; }
+}
+function saveMetricsBaseline(value){
+  if (host && typeof host.onMetricsBaselineChanged === "function"){
+    // Update the host's copy first: the dashboard rebuilds itself immediately, while the
+    // write to SharePoint is still in flight.
+    host.metricsBaseline = value;
+    try { host.onMetricsBaselineChanged(value); } catch(_){}
+    return;
+  }
+  try { localStorage.setItem("erg.metricsBaseline", value); } catch(_){}
+}
 /* Native confirm(), made honest.
 
    An iframe without allow-modals throws on confirm() outright -- which is exactly what a
@@ -7972,7 +7993,7 @@ function openMetricsModal(){
   // disables deltas explicitly.
   const snapsAll = loadSnapshots().sort((a,b)=>b.ts-a.ts);
   let baselinePref = null;
-  try { baselinePref = localStorage.getItem("erg.metricsBaseline"); } catch(_){}
+  baselinePref = loadMetricsBaseline();
   let baseline = null;
   if (baselinePref !== "none"){
     baseline = (baselinePref && snapsAll.find(s => s.id === baselinePref)) || snapsAll[0] || null;
@@ -8561,7 +8582,7 @@ function openMetricsModal(){
   // Baseline picker: persist the choice and rebuild the modal with new deltas
   const baseSel = document.getElementById("m-baseline");
   if (baseSel) baseSel.onchange = () => {
-    try { localStorage.setItem("erg.metricsBaseline", baseSel.value); } catch(_){}
+    saveMetricsBaseline(baseSel.value);
     openMetricsModal();
   };
   // Tab switching (with WAI-ARIA tab semantics)
