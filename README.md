@@ -8,6 +8,29 @@ Built for architecture reviews, leadership briefings, operational awareness, onb
 
 ---
 
+## Two ways to run it
+
+This repository holds **one graph engine and two ways to deploy it**.
+
+| | What it is | Where the data lives |
+|---|---|---|
+| **`enterprise-relationship-graph.html`** | The original single file. Open it in a browser — no server, no build, no install. | A `.json` file you open and save, plus a local browser cache. |
+| **SPFx web part** (`src/`, `config/`) | The same engine hosted in SharePoint Online, so a whole office shares one graph. | SharePoint lists on the site, with autosave, multi-editor merge and who-is-here presence. |
+
+**The HTML file is not a legacy artifact — it is the source of truth for engine
+behaviour.** `src/engine/` is *generated* from it by `scripts/extract-engine.py`, which
+applies a short list of asserted host seams and fails loudly if any anchor moves. Change
+the graph's behaviour by editing the HTML and re-running the extractor; never by hand-
+editing the generated modules.
+
+That arrangement is deliberate: it keeps the standalone tool working for anyone who wants
+a file they can email, while the SharePoint deployment stays byte-identical in look,
+iconography and canvas animation rather than drifting into a fork.
+
+See [CLAUDE.md](CLAUDE.md) for the SPFx architecture, storage models and release process.
+
+---
+
 ## Screenshot
 
 ![Enterprise Relationship Graph](Screenshot-01.jpg)
@@ -187,7 +210,7 @@ Single HTML file, three layers in one document:
 
 - **CSS** — design tokens via CSS custom properties, dark theme tuned for command-center / architecture-dashboard use, layout via CSS Grid.
 - **HTML** — semantic landmarks (`<header>`, `<aside>`, `<main>`, `<footer>`), real `<button>` elements with ARIA where needed, hidden dialogs for modals and overlays.
-- **JavaScript** — vanilla JS, no framework, no build. A custom Canvas renderer (no graph library). The force simulation uses a Barnes-Hut quadtree for O(n log n) repulsion and freezes once the layout settles (zero CPU until you drag, edit, or change layout), and hit-testing uses a spatial hash — together these keep graphs into the low thousands of nodes interactive. Past that, the practical limit becomes legibility (a force-directed graph of thousands of nodes is hard to read regardless of speed), best handled with the built-in collapse, filter, and search tools rather than raw rendering throughput.
+- **JavaScript** — vanilla JS, no framework, no build. A custom Canvas renderer (no graph library). The force simulation uses a Barnes-Hut quadtree for O(n log n) repulsion and freezes once the layout settles, so an idle graph costs nothing — with one deliberate exception: a selected node animates its connected edges, which keeps the render loop running until you deselect (and does not, under `prefers-reduced-motion`). Node hit-testing uses a spatial hash; edge hit-testing rejects by bounding box before measuring the curve. Node and relationship lookup by id is indexed rather than scanned, which matters because the renderer resolves both endpoints of every edge on every frame. Together these keep graphs into the low thousands of nodes interactive. Past that, the practical limit becomes legibility (a force-directed graph of thousands of nodes is hard to read regardless of speed), best handled with the built-in collapse, filter, and search tools rather than raw rendering throughput.
 
 Why one file? It's the simplest possible distribution: email it, drop it on a USB stick, host it on any static URL, double-click it. No `node_modules`, no transpilation, no dependencies you have to keep current. You can read every line of the application in one file with `Ctrl+F`.
 

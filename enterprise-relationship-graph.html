@@ -2621,8 +2621,50 @@ function persist(){ try { syncPositionsToGraph(); localStorage.setItem(STORAGE_K
 
 /* ---------- HELPERS ---------- */
 const uid = p => p+"-"+Math.random().toString(36).slice(2,8)+"-"+Date.now().toString(36).slice(-4);
-const findNode = id => state.graph.nodes.find(n=>n.id===id);
-const findEdge = id => state.graph.edges.find(e=>e.id===id);
+/* Node and edge lookup by id, indexed.
+
+   These were Array.find, and the render loop calls findNode twice per EDGE per frame --
+   so drawing was O(N x E). On a 5,000-node graph that is tens of millions of comparisons
+   per frame and the tab stops responding, while the README claims hit-testing is
+   indexed. The index is rebuilt whenever the collection is replaced or changes length,
+   and explicitly on every mutation.
+
+   A miss falls back to the linear scan and rebuilds. That is what makes this safe rather
+   than merely fast: if anything ever mutates a collection without going through
+   afterMutate, the worst case is the old cost for one call, never a wrong answer. */
+let __ergNodeIx = null, __ergNodeIxSrc = null;
+let __ergEdgeIx = null, __ergEdgeIxSrc = null;
+
+function __ergBuildIx(arr){
+  const m = new Map();
+  for (let i = 0; i < arr.length; i++){ const item = arr[i]; if (item) m.set(item.id, item); }
+  return m;
+}
+function invalidateGraphIndex(){ __ergNodeIxSrc = null; __ergEdgeIxSrc = null; }
+
+const findNode = id => {
+  const arr = (state.graph && state.graph.nodes) || [];
+  if (__ergNodeIxSrc !== arr || __ergNodeIx.size !== arr.length){
+    __ergNodeIx = __ergBuildIx(arr); __ergNodeIxSrc = arr;
+  }
+  const hit = __ergNodeIx.get(id);
+  if (hit !== undefined) return hit;
+  // Miss: either it genuinely is not there, or the index went stale in place.
+  const scanned = arr.find(n => n.id === id);
+  if (scanned){ __ergNodeIx = __ergBuildIx(arr); __ergNodeIxSrc = arr; }
+  return scanned;
+};
+const findEdge = id => {
+  const arr = (state.graph && state.graph.edges) || [];
+  if (__ergEdgeIxSrc !== arr || __ergEdgeIx.size !== arr.length){
+    __ergEdgeIx = __ergBuildIx(arr); __ergEdgeIxSrc = arr;
+  }
+  const hit = __ergEdgeIx.get(id);
+  if (hit !== undefined) return hit;
+  const scanned = arr.find(e => e.id === id);
+  if (scanned){ __ergEdgeIx = __ergBuildIx(arr); __ergEdgeIxSrc = arr; }
+  return scanned;
+};
 function neighborsOf(id){
   return {
     inE: state.graph.edges.filter(e=>e.target===id),
@@ -4112,7 +4154,10 @@ function tick(){
   simulateStep();
   // Continue redrawing while a node is selected so the connected-edge
   // marching-ants animation has frames. Also drives normal force/redraw paths.
-  if (needsRedraw || (state.layout === "force" && !simFrozen) || state.selectedNode){
+  // Under reduced motion the dashes are drawn statically, so a selection has nothing to
+  // animate and does not need frames at all.
+  const selectionAnimates = state.selectedNode && !PREFERS_REDUCED_MOTION;
+  if (needsRedraw || (state.layout === "force" && !simFrozen) || selectionAnimates){
     render(); needsRedraw = false;
   }
   // Track stillness; pause rAF when nothing's happening to save battery
@@ -4125,8 +4170,10 @@ function tick(){
   } else {
     settleCounter = 0;
   }
-  // Selection keeps animation alive — never let settleCounter pause us
-  if (state.selectedNode) settleCounter = 0;
+  // Selection keeps the marching ants alive -- but only when they actually march.
+  // Otherwise selecting a node pinned rAF at the display refresh rate indefinitely,
+  // on a laptop battery, drawing the identical frame.
+  if (selectionAnimates) settleCounter = 0;
   if (settleCounter > SETTLE_THRESHOLD){
     rafActive = false;
     return;
@@ -4197,6 +4244,13 @@ function pickEdge(sx,sy){
     const e = edges[i]; if (!isVisibleEdge(e)) continue;
     const a = state.positions.get(e.source), b = state.positions.get(e.target);
     if (!a||!b) continue;
+    // Bounding-box reject first. pointToEdgeCurveDist samples the curve as 16 segments,
+    // and this runs for every edge on every mousemove -- including mousemove over empty
+    // canvas, where the answer is always no. The box is padded by the curve's own bow
+    // (its control point is offset from the chord midpoint) plus the click tolerance.
+    const bow = Math.hypot(b.x-a.x, b.y-a.y) * 0.16 + tol;
+    if (w.x < Math.min(a.x,b.x) - bow || w.x > Math.max(a.x,b.x) + bow) continue;
+    if (w.y < Math.min(a.y,b.y) - bow || w.y > Math.max(a.y,b.y) + bow) continue;
     if (pointToEdgeCurveDist(w.x, w.y, a, b) < tol) return e;
   }
   return null;
@@ -5707,6 +5761,9 @@ function relGatePassed(sourceId, targetId, type, ignoreId){
 }
 
 function afterMutate(skipDirty, skipHistory){
+  // A rename changes an id in place without changing the array or its length, so the
+  // cheap staleness checks in findNode cannot see it. Every mutation comes through here.
+  invalidateGraphIndex();
   // Auto-dedupe any duplicate edges introduced by this mutation. Silent —
   // a duplicate edge is always a bug, not a feature, so no toast.
   removeDuplicateEdges();
@@ -6050,6 +6107,21 @@ function parseBundle(text){
 function coerceLoadedGraph(graph){
   const report = { fixedNodes: 0, droppedNodes: 0, droppedEdges: 0 };
   const seenIds = new Set();
+  // Custom types arrive verbatim -- from an imported file, or from whatever another
+  // editor stored -- and they reach style attributes and innerHTML in several places.
+  // typeStyle() sanitizes on the way OUT, which only protects the call sites that
+  // remember to use it. Clamp on the way IN as well, so a hostile value never enters
+  // state at all and a future render site cannot reintroduce the hole.
+  if (Array.isArray(graph.customNodeTypes)){
+    graph.customNodeTypes.forEach(t => {
+      if (!t || typeof t !== "object") return;
+      if (typeof t.color !== "string" || !/^#[0-9a-fA-F]{3,8}$/.test(t.color)){
+        t.color = TYPE_STYLE.Other.color;
+      }
+      const icon = (typeof t.icon === "string") ? t.icon : "";
+      t.icon = (icon.length <= 4 && !/[<>&"'`]/.test(icon)) ? icon : "";
+    });
+  }
   graph.nodes = (graph.nodes || []).filter(n => {
     if (!n || typeof n !== "object"){ report.droppedNodes++; return false; }
     let fixed = false;
@@ -6677,8 +6749,13 @@ function openManageTypesModal(){
     }
     list.innerHTML = customs.map(t=>{
       const used = countNodesOfType(t.name);
+      // Read through typeStyle() rather than off the stored object. typeStyle IS the
+      // sanitizer -- colour must be a hex literal, icon a short glyph -- and the built-in
+      // grid above already renders this way. Reading t.color/t.icon directly was the one
+      // path that put an imported custom type into a style attribute unchecked.
+      const ts = typeStyle(t.name);
       return `<div class="mt-row" data-name="${escapeHtml(t.name)}">
-        <span class="mt-swatch" style="background:${t.color}; color:${iconFgFor(t.color)}"><i class="fa-solid">${t.icon||""}</i></span>
+        <span class="mt-swatch" style="background:${ts.color}; color:${iconFgFor(ts.color)}"><i class="fa-solid">${ts.icon||""}</i></span>
         <span class="mt-name">${escapeHtml(t.name)}</span>
         <span class="mt-meta">${used} in use</span>
         <div class="mt-actions">
@@ -6959,7 +7036,7 @@ function renderSnapList(){
     return;
   }
   container.innerHTML = `<div class="snap-list">${snaps.map(s=>`
-    <div class="snap-item" data-id="${s.id}">
+    <div class="snap-item" data-id="${escapeHtml(s.id)}">
       <div style="flex:1; min-width:0; overflow:hidden">
         <div class="snap-name">${escapeHtml(s.name)}</div>
         <div class="snap-meta">${new Date(s.ts).toLocaleString()} · ${s.graph.nodes.length}N / ${s.graph.edges.length}E</div>
@@ -11085,7 +11162,7 @@ function renderViewList(){
     return;
   }
   container.innerHTML = `<div class="snap-list">${views.slice().sort((a,b)=>b.ts-a.ts).map(v=>`
-    <div class="snap-item" data-id="${v.id}">
+    <div class="snap-item" data-id="${escapeHtml(v.id)}">
       <div style="flex:1; min-width:0; overflow:hidden">
         <div class="snap-name">${escapeHtml(v.name)}</div>
         <div class="snap-meta">${escapeHtml(v.layout||"force")} · ${(v.filtersNode||[]).length} node types</div>
@@ -11233,7 +11310,7 @@ function openPresentManager(){
   const list = !wts.length
     ? `<div class="snap-empty" style="margin-bottom:12px">No walkthroughs yet. Build one below.</div>`
     : `<div class="snap-list" style="margin-bottom:12px">${wts.map(w=>`
-        <div class="snap-item wt-item" data-id="${w.id}">
+        <div class="snap-item wt-item" data-id="${escapeHtml(w.id)}">
           <div style="flex:1; min-width:0; overflow:hidden">
             <div class="snap-name">${escapeHtml(w.name)}</div>
             <div class="snap-meta">${(w.steps||[]).length} step${(w.steps||[]).length===1?"":"s"}</div>
@@ -11326,7 +11403,7 @@ function renderWalkthroughList(){
     return;
   }
   container.innerHTML = `<div class="snap-list">${wts.map(w=>`
-    <div class="snap-item wt-item" data-id="${w.id}">
+    <div class="snap-item wt-item" data-id="${escapeHtml(w.id)}">
       <div style="flex:1; min-width:0; overflow:hidden">
         <div class="snap-name">${escapeHtml(w.name)}</div>
         <div class="snap-meta">${(w.steps||[]).length} step${(w.steps||[]).length===1?"":"s"}</div>
